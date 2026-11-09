@@ -1,5 +1,5 @@
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'reports/multi-brand-capabilities'),read=f=>fs.readFileSync(path.join(root,f),'utf8'),html=read('public/control.html');
+const root=path.resolve(__dirname,'..'),out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root,'reports/multi-brand-capabilities'),read=f=>fs.readFileSync(path.join(root,f),'utf8'),html=read('public/control.html');
 app.setPath('userData',path.join(root,'scratch/multi-brand-controls-electron'));app.disableHardwareAcceleration();app.on('window-all-closed',()=>{});
 function section(a,b){const start=html.indexOf(a),end=html.indexOf(b,start);assert(start>=0&&end>start);return html.slice(start,end);}
 app.whenReady().then(async()=>{
@@ -11,23 +11,28 @@ app.whenReady().then(async()=>{
  if(fs.existsSync(path.join(root,'scratch/step3-qa-tailwind.js')))await win.webContents.executeJavaScript(read('scratch/step3-qa-tailwind.js')+"\nwindow.tailwind.config={darkMode:'class'};true;");
  await win.webContents.executeJavaScript(`
  localStorage.clear();window.fixtureReads=0;window.fixtureWrites=[];
- window.dbFixture={aircons:[{id:'ac-ui',asset_tag:'AC-UI',name:'Matrix',brand:'Matrix',protocol_name:'TCL112AC',node_id:'node-ui',controller_node_id:'node-ui',model:'Split Type (Inverter)'}],nodes:[{id:'node-ui',name:'ESP32 UI',room_id:null}],rooms:[],floors:[],buildings:[]};
- window.hardwareFixture=[{node_id:'node-ui',device_id:'esp32s3-001122334455',last_seen:new Date().toISOString(),capabilities:{ir_receiver:true,ir_transmitter:true},connection_status:'online',latest_ir:{protocol:'TCL112AC',raw_count:227,frame_kind:'full_state',sequence:1,received_at:new Date().toISOString(),state:{power:true,temp:24.5,mode:'cool',fan:'high',turbo:false,source:'ir_receiver'}}}];
+ window.dbFixture={aircons:[{id:'ac-ui',asset_tag:'AC-UI',name:'Matrix',brand:'Matrix',protocol_name:'TCL112AC',node_id:'node-ui',controller_node_id:'node-ui',model:'Split Type (Inverter)'}],nodes:[{id:'node-ui',name:'ESP32 UI',room_id:null,device_mode:'both',monitor_aircon_id:'ac-ui',rotation_rpm:600,rotation_quality:'ok',last_measurement_at:new Date().toISOString(),interval_val:5,interval_unit:'Seconds',sensor_config:{airflow_reference:{rpm:1200}}}],rooms:[],floors:[],buildings:[]};
+ window.hardwareFixture=[{node_id:'node-ui',device_id:'esp32s3-001122334455',last_seen:new Date().toISOString(),capabilities:{ir_receiver:true,ir_transmitter:true},connection_status:'online',latest_ir:{protocol:'TCL112AC',raw_count:227,frame_kind:'full_state',sequence:1,received_at:new Date().toISOString(),state:{power:true,temp:24.5,mode:'cool',fan:'auto',turbo:false,source:'ir_receiver'}}}];
  window.supabaseClient={from(table){fixtureReads++;let key,value;const q={select(){return q},order(){return q},eq(k,v){key=k;value=v;return q},async maybeSingle(){return {data:dbFixture[table].find(r=>!key||r[key]===value),error:null}},then(a,b){return Promise.resolve({data:dbFixture[table]||[],error:null}).then(a,b)}};return q;}};
  window.EcoTrackHardwareCloud={listStatus:async()=>structuredClone(hardwareFixture),describe:()=> 'online',control:async(_node,payload)=>{window.fixtureControlTarget=_node;if(window.fixtureControlFail)throw Error('Controller connection unavailable');fixtureWrites.push(structuredClone(payload));return {command_id:'fixture-queued',commanded_at:new Date().toISOString()};}};
  `+read('public/js/aircon-system.js')+`
  const {AirconProfileManager,CapabilityEngine,CommandManager,NodeService}=EcoTrackAirconSystem;let activeDeviceId='AC-UI';
  function executeCommand(command,value){window.pendingCommand=applySettings(command,value);return pendingCommand;}
  function openCommandErrorModal(result){window.lastControlError=result;}
- `+section('      // Dynamic Aircon Dropdown Elements','      // Centralized Control Layout Mode Manager')+
+ `+section('      // Dynamic Aircon Dropdown Elements','      function renderDeviceDropdown()')+
  html.match(/function renderDeviceDropdown\([\s\S]*?\n      \}/)[0]+html.match(/function renderDropdownItems\([\s\S]*?\n      \}/)[0]+
- section('      function renderControlPanel()','      // Pending command tracking')+
+ section('      function refreshControllerBattery(','      // Pending command tracking')+
  section('      function enforceControllerCapabilities(device)','      async function executeCommand(')+
  'const applySettings = '+html.match(/async function executeCommand\([\s\S]*?\n      \}/)[0]+';'+
 
- section('      // Temperature Clickers','      // Remote Layout Buttons')+'\ntrue;');
+ section('      // Temperature Clickers','      // Workspace Tabs logic')+'\ntrue;');
  await win.webContents.executeJavaScript("(async()=>{await EcoTrackAirconSystem.syncWithDatabase();const end=Date.now()+5000;while(!AirconProfileManager.getById('AC-UI')){if(Date.now()>end)throw Error('Fixture sync failed');await new Promise(r=>setTimeout(r,20));}renderDeviceDropdown();renderControlPanel();return true;})()");
  const checks=[];
+ assert.equal(await win.webContents.executeJavaScript("document.getElementById('blowerFanSetting').textContent"),'AUTO');
+ const fanText=await win.webContents.executeJavaScript("document.getElementById('fanSection').innerText");
+ assert.doesNotMatch(fanText,/RPM|LM393/);
+ assert.equal(await win.webContents.executeJavaScript("document.getElementById('liveFanSubtext')"),null);
+ checks.push('Control retains the fan setting while omitting LM393 readings from the fan controls and current settings.');
  let specialLabels=await win.webContents.executeJavaScript("[...specialButtonsGroup.children].map(button=>button.textContent)");
  assert(specialLabels.includes('Vertical Swing')&&specialLabels.includes('Horizontal Swing'));
  assert(!specialLabels.some(label=>label.toLowerCase()==='filter'));
@@ -52,7 +57,7 @@ app.whenReady().then(async()=>{
  let result=await win.webContents.executeJavaScript("({name:unitNameEl.textContent,selector:selectedAcName.textContent,badgeHidden:unitBrandBadgeEl.classList.contains('hidden'),menu:[...airconDropdownList.querySelectorAll('.ac-controller-name')].map(el=>el.textContent),range:tempRangeHelp.textContent,temp:tempValueDisplay.textContent,fans:[...fanButtonsGroup.children].map(b=>b.textContent),hasHelp:!!document.querySelector('.ac-capability-summary'),canAdjust:!tempPlusBtn.disabled,power:masterPowerText.textContent,side:dispCommandedState.textContent,role:document.getElementById('hardwareRoleMessage').textContent})");
  assert.equal(result.name,'ESP32 UI');assert.equal(result.selector,'ESP32 UI');assert.deepEqual(result.menu,['ESP32 UI']);assert(result.badgeHidden);
  assert.equal(await win.webContents.executeJavaScript("AirconProfileManager.getById('AC-UI').brand"),'Matrix');
- checks.push('Control heading and selector use the controller display name while retaining the persisted AC manufacturer.');assert(result.range.includes('16°C')&&result.range.includes('31°C')&&result.range.includes('0.5°C')&&!result.range.includes('unverified'));
+ checks.push('Control heading and selector use the controller display name while retaining the persisted AC manufacturer.');assert(result.range.includes('16°C')&&result.range.includes('31°C')&&result.range.includes('Step: 1°C')&&!result.range.includes('unverified'));
  assert.equal(result.temp,'24.5');assert(!result.hasHelp&&result.canAdjust&&!result.fans.includes('turbo'));assert.equal(result.power,'ON');assert.equal(result.side,'ON');assert.equal(result.role,'');
  await win.webContents.executeJavaScript("tempPlusBtn.click();pendingCommand.then(()=>renderControlPanel());true;");
  await win.webContents.executeJavaScript("pendingCommand");
@@ -67,15 +72,15 @@ app.whenReady().then(async()=>{
  checks.push('Plain action feedback keeps backend errors visible and does not apply a failed setting.');
  await win.webContents.executeJavaScript('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
  fs.mkdirSync(path.join(root,'reports/normal-control-ui'),{recursive:true});fs.writeFileSync(path.join(root,'reports/normal-control-ui/control-desktop.png'),(await win.webContents.capturePage()).toPNG());
- checks.push('Production Control panel preserves custom manufacturer/name, shows normal control labels and sends actual half-degree increments.');
+ checks.push('Production Control panel preserves received fractional settings and sends whole-degree app targets.');
  await win.webContents.executeJavaScript(`(async()=>{hardwareFixture[0].last_seen=new Date(Date.now()+2000).toISOString();hardwareFixture[0].latest_ir={protocol:'FUJITSU_AC',remote_model:3,raw_count:260,frame_kind:'full_state',sequence:2,received_at:new Date(Date.now()+2000).toISOString(),state:{power:true,temp:24.25,mode:'cool',fan:'low',turbo:false,source:'ir_receiver'}};await EcoTrackAirconSystem.syncWithDatabase();renderControlPanel();return true;})()`);
  result=await win.webContents.executeJavaScript("({range:tempRangeHelp.textContent,temp:tempValueDisplay.textContent,turbo:[...specialButtonsGroup.children].some(b=>b.textContent==='Turbo'),fans:[...fanButtonsGroup.children].map(b=>b.textContent)})");
- assert(result.range.includes('0.25°C'));assert.equal(result.temp,'24.25');assert(result.turbo&&result.fans.includes('quiet'));
- checks.push('Detected exact Fujitsu model changes the existing panel to quarter-degree steps and model-specific functions without reloading.');
+ assert(result.range.includes('Step: 1°C'));assert.equal(result.temp,'24.25');assert(result.turbo&&result.fans.includes('quiet'));
+ checks.push('Detected exact Fujitsu model preserves received quarter-degree values while app controls use whole degrees and retain model-specific functions.');
  await win.webContents.executeJavaScript(`(async()=>{hardwareFixture[0].last_seen=new Date(Date.now()+3000).toISOString();hardwareFixture[0].latest_ir={...hardwareFixture[0].latest_ir,protocol:'DAIKIN2',remote_model:null,sequence:3,received_at:new Date(Date.now()+3000).toISOString(),state:{power:true,temp:20,mode:'fan',fan:'low',source:'ir_receiver'}};await EcoTrackAirconSystem.syncWithDatabase();renderControlPanel();return true;})()`);
- result=await win.webContents.executeJavaScript("({disabled:tempPlusBtn.disabled&&tempMinusBtn.disabled,modes:[...modeButtonsGroup.children].map(b=>b.textContent),preset:[...document.querySelectorAll('.rem-preset-btn')].map(b=>b.dataset.temp)})");
- assert(result.disabled);assert(result.modes.includes('cool'));assert.equal(result.preset[0],'18');
- checks.push('Fan mode disables temperature adjustments; Cool presets use their own minimum and display their actual setpoints.');
+ result=await win.webContents.executeJavaScript("({disabled:tempPlusBtn.disabled&&tempMinusBtn.disabled,modes:[...modeButtonsGroup.children].map(b=>b.textContent),remoteView:!!document.getElementById('remoteLayoutContainer')})");
+ assert(result.disabled);assert(result.modes.includes('cool'));assert.equal(result.remoteView,false);
+ checks.push('Fan mode disables desktop temperature adjustments; the retired remote layout is absent.');
  await win.webContents.executeJavaScript(`(async()=>{dbFixture.aircons=[{id:'unknown-unit',asset_tag:'AC-UNKNOWN',name:'Unknown unit',brand:'Custom maker',protocol_name:'UNKNOWN',node_id:'node-ui',controller_node_id:'node-ui',model:'Window'}];hardwareFixture[0].latest_ir={};activeDeviceId='AC-UNKNOWN';await EcoTrackAirconSystem.syncWithDatabase();renderControlPanel();return true;})()`);
  result=await win.webContents.executeJavaScript("({power:masterPowerBtn.disabled,temp:tempPlusBtn.disabled,modes:modeButtonsGroup.children.length,fans:fanButtonsGroup.children.length,range:tempRangeHelp.textContent,protocol:AirconProfileManager.getById('AC-UNKNOWN').protocol_name})");
  assert(result.power&&result.temp&&result.modes===0&&result.fans===0);assert.equal(result.protocol,'UNKNOWN');assert.equal(result.range,'—');
@@ -95,8 +100,8 @@ app.whenReady().then(async()=>{
  })()`);
  await win.webContents.executeJavaScript("new Promise(r=>setTimeout(r,120))");
  result=await win.webContents.executeJavaScript("fixtureWrites.at(-1)");
- assert.equal(result.protocol,'FUJITSU_AC');assert.equal(result.state.temp,24.5);assert.equal(result.model,3);
- checks.push('Production dashboard quick adjustment uses the exact model and quarter-degree step, without rounding the existing setpoint.');
+ assert.equal(result.protocol,'FUJITSU_AC');assert.equal(result.state.temp,25);assert.equal(result.model,3);
+ checks.push('Production dashboard quick adjustment uses the exact model and the next whole degree, preserving the received setpoint until the user adjusts it.');
  const cardState = () => win.webContents.executeJavaScript("(()=>{const card=document.getElementById('ac-card-AC-UI');return {title:card.querySelector('h3').textContent,type:card.querySelector('h3 + p').textContent,footer:card.querySelector('.ac-node-name').textContent,text:card.textContent,href:card.querySelector('a').getAttribute('href'),device:card.dataset.deviceId};})()");
  result=await cardState();assert.equal(result.title,'ESP32 UI');assert.equal(result.footer,'ESP32 UI');assert.equal(result.type,'Split');assert(!result.text.includes('Matrix')&&!result.text.includes('esp32s3-001122334455'));
  assert.equal(result.href,'control.html?id=AC-UI');assert.equal(result.device,'AC-UI');assert.equal(await win.webContents.executeJavaScript('fixtureControlTarget'),'esp32s3-001122334455');

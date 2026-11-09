@@ -1,0 +1,33 @@
+{
+  "status": "PASS",
+  "buildId": "a8743271-fae4-499e-b872-6cc46225d425",
+  "expoStatus": "FINISHED",
+  "completedAt": "2026-10-12T17:21:35.315Z",
+  "project": "rey12345/ecotrackapp",
+  "appVersion": "1.0.0",
+  "versionCode": "1",
+  "buildPage": "https://expo.dev/accounts/rey12345/projects/ecotrackapp/builds/a8743271-fae4-499e-b872-6cc46225d425",
+  "downloadUrl": "https://expo.dev/artifacts/eas/BXbwCPvRdyaZ6_O0HPlvPBDeC99UBNEnP4bf61gtgRM.apk",
+  "file": "C:\\Users\\reygay\\Documents\\Codex\\2026-10-10\\referenced-chatgpt-conversation-this-is-an\\outputs\\EcoTrack_Repairs_20261013\\EcoTrack-panel-repaired-20261013.apk",
+  "bytes": 112404646,
+  "sha256": "93f2697c08a6cd83fff90a61af1ab5aa423176766f8a2cc44626d802d556e713",
+  "zipIntegrity": "PASS",
+  "packageString": "com.ecotrack.app",
+  "signingBlockPresent": true,
+  "cryptographicSignatureVerification": "NOT RUN: apksigner unavailable",
+  "phoneInstallation": "NOT RUN",
+  "architectures": [
+    "arm64-v8a",
+    "armeabi-v7a",
+    "x86",
+    "x86_64"
+  ],
+  "repairedBundleStrings": [
+    "Photo unavailable",
+    "Tap to retry",
+    "Loading photo",
+    "Unable to refresh devices",
+    "Checking room assignment"
+  ],
+  "bundleSha256": "05bf9e3071334414f8911b62d946f7ef0d6b51e000109a657314941e8be16759"
+}

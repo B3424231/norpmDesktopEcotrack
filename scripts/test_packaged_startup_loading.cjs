@@ -1,0 +1,35 @@
+'use strict';
+// Actual frozen backend and packaged Electron, disposable profile/SQLite only.
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');
+const {_electron}=require(process.env.ECOTRACK_PLAYWRIGHT || 'C:/Users/reygay/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright');
+const {waitForMainPage}=require('./helpers/packaged-windows');
+const root=path.resolve(__dirname,'..'),executable=path.join(root,require('../package.json').build.directories.output,'win-unpacked/EcoTrack.exe');
+const out=path.join(process.env.ECOTRACK_RELEASE_REPORT_DIR||path.join(root,'reports/notification-release-20261103'),'startup/packaged'),temporary=fs.mkdtempSync(path.join(os.tmpdir(),'ecotrack-cold-start-'));
+fs.mkdirSync(out,{recursive:true});
+const env={...process.env,ECOTRACK_USER_DATA_PATH:path.join(temporary,'profile'),ECOTRACK_RUNTIME_HOME:path.join(temporary,'runtime'),ECOTRACK_TELEMETRY_SYNC:'0',ECOTRACK_MONITOR_SYNC:'0',ECOTRACK_BACKUP_ENABLED:'0'};
+for(const key of Object.keys(env))if(/^(?:SUPABASE_|EXPO_PUBLIC_SUPABASE_|PYTHONPATH$|PYTHONHOME$)/.test(key)||['ELECTRON_RUN_AS_NODE','ECOTRACK_SQLITE_DB_PATH','ECOTRACK_MONITOR_ADMIN_TOKEN','ECOTRACK_CONFIG_PATH','ECOTRACK_MONITOR_KEY_PATH','BACKEND_URL','PORT'].includes(key))delete env[key];
+env.PATH=path.join(process.env.SystemRoot||'C:/Windows','System32');
+const report={status:'RUNNING',executable,isolatedProfile:env.ECOTRACK_USER_DATA_PATH,liveDataAccessed:false,cloudWrites:false,checks:[],rendererErrors:[]};let application,backendUrl;
+(async()=>{
+ const began=performance.now();application=await _electron.launch({executablePath:executable,args:[],cwd:path.dirname(executable),env,timeout:120000});
+ await application.evaluate(({session})=>session.defaultSession.webRequest.onBeforeRequest((details,callback)=>{const url=new URL(details.url);callback({cancel:['http:','https:','ws:','wss:'].includes(url.protocol)&&!['localhost','127.0.0.1','[::1]'].includes(url.hostname)});}));
+ const loading=await application.firstWindow();await loading.getByRole('heading',{name:'Starting EcoTrack'}).waitFor();
+ report.startupFeedbackObservedMs=Math.round(performance.now()-began);loading.on('pageerror',e=>report.rendererErrors.push(e.message));
+ assert.equal(await loading.evaluate(()=>typeof window.electron),'undefined');
+ assert.equal(await loading.getByRole('progressbar').getAttribute('aria-valuenow'),null);
+ const isolated=await application.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().endsWith('/startup.html'));const p=window.webContents.getLastWebPreferences();return {contextIsolation:p.contextIsolation,nodeIntegration:p.nodeIntegration,sandbox:p.sandbox,preload:!!p.preload,visible:window.isVisible()};});
+ assert.deepEqual(isolated,{contextIsolation:true,nodeIntegration:false,sandbox:true,preload:false,visible:true});
+ await loading.screenshot({path:path.join(out,'startup-loading.png')});report.checks.push('Visible branded startup feedback has no preload/IPC and shows indeterminate progress');
+ const duplicate=spawnSync(executable,[],{cwd:path.dirname(executable),env,windowsHide:true,timeout:20000,stdio:'ignore'});assert.equal(duplicate.status,0);
+ const main=await waitForMainPage(application);await main.locator('#email').waitFor();report.mainRendererObservedMs=Math.round(performance.now()-began);
+ backendUrl=await main.evaluate(()=>window.electron.env.BACKEND_URL);assert.match(backendUrl,/^http:\/\/127\.0\.0\.1:\d+$/);
+ const end=Date.now()+10000;while(!loading.isClosed()&&Date.now()<end)await new Promise(r=>setTimeout(r,25));assert(loading.isClosed());
+ assert.equal(await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().length),1);
+ const read=await main.evaluate(()=>window.electron.invoke('local-api-read',{method:'GET',path:'/api/health'}));assert.equal(read.status,200);assert.equal(JSON.parse(read.body).prediction_status,'research_estimate_ready');
+ report.checks.push('Main renderer receives the final backend URL; actual authenticated local health read and frozen model are ready');
+ report.checks.push('Second process focuses the existing app; one main window remains after loader handoff');
+ await main.screenshot({path:path.join(out,'startup-main-login.png')});
+ await application.close();application=null;
+ const deadline=Date.now()+10000;let stopped=false;while(Date.now()<deadline){try{await fetch(backendUrl+'/api/health',{signal:AbortSignal.timeout(500)});}catch{stopped=true;break;}await new Promise(r=>setTimeout(r,50));}assert(stopped);
+ report.checks.push('Closing the packaged app stops its owned backend');assert.deepEqual(report.rendererErrors,[]);report.status='PASS';console.log(JSON.stringify(report,null,2));
+})().catch(e=>{report.status='FAIL';report.failure=e.stack;console.error(e);process.exitCode=1;}).finally(async()=>{if(application)await application.close().catch(()=>{});fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(report,null,2));});

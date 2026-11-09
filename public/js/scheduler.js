@@ -1,5 +1,23 @@
 // ===== SCHEDULER PAGE LOGIC =====
 const sb = window.supabaseClient || window.sb;
+const schedulerControllerMode = () => !window.EcoTrackMode || window.EcoTrackMode.mode === 'controller';
+const schedulerEscape = value => String(value ?? '').replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+function getSchedulerDeviceState(hardware) {
+  if (!hardware || !Number.isFinite(Date.parse(hardware.last_seen || '')) && !Number.isFinite(Date.parse(hardware.sleeping_until || ''))) return 'unknown';
+  return window.EcoTrackHardwareCloud?.describe(hardware) || 'unknown';
+}
+function schedulerDeviceStatePresentation(status) {
+  const value = String(status || '').toLowerCase();
+  const state = value === 'connected' ? 'online' : ['online', 'offline', 'sleeping'].includes(value) ? value : 'unknown';
+  return { state, label: { online: 'Online', offline: 'Offline', sleeping: 'Sleeping', unknown: 'Not reported' }[state] };
+}
+function updateSchedulerDeviceBadge(node) {
+  const label = document.getElementById(`status-${node.id}`);
+  if (!label) return;
+  const presentation = schedulerDeviceStatePresentation(node.status);
+  label.textContent = presentation.label;
+  label.closest('[data-device-state]')?.setAttribute('data-device-state', presentation.state);
+}
 
 let selectedRoomId = null;
 let buildings = {};
@@ -28,6 +46,15 @@ function reconcileScheduleDelivery(command) {
 let schedulerLoadVersion = 0;
 let schedulerAirconRecords = null;
 let schedulerAirconRefreshVersion = 0;
+function renderSchedulerLoading() {
+  for (const id of ['roomsList', 'schedulerTableBody']) {
+    const element = document.getElementById(id); if (!element) continue;
+    delete element.dataset.ecoLoaded;
+    element.setAttribute('aria-busy', 'true');
+  }
+  window.EcoTrackSkeletons?.renderRoomListSkeleton('roomsList', { count: 3 });
+  window.EcoTrackSkeletons?.renderTableSkeleton('schedulerTableBody', { rows: 4, cols: schedulerControllerMode() ? 11 : 8 });
+}
 function rememberScheduleDraft(event) {
   const match = /^(?:wake|sleep|interval-val|interval-unit)-(.+)$/.exec(event.target.id || '');
   if (!match) return;
@@ -98,12 +125,8 @@ function refreshSchedulerHardware(payload) {
     if (!fresh || (payload?.node_id && fresh.db_id !== payload.node_id)) continue;
     if (Date.parse(fresh.cloud_state?.last_seen || '') < Date.parse(node.cloud_state?.last_seen || '')) continue;
     node.cloud_state = fresh.cloud_state;
-    node.status = window.EcoTrackHardwareCloud?.describe(fresh.cloud_state) || 'offline';
-    const label = document.getElementById(`status-${node.id}`);
-    if (label) {
-      label.textContent = node.status === 'online' ? 'Online' : node.status === 'sleeping' ? 'Sleeping' : 'Offline';
-      label.className = node.status === 'online' ? 'text-xs font-bold text-emerald-600 dark:text-emerald-400' : 'text-xs font-bold text-slate-600 dark:text-slate-400';
-    }
+    node.status = getSchedulerDeviceState(fresh.cloud_state);
+    updateSchedulerDeviceBadge(node);
     const temperature = document.getElementById(`temperature-${node.id}`);
     if (temperature) temperature.textContent = getSchedulerTargetTemperature(node);
   }
@@ -359,26 +382,14 @@ function saveTimePicker() {
   closeTimePicker();
 }
 
-async function loadSchedulerWithSWR(forceRefresh = false) {
+async function loadSchedulerWithSWR(forceRefresh = false, readyData = null) {
+  if (!schedulerControllerMode() && window.EcoDeviceScheduler) return window.EcoDeviceScheduler.load(forceRefresh);
   const loadVersion = ++schedulerLoadVersion;
   const roomsList = document.getElementById('roomsList');
   const schedulerTableBody = document.getElementById('schedulerTableBody');
   const hasCached = !!(window.EcoDataBus && window.EcoDataBus.getCached('scheduler:data'));
 
-  if (!hasCached && !forceRefresh) {
-    if (roomsList) window.EcoTrackSkeletons?.renderRoomListSkeleton('roomsList', 5);
-    if (schedulerTableBody) {
-      if (window.EcoTrackSkeletons?.renderTableSkeleton) {
-        window.EcoTrackSkeletons.renderTableSkeleton('schedulerTableBody', {
-          rows: 5,
-          cols: 9,
-          colWidths: ['w-32', 'w-32', 'w-20', 'w-24', 'w-20', 'w-24', 'w-24', 'w-24', 'w-28']
-        });
-      } else {
-        window.EcoTrackSkeletons?.renderTimetableSkeleton('schedulerTableBody', 4, 9);
-      }
-    }
-  }
+  if (!hasCached && !readyData && document.getElementById('schedulerTableBody')?.dataset.ecoLoaded !== 'true') renderSchedulerLoading();
 
   const fetchSchedulerData = async (signal) => {
     let roomRecords = [];
@@ -438,20 +449,20 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
   };
 
   try {
-    let data;
-    if (window.EcoDataBus) {
+    let data = readyData;
+    if (!readyData && window.EcoDataBus) {
       data = await window.EcoDataBus.query('scheduler:data', fetchSchedulerData, {
         forceRefresh,
         ttl: 45000
       });
-    } else {
+    } else if (!readyData) {
       data = await fetchSchedulerData();
     }
 
     if (loadVersion !== schedulerLoadVersion) return;
     const { roomRecords = [], floorRecords = [], buildingRecords = [], nodeRecords = [], airconRecords = [], telemetryRecords = [], cloudStates = [] } = data || {};
     const pendingIds = new Set(window.EcoTrackHardwareCloud?.pendingRegistrations?.() || []);
-    const visibleNodes = nodeRecords.filter(node => !pendingIds.has(String(node.id)) || airconRecords.some(ac => ac.controller_node_id === node.id || ac.node_id === node.id));
+    const visibleNodes = nodeRecords.filter(node => node.device_mode!=='monitoring').filter(node => !pendingIds.has(String(node.id)) || airconRecords.some(ac => ac.controller_node_id === node.id || ac.node_id === node.id));
     const hardwareByNode = new Map(cloudStates.map(state => [state.node_id, state]));
     const knownRooms = new Set(roomRecords.map(room => room.id));
     const roomViews = [...roomRecords];
@@ -486,9 +497,9 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
         const latestTelemetry = telemetryByNodeId[n.name] || telemetryByNodeId[n.id] || {};
         const numeric = value => value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
         const tVal = numeric(latestTelemetry.temperature ?? n.temp);
-        const pVal = numeric(latestTelemetry.pressure);
+        const pVal = numeric(latestTelemetry.rotation_rpm);
         const hardware = hardwareByNode.get(n.id);
-        const stateRaw = window.EcoTrackHardwareCloud?.describe(hardware) || 'offline';
+        const stateRaw = getSchedulerDeviceState(hardware);
         const isOnline = stateRaw === 'online';
 
         // Match node with canonical Aircon profile to ensure 100% naming consistency across pages
@@ -507,7 +518,7 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
         );
 
         const acTag = matchedAc ? (matchedAc.device_id || matchedAc.asset_tag) : null;
-        const acName = matchedAc ? (matchedAc.name || `${cleanRoom} AC (${acTag})`) : (n.name || n.id);
+        const acName = matchedAc?.name || 'Aircon name unavailable';
         const acType = (matchedAc && (matchedAc.model || matchedAc.aircon_type)) || n.aircon_type || 'Split Type (Inverter)';
         const acBrand = (matchedAc && matchedAc.brand) || n.brand || 'Unspecified';
 
@@ -515,18 +526,20 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
           id: hardware?.device_id || n.name || n.id,
           pb_id: n.id,
           cloud_state: hardware || null,
+          device_mode: n.device_mode,
           ip_address: n.ip_address || null,
           room_name: record.name,
           floor_name: floors[record.floor_id]?.name || 'Unassigned',
           building_name: buildings[floors[record.floor_id]?.building_id]?.name || 'Unassigned',
           name: n.name || n.id,
+          device_name: n.device_name || n.name || null,
           ac_name: acName,
           ac_tag: acTag,
           ac_type: acType,
           ac_brand: acBrand,
           status: stateRaw,
           temp: tVal,
-          pressure: pVal,
+          rotation_rpm: pVal,
           wakeTime: n.wake_time ?? '',
           sleepTime: n.sleep_time ?? '',
           intervalVal: Number(n.interval_val ?? 15),
@@ -551,7 +564,17 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
       };
     });
 
-    window.ensureLocationHierarchy(buildings, floors, savedRooms);
+    renderSchedulerLocationCabinet();
+  } catch (error) {
+    console.warn('PocketBase/Supabase load error on Scheduler:', error);
+    renderSchedulerErrorState(error.message);
+  }
+}
+
+function renderSchedulerLocationCabinet() {
+  const roomsList = document.getElementById('roomsList');
+    const locatedRooms = Object.fromEntries(Object.entries(savedRooms).filter(([, room]) => !room.ungrouped));
+    window.ensureLocationHierarchy(buildings, floors, locatedRooms);
     if (roomsList) {
       roomsList.classList.add('eco-content-fade-in');
       roomsList.innerHTML = '';
@@ -567,26 +590,29 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
         
         const floorRooms = {};
         Object.values(floors).forEach(f => floorRooms[f.id] = []);
-        Object.values(savedRooms).forEach(r => {
+        Object.values(locatedRooms).forEach(r => {
           if (r.floor_id && floorRooms[r.floor_id]) floorRooms[r.floor_id].push(r);
         });
         
         Object.values(buildings).forEach(building => {
           const bDiv = document.createElement('div');
           bDiv.className = 'mb-2';
+          bDiv.classList.add('eco-location-building-group');
           
-          const bHeader = document.createElement('div');
-          bHeader.className = 'flex items-center gap-2 bg-[#10b981]/10 px-3 py-2 rounded-t border-b border-[#10b981]/30 cursor-pointer hover:bg-[#10b981]/20 transition-colors';
+          const bHeader = document.createElement('button');
+          bHeader.type = 'button';
+          bHeader.className = 'eco-location-building';
           bHeader.innerHTML = `
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" class="text-[#10b981]">
               <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               <polyline points="9 22 9 12 15 12 15 22" />
             </svg>
-            <span class="font-bold text-[#18392B] dark:text-cyan-400 text-sm">${building.name}</span>
+            <span class="font-bold text-[#18392B] dark:text-cyan-400 text-sm">${schedulerEscape(building.name)}</span>
           `;
           
           const floorsContainer = document.createElement('div');
           floorsContainer.className = 'bg-white dark:bg-[#0c1328]/40 border-x border-b border-gray-200 dark:border-white/5 rounded-b p-2 flex flex-col gap-2';
+          floorsContainer.classList.add('eco-location-floors');
           
           bHeader.addEventListener('click', () => {
             floorsContainer.style.display = floorsContainer.style.display === 'none' ? 'flex' : 'none';
@@ -598,20 +624,23 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
           myFloors.forEach(floor => {
             const fDiv = document.createElement('div');
             fDiv.className = 'border border-gray-100 dark:border-white/5 rounded bg-gray-50 dark:bg-slate-900/60';
+            fDiv.classList.add('eco-location-floor');
             
-            const fHeader = document.createElement('div');
-            fHeader.className = 'flex items-center px-2 py-1 border-b border-gray-100 dark:border-white/5 cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-800';
+            const fHeader = document.createElement('button');
+            fHeader.type = 'button';
+            fHeader.className = 'eco-location-floor-heading';
             fHeader.innerHTML = `
               <span class="text-xs font-semibold text-gray-700 dark:text-gray-200 flex items-center gap-1">
                 <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" class="text-gray-400">
                    <rect x="4" y="4" width="16" height="16" rx="2" ry="2" />
                    <line x1="4" y1="12" x2="20" y2="12" />
-                </svg>${floor.name}
+                </svg>${schedulerEscape(floor.name)}
               </span>
             `;
             
             const roomsContainer = document.createElement('div');
             roomsContainer.className = 'p-1 flex flex-col gap-1';
+            roomsContainer.classList.add('eco-location-rooms');
             
             fHeader.addEventListener('click', () => {
               roomsContainer.style.display = roomsContainer.style.display === 'none' ? 'flex' : 'none';
@@ -621,14 +650,15 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
             if (myRooms.length === 0) roomsContainer.innerHTML = '<div class="text-[10px] text-gray-400 p-1 text-center">No rooms</div>';
             
             myRooms.forEach(room => {
-              const roomItem = document.createElement('div');
-              roomItem.className = 'room-item bg-white dark:bg-slate-950/40 border border-gray-200 dark:border-white/10 p-2 rounded cursor-pointer relative hover:border-[#10b981] dark:hover:border-[#10b981]/60 transition-colors';
+              const roomItem = document.createElement('button');
+              roomItem.type = 'button';
+              roomItem.className = 'eco-location-room room-item';
               roomItem.setAttribute('data-room', room.id);
               roomItem.innerHTML = `
                 <div class="flex items-center justify-between gap-2">
                   <div class="min-w-0 flex-1">
-                    <p class="text-xs font-bold text-[#18392B] dark:text-gray-200 truncate">${room.name}</p>
-                    <p class="text-[10px] text-gray-500 dark:text-gray-400 font-medium">${room.nodes.length} ac control nodes</p>
+                    <p class="text-xs font-bold text-[#18392B] dark:text-gray-200 truncate">${schedulerEscape(room.name)}</p>
+                    <p class="text-[10px] text-gray-500 dark:text-gray-400 font-medium">${room.nodes.length} AC device node${room.nodes.length === 1 ? '' : 's'}</p>
                   </div>
                 </div>
               `;
@@ -650,6 +680,12 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
         });
       }
 
+      Object.values(savedRooms).filter(room => room.ungrouped).forEach(room => {
+        const item = document.createElement('button'); item.type = 'button';
+        item.className = 'eco-location-room room-item'; item.setAttribute('data-room', room.id);
+        item.innerHTML = `<span>${schedulerEscape(room.name)}</span><small>${room.nodes.length} AC device node${room.nodes.length === 1 ? '' : 's'}</small>`;
+        item.addEventListener('click', () => selectRoom(room.id, room, savedRooms)); roomsList.appendChild(item);
+      });
       if (Object.keys(savedRooms).length > 0) {
         const targetRoomId = (selectedRoomId && savedRooms[selectedRoomId]) ? selectedRoomId : Object.keys(savedRooms)[0];
         selectRoom(targetRoomId, savedRooms[targetRoomId], savedRooms);
@@ -666,14 +702,21 @@ async function loadSchedulerWithSWR(forceRefresh = false) {
         renderNoRoomsEmptyState();
       }
     }
-  } catch (error) {
-    console.warn('PocketBase/Supabase load error on Scheduler:', error);
-    renderSchedulerErrorState(error.message);
-  }
+  window.dispatchEvent(new CustomEvent('scheduler:devices-updated'));
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  ensureTimePickerModal();
+  document.addEventListener('click', event => {
+    const trigger = event.target.closest('.sched-time-trigger');
+    if (trigger?.dataset.timeTarget) openTimePicker(trigger.dataset.timeTarget, trigger);
+  });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeTimePicker(); });
+  window.EcoDataBus?.onQuery('scheduler:data', {
+    onSuccess: ({ data, fromCache }) => { if (!fromCache) void loadSchedulerWithSWR(false, data); }
+  });
   await loadSchedulerWithSWR();
+  if (!schedulerControllerMode()) return;
 
   // Multi-tier real-time reactivity
   if (window.EcoDataBus) {
@@ -732,22 +775,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
   }
 
-  ensureTimePickerModal();
-
-  document.addEventListener('click', (event) => {
-    const trigger = event.target.closest('.sched-time-trigger');
-    if (!trigger) return;
-    const targetInputId = trigger.dataset.timeTarget;
-    if (!targetInputId) return;
-    openTimePicker(targetInputId, trigger);
-  });
-
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      closeTimePicker();
-    }
-  });
-
   // Start background live telemetry sync so temperature matches live dashboard
   setInterval(refreshSchedulerTelemetry, 2500);
 });
@@ -788,14 +815,10 @@ async function refreshSchedulerTelemetry() {
   const hardwareByNode = new Map(states.map(state => [state.node_id, state]));
   for (const room of Object.values(savedRooms)) for (const node of room.nodes || []) {
     node.cloud_state = hardwareByNode.get(node.pb_id) || node.cloud_state;
-    node.status = window.EcoTrackHardwareCloud?.describe(node.cloud_state) || 'offline';
+    node.status = getSchedulerDeviceState(node.cloud_state);
     const latest = measurements.find(row => [node.id, node.name, node.pb_id].includes(row.node_id) || [node.id, node.name].includes(row.sensor_name));
     if (latest) node.temp = latest.temperature === null || latest.temperature === undefined ? null : Number(latest.temperature);
-    const label = document.getElementById(`status-${node.id}`);
-    if (label) {
-      label.textContent = node.status === 'online' ? 'Online' : node.status === 'sleeping' ? 'Sleeping' : 'Offline';
-      label.className = node.status === 'online' ? 'text-xs font-bold text-emerald-600 dark:text-emerald-400' : 'text-xs font-bold text-slate-600 dark:text-slate-400';
-    }
+    updateSchedulerDeviceBadge(node);
     const temperature = document.getElementById(`temperature-${node.id}`);
     if (temperature) temperature.textContent = getSchedulerTargetTemperature(node);
   }
@@ -822,7 +845,7 @@ function selectRoom(roomId, room, allRooms) {
   schedulerCurrentPage = 1;
 
   // Update table title
-  document.getElementById('tableTitle').innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" class="text-cyan-400"><path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/><path d="M12 12l-8-4.3 8-4.3 8 4.3"/></svg>${room.name} - Node Schedules`;
+  document.getElementById('tableTitle').innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" class="text-cyan-400"><path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/><path d="M12 12l-8-4.3 8-4.3 8 4.3"/></svg>${schedulerEscape(room.name)} - AC Device Schedules`;
 
   // Load nodes for this room in the table
   loadRoomNodes(room.nodes);
@@ -834,23 +857,28 @@ function resetSchedulerPagination() {
   const nextBtn = document.getElementById('schedulerNextBtn');
   const pagesText = document.getElementById('schedulerPaginationPages');
 
-  if (pageInfo) pageInfo.textContent = 'Showing 0 of 0 controls';
+  if (pageInfo) pageInfo.textContent = 'Showing 0 of 0 devices';
   if (pagesText) pagesText.textContent = 'Page 1 of 1';
   if (prevBtn) prevBtn.disabled = true;
   if (nextBtn) nextBtn.disabled = true;
 }
 
 function renderNoRoomsEmptyState() {
+  const mode = window.EcoTrackMode?.mode || 'controller';
+  const deviceName = mode === 'monitoring' ? 'AC devices' : mode === 'both' ? 'AC devices' : 'AC controllers';
+  const manageLabel = mode === 'monitoring' ? 'Manage AC Devices' : mode === 'both' ? 'Manage AC Devices' : 'Manage AC Controllers';
   const schedulerTableBody = document.getElementById('schedulerTableBody');
   const tableTitle = document.getElementById('tableTitle');
   if (tableTitle) {
-    tableTitle.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" class="text-cyan-400"><path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/><path d="M12 12l-8-4.3 8-4.3 8 4.3"/></svg>AC Control Schedules`;
+    tableTitle.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" class="text-cyan-400"><path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/><path d="M12 12l-8-4.3 8-4.3 8 4.3"/></svg>AC Device Schedules`;
   }
   resetSchedulerPagination();
   if (!schedulerTableBody) return;
+  const scrollContainer = schedulerTableBody.closest('.overflow-x-auto');
+  if (scrollContainer) scrollContainer.scrollLeft = 0;
   schedulerTableBody.innerHTML = `
     <tr class="text-center bg-white dark:bg-[#0c1328]/40">
-      <td colspan="10" class="px-4 py-16 text-center">
+      <td colspan="${schedulerControllerMode() ? 11 : 8}" class="px-4 py-16 text-center">
         <div class="flex flex-col items-center justify-center max-w-sm mx-auto">
           <div class="w-14 h-14 rounded-2xl bg-teal-500/10 dark:bg-teal-500/15 text-teal-600 dark:text-teal-400 border border-teal-500/30 flex items-center justify-center mb-3 shadow-xs">
             <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -858,12 +886,12 @@ function renderNoRoomsEmptyState() {
               <polyline points="12 6 12 12 16 14" />
             </svg>
           </div>
-          <h4 class="font-bold text-sm text-slate-800 dark:text-white mb-1">No AC Control Schedules Found</h4>
+          <h4 class="font-bold text-sm text-slate-800 dark:text-white mb-1">No AC Device Schedules Found</h4>
           <p class="text-xs text-slate-500 dark:text-gray-400 mb-4 leading-relaxed">
-            No campus rooms or AC controllers are currently configured. Add a room or assign an AC controller to start setting automated schedules.
+            No ${deviceName} are configured for scheduling. Register and assign a device to start setting automated schedules.
           </p>
           <a href="nodes.html" class="px-4 py-2 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 text-teal-600 dark:text-teal-400 border border-teal-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-all">
-            Manage AC Controllers &rarr;
+            ${manageLabel} &rarr;
           </a>
         </div>
       </td>
@@ -873,11 +901,13 @@ function renderNoRoomsEmptyState() {
 
 function renderSchedulerErrorState(errorMessage) {
   const schedulerTableBody = document.getElementById('schedulerTableBody');
+  const roomsList = document.getElementById('roomsList');
+  if (roomsList?.querySelector('.eco-skeleton')) { roomsList.textContent = 'Locations unavailable'; roomsList.setAttribute('aria-busy', 'false'); }
   resetSchedulerPagination();
   if (!schedulerTableBody) return;
   schedulerTableBody.innerHTML = `
     <tr class="text-center bg-white dark:bg-[#0c1328]/40">
-      <td colspan="10" class="px-4 py-16 text-center">
+      <td colspan="${schedulerControllerMode() ? 11 : 8}" class="px-4 py-16 text-center">
         <div class="flex flex-col items-center justify-center max-w-sm mx-auto">
           <div class="w-14 h-14 rounded-2xl bg-rose-500/10 dark:bg-rose-500/15 text-rose-600 dark:text-rose-400 border border-rose-500/30 flex items-center justify-center mb-3 shadow-xs">
             <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -919,8 +949,8 @@ function loadRoomNodes(nodes) {
 
   if (pageInfo) {
     pageInfo.textContent = totalNodes === 0
-      ? 'Showing 0 of 0 controls'
-      : `Showing ${startIdx + 1}–${endIdx} of ${totalNodes} controls`;
+      ? 'Showing 0 of 0 devices'
+      : `Showing ${startIdx + 1}–${endIdx} of ${totalNodes} devices`;
   }
   if (pagesText) pagesText.textContent = `Page ${schedulerCurrentPage} of ${totalPages}`;
   if (prevBtn) {
@@ -947,9 +977,12 @@ function loadRoomNodes(nodes) {
   }
 
   if (!nodes || nodes.length === 0) {
+    const mode = window.EcoTrackMode?.mode || 'controller';
+    const deviceTitle = mode === 'monitoring' ? 'AC Devices' : mode === 'both' ? 'AC Devices' : 'AC Controllers';
+    const deviceName = mode === 'monitoring' ? 'AC device' : mode === 'both' ? 'AC device' : 'AC controller';
     schedulerTableBody.innerHTML = `
       <tr class="text-center bg-white dark:bg-[#0c1328]/40">
-        <td colspan="10" class="px-4 py-16 text-center">
+        <td colspan="${schedulerControllerMode() ? 11 : 8}" class="px-4 py-16 text-center">
           <div class="flex flex-col items-center justify-center max-w-sm mx-auto">
             <div class="w-14 h-14 rounded-2xl bg-teal-500/10 dark:bg-teal-500/15 text-teal-600 dark:text-teal-400 border border-teal-500/30 flex items-center justify-center mb-3 shadow-xs">
               <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -965,12 +998,12 @@ function loadRoomNodes(nodes) {
                 <line x1="1" y1="14" x2="4" y2="14"/>
               </svg>
             </div>
-            <h4 class="font-bold text-sm text-slate-800 dark:text-white mb-1">No AC Controllers in This Room</h4>
+            <h4 class="font-bold text-sm text-slate-800 dark:text-white mb-1">No ${deviceTitle} in This Room</h4>
             <p class="text-xs text-slate-500 dark:text-gray-400 mb-4 leading-relaxed">
-              Bind an AC controller node to this room in Telemetry Setup to automate operating schedules.
+              Assign an ${deviceName} to this room to start setting automated schedules.
             </p>
-            <a href="telemetry.html" class="px-4 py-2 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 text-teal-600 dark:text-teal-400 border border-teal-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-all">
-              Go to Telemetry Setup &rarr;
+            <a href="nodes.html" class="px-4 py-2 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 text-teal-600 dark:text-teal-400 border border-teal-500/30 text-xs font-bold inline-flex items-center gap-1.5 transition-all">
+              Manage ${deviceTitle} &rarr;
             </a>
           </div>
         </td>
@@ -1034,12 +1067,11 @@ function loadRoomNodes(nodes) {
 
 function createTableRow(node) {
   const temp = node.temp !== null && node.temp !== undefined && Number.isFinite(Number(node.temp)) ? Number(node.temp) : null;
-  const stateRaw = (node.status || 'offline').toLowerCase();
-  const isOnline = stateRaw === 'online' || stateRaw === 'connected';
+  const deviceState = schedulerDeviceStatePresentation(node.status);
   const acType = node.ac_type || node.aircon_type || 'Split Type (Inverter)';
-  const savedName = typeof node.name === 'string' ? node.name.trim() : '';
+  const savedName = typeof node.ac_name === 'string' ? node.ac_name.trim() : '';
   const controllerName = savedName && !/^(?:EcoTrack[-_])?esp32s3[-_:][0-9a-f]{12}$/i.test(savedName)
-    ? savedName : 'AC Controller';
+    ? savedName : 'Aircon name unavailable';
   const escapedControllerName = controllerName.replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
   const acTag = node.ac_tag || 'No AC assigned';
   
@@ -1059,19 +1091,25 @@ function createTableRow(node) {
           <div>
             <div class="sched-controller-name font-bold text-[#18392B] dark:text-cyan-400 text-sm">${escapedControllerName}</div>
             <div class="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500 dark:text-gray-400 font-medium">
-              <span class="px-1.5 py-0.5 rounded font-mono text-[10px] font-bold bg-cyan-500/10 text-cyan-600 dark:text-cyan-300 border border-cyan-500/20">${acTag}</span>
+              <span class="px-1.5 py-0.5 rounded font-mono text-[10px] font-bold bg-cyan-500/10 text-cyan-600 dark:text-cyan-300 border border-cyan-500/20">${schedulerEscape(node.deviceLabel || acTag)}</span>
             </div>
           </div>
         </div>
       </td>
 
+      <td class="px-6 py-4 sched-device-name"><span class="font-semibold text-sm">${schedulerEscape(window.ecoDeviceDisplayName?.((Object.hasOwn(node, 'device_name') ? node.device_name : node.name) || 'Unavailable') || (Object.hasOwn(node, 'device_name') ? node.device_name : node.name) || 'Unavailable')}</span>${node.monitor_name ? `<small class="block mt-1 text-xs">AC device: ${schedulerEscape(window.ecoDeviceDisplayName?.(node.monitor_name) || node.monitor_name)}</small>` : ''}${!schedulerControllerMode() ? `<small class="sched-device-meta">${schedulerEscape(node.ac_name || 'Aircon name unavailable')} · ${schedulerEscape(acType)}</small><div class="sched-device-meta"><div class="scheduler-device-state" data-device-state="${deviceState.state}" title="device connection status">
+          <span class="scheduler-device-state-dot" aria-hidden="true"></span>
+          <span id="status-${node.id}">${deviceState.label}</span>
+        </div>
+        ${node.connectionDetail ? `<p class="device-scheduler-note">${schedulerEscape(node.connectionDetail)}</p>` : ''}</div>` : ''}</td>
+
       <!-- AIRCON TYPE -->
       <td class="px-6 py-4">
-        <span class="font-bold text-[#18392B] dark:text-gray-200 text-sm whitespace-nowrap">${acType}</span>
+        <span class="font-bold text-[#18392B] dark:text-gray-200 text-sm whitespace-nowrap">${schedulerEscape(acType)}</span>
       </td>
 
       <!-- TEMPERATURE -->
-      <td class="px-6 py-4">
+      <td class="px-6 py-4" data-controller-schedule-field>
         <div class="flex items-center gap-2">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"></path>
@@ -1081,7 +1119,7 @@ function createTableRow(node) {
       </td>
 
       <!-- CONTROL MODE -->
-      <td class="px-6 py-4">
+      <td class="px-6 py-4" data-controller-schedule-field>
         <div class="flex items-center gap-2">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#22d3ee" stroke-width="2">
             <circle cx="12" cy="12" r="5"></circle>
@@ -1094,14 +1132,15 @@ function createTableRow(node) {
         </div>
       </td>
 
-      <td class="px-6 py-4"><span data-scheduler-power-mode="${encodeURIComponent(node.id)}" class="font-bold text-sm">${getSchedulerPowerMode(node)}</span></td>
+      <td class="px-6 py-4" data-controller-schedule-field><span data-scheduler-power-mode="${encodeURIComponent(node.id)}" class="font-bold text-sm">${getSchedulerPowerMode(node)}</span></td>
 
       <!-- CURRENT STATE -->
       <td class="px-6 py-4">
-        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#10b981]/10 dark:bg-emerald-950/20">
-          <div class="w-2 h-2 rounded-full ${isOnline ? 'bg-[#10b981]' : 'bg-red-500'}"></div>
-          <span id="status-${node.id}" class="text-xs font-bold ${isOnline ? 'text-[#18392B] dark:text-emerald-400' : 'text-slate-500 dark:text-slate-400'}">${isOnline ? 'Online' : stateRaw === 'sleeping' ? 'Sleeping' : 'Offline'}</span>
+        ${schedulerControllerMode() ? `<div class="scheduler-device-state" data-device-state="${deviceState.state}" title="device connection status">
+          <span class="scheduler-device-state-dot" aria-hidden="true"></span>
+          <span id="status-${node.id}">${deviceState.label}</span>
         </div>
+        ${node.connectionDetail ? `<p class="device-scheduler-note">${schedulerEscape(node.connectionDetail)}</p>` : ''}` : ''}
       </td>
 
       <!-- WAKE TIME -->
@@ -1138,7 +1177,6 @@ function createTableRow(node) {
           </div>
         </button>
         <input type="hidden" id="sleep-${node.id}" value="${normalizeScheduleTime(node.sleepTime) || ''}">
-        <p id="sleep-note-${node.id}" aria-live="polite" class="${nodeSleepNote(node.wakeTime, node.sleepTime) ? '' : 'hidden '}mt-1 max-w-[180px] text-[10px] leading-tight text-slate-500 dark:text-slate-400">${nodeSleepNote(node.wakeTime, node.sleepTime)}</p>
       </td>
 
       <!-- SEND INTERVAL -->
@@ -1152,11 +1190,11 @@ function createTableRow(node) {
           <div class="flex flex-col justify-center">
             <span class="text-[10px] font-bold text-gray-400 tracking-widest uppercase">EVERY</span>
             <div class="flex items-center gap-2">
-              <input type="number" id="interval-val-${node.id}" value="${node.intervalVal ?? ''}" min="1" step="1" class="w-8 text-lg font-bold text-[#18392B] dark:text-gray-100 bg-transparent border-b-2 border-gray-200 dark:border-white/10 focus:border-[#10b981] focus:outline-none p-0 text-center transition-colors" data-node-id="${node.id}">
-              <select id="interval-unit-${node.id}" class="appearance-none border-[1.5px] border-[#10b981] dark:border-[#10b981]/40 rounded-lg px-2 py-0.5 text-sm font-bold text-[#18392B] dark:text-cyan-400 bg-white dark:bg-slate-900 cursor-pointer outline-none focus:ring-2 focus:ring-[#10b981]/20 transition-shadow" style="padding-right: 1.5rem; background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2318392B%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E'); background-repeat: no-repeat; background-position: right 0.25rem center; background-size: 1em;" data-node-id="${node.id}">
-                <option value="Seconds" ${node.intervalUnit === 'Seconds' ? 'selected' : ''}>SEC</option>
-                <option value="Minutes" ${!node.intervalUnit || node.intervalUnit === 'Minutes' ? 'selected' : ''}>MIN</option>
-                <option value="Hours" ${node.intervalUnit === 'Hours' ? 'selected' : ''}>HR</option>
+              <input type="number" id="interval-val-${node.id}" value="${node.intervalVal ?? ''}" min="${schedulerControllerMode() ? '1' : '0.0166666667'}" step="${schedulerControllerMode() ? '1' : 'any'}" placeholder="Not set" aria-label="Send interval value" class="w-8 text-lg font-bold text-[#18392B] dark:text-gray-100 bg-transparent border-b-2 border-gray-200 dark:border-white/10 focus:border-[#10b981] focus:outline-none p-0 text-center transition-colors" data-node-id="${node.id}">
+              <select id="interval-unit-${node.id}" aria-label="Send interval unit" data-select-size="compact" class="appearance-none border-[1.5px] border-[#10b981] dark:border-[#10b981]/40 rounded-lg px-2 py-0.5 text-sm font-bold text-[#18392B] dark:text-cyan-400 bg-white dark:bg-slate-900 cursor-pointer outline-none focus:ring-2 focus:ring-[#10b981]/20 transition-shadow" style="padding-right: 1.5rem; background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%20fill%3D%22none%22%20stroke%3D%22%2318392B%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%3E%3Cpolyline%20points%3D%226%209%2012%2015%2018%209%22%3E%3C%2Fpolyline%3E%3C%2Fsvg%3E'); background-repeat: no-repeat; background-position: right 0.25rem center; background-size: 1em;" data-node-id="${node.id}">
+                <option value="Seconds" ${node.intervalUnit === 'Seconds' ? 'selected' : ''}>Seconds</option>
+                <option value="Minutes" ${!node.intervalUnit || node.intervalUnit === 'Minutes' ? 'selected' : ''}>Minutes</option>
+                <option value="Hours" ${node.intervalUnit === 'Hours' ? 'selected' : ''}>Hours</option>
               </select>
             </div>
           </div>
@@ -1169,7 +1207,7 @@ function createTableRow(node) {
           <button id="apply-${node.id}" data-node-id="${node.id}" class="apply-schedule-btn bg-[#18392B] dark:bg-[#10b981] hover:bg-[#10b981] dark:hover:bg-[#059669] hover:text-[#18392B] dark:hover:text-white text-white px-3.5 py-2 rounded-lg font-bold text-xs transition-colors shadow-md border border-[#10b981] dark:border-[#10b981]/40 cursor-pointer">
             ${scheduleDeliveries.get(node.id)?.label || 'Apply'}
           </button>
-          <a href="${node.ac_tag ? 'control.html?id=' + encodeURIComponent(node.ac_tag) : 'nodes.html'}" title="Open in Aircon Control Panel" class="p-2 rounded-lg bg-teal-500/10 hover:bg-teal-500/20 text-teal-600 dark:text-teal-400 border border-teal-500/30 transition-colors flex items-center justify-center cursor-pointer">
+          <a data-controller-schedule-field href="${node.ac_tag ? 'control.html?id=' + encodeURIComponent(node.ac_tag) : 'nodes.html'}" title="Open in Aircon Control Panel" class="p-2 rounded-lg bg-teal-500/10 hover:bg-teal-500/20 text-teal-600 dark:text-teal-400 border border-teal-500/30 transition-colors flex items-center justify-center cursor-pointer">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
               <line x1="4" y1="21" x2="4" y2="14" />
               <line x1="4" y1="10" x2="4" y2="3" />
@@ -1183,25 +1221,27 @@ function createTableRow(node) {
             </svg>
           </a>
         </div>
+        ${!schedulerControllerMode() ? `<p ${node.scheduleConflict ? '' : 'hidden'} class="device-scheduler-status" id="delivery-${node.id}" role="status">${node.scheduleConflict ? schedulerEscape(node.deliveryNote) : ''}</p>` : ''}
       </td>
     </tr>
   `;
 }
 
-async function applyNodeSchedule(nodeId, buttonElement) {
+async function applyNodeSchedule(nodeId, buttonElement, { controllerOnly = false } = {}) {
+  if (!schedulerControllerMode() && !controllerOnly && window.EcoDeviceScheduler) return window.EcoDeviceScheduler.apply(nodeId, buttonElement);
   const wakeTime = normalizeScheduleTime(document.getElementById(`wake-${nodeId}`)?.value);
   const sleepTime = normalizeScheduleTime(document.getElementById(`sleep-${nodeId}`)?.value);
   const intervalVal = Number(document.getElementById(`interval-val-${nodeId}`)?.value);
   const intervalUnit = document.getElementById(`interval-unit-${nodeId}`)?.value;
   const multiplier = { Seconds: 1, Minutes: 60, Hours: 3600 }[intervalUnit];
-  const seconds = intervalVal * multiplier;
+  const seconds = Math.round(intervalVal * multiplier);
   if (!wakeTime || !sleepTime) {
     const field = !wakeTime ? 'wake' : 'sleep';
     window.EcoToast?.error(`Choose a valid ${field} time before applying this controller schedule.`);
     document.querySelector?.(`[data-time-target="${field}-${nodeId}"]`)?.focus();
     return;
   }
-  if (!Number.isInteger(intervalVal) || !Number.isInteger(seconds) || seconds < 1 || seconds > 86400) {
+  if ((schedulerControllerMode() && !Number.isInteger(intervalVal)) || Math.abs(intervalVal * multiplier - seconds) > 0.00001 || !Number.isInteger(seconds) || seconds < 1 || seconds > 86400) {
     window.EcoToast?.error('The report interval must be a whole number between 1 second and 24 hours. Check the value and unit.');
     document.getElementById(`interval-val-${nodeId}`)?.focus?.();
     return;
@@ -1237,7 +1277,7 @@ async function applyNodeSchedule(nodeId, buttonElement) {
         if (receipt.interval_ms !== seconds * 1000 || receipt.wake_time !== wakeTime || receipt.sleep_time !== sleepTime) throw new Error('Device schedule acknowledgement does not match the request.');
         scheduleDeliveries.get(nodeId).label = 'Applied';
         (document.getElementById(`apply-${nodeId}`) || buttonElement).textContent = 'Applied';
-        window.EcoToast?.success('ESP32 confirmed that the schedule was applied.');
+        window.EcoToast?.success('device confirmed that the schedule was applied.');
         window.dispatchEvent(new CustomEvent('ecotrack:schedule-applied', { detail: receipt }));
       }).catch(error => {
         if (buttonElement?.dataset.commandId !== command.id || scheduleDeliveries.get(nodeId)?.commandId !== command.id || scheduleDeliveries.get(nodeId)?.label === 'Applied') return;
@@ -1250,9 +1290,11 @@ async function applyNodeSchedule(nodeId, buttonElement) {
     }
     // A queue write is not proof that the device has applied it.
     window.dispatchEvent(new CustomEvent('ecotrack:schedule-queued', { detail: command }));
+    return command;
   } catch (error) {
     window.EcoToast?.error(error.message);
     if (buttonElement) buttonElement.textContent = 'Apply';
+    return null;
   } finally { if (buttonElement) buttonElement.disabled = false; }
 }
 

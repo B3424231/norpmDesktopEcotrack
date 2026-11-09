@@ -1,0 +1,32 @@
+{
+  "buildId": "60237599-4f05-4c1f-8bad-a30fdf2b9860",
+  "status": "FINISHED",
+  "completedAt": "2026-10-11T10:43:14.180Z",
+  "artifact": "https://expo.dev/artifacts/eas/WJ9RLUZvY6_INL5UGovMlKzRzNbZ3eOcTYHNyVyBDbM.apk",
+  "file": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\artifacts\\EcoTrack-mobile-home-registration-20261011.apk",
+  "bytes": 112398286,
+  "sha256": "9f392c84092acee9adaa3335a76d8e83ed5689ba9c16289125f093a0b00d21ef",
+  "package": "com.ecotrack.app",
+  "zipIntegrity": "passed",
+  "signingBlockPresent": true,
+  "cryptographicSignatureVerification": "not performed",
+  "permissionsPresent": [
+    "android.permission.BLUETOOTH_SCAN",
+    "android.permission.BLUETOOTH_CONNECT",
+    "android.permission.ACCESS_FINE_LOCATION"
+  ],
+  "architectures": [
+    "arm64-v8a",
+    "armeabi-v7a",
+    "x86",
+    "x86_64"
+  ],
+  "updatedLabelsPresent": [
+    "Register AC Controller Device",
+    "Controller Details & Deployment",
+    "Target setpoint",
+    "Blower fan",
+    "Status unavailable"
+  ],
+  "removedAirconControlLabelAbsent": true
+}

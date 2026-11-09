@@ -1,0 +1,226 @@
+[
+  {
+    "file": "desktop/src/main.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\src\\main.js",
+    "new": false,
+    "sha256": "5cd42eea40738dcba00515a1a61083ea0f1990788219f32c5e65978daba77f25",
+    "added": 3,
+    "removed": 1
+  },
+  {
+    "file": "desktop/public/dashboard.html",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\public\\dashboard.html",
+    "new": false,
+    "sha256": "d57a03d1a7e6baa5cc39cc1145039b74989de56b480fec742dba9a0dcde30cbd",
+    "added": 6,
+    "removed": 7
+  },
+  {
+    "file": "desktop/public/logs.html",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\public\\logs.html",
+    "new": false,
+    "sha256": "ef24868e82dbc40efff5d20e20ccf99f614628b70ba902b68b5d5199d9216d9e",
+    "added": 2,
+    "removed": 1
+  },
+  {
+    "file": "desktop/public/js/logs.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\public\\js\\logs.js",
+    "new": false,
+    "sha256": "e7be77d35deac0899ee195e3bd59e0fc3ab3a227861393715c1f20c91b9a18e1",
+    "added": 32,
+    "removed": 20
+  },
+  {
+    "file": "desktop/public/js/node-sync.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\public\\js\\node-sync.js",
+    "new": false,
+    "sha256": "83e3a4ffbdcb7ac7cc42afb3c80c0f070554aa8049d3be038d57f8a6e4290a06",
+    "added": 37,
+    "removed": 72
+  },
+  {
+    "file": "desktop/public/js/telemetry-history.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\public\\js\\telemetry-history.js",
+    "new": true,
+    "sha256": "7fc8822d7ecc484d8060f5eff8911479bb17185e8e88b9e103fa0f29e26337bd",
+    "added": 31,
+    "removed": 0
+  },
+  {
+    "file": "desktop/backend/app.py",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\backend\\app.py",
+    "new": false,
+    "sha256": "7fd7c9e5230a1d88d5f39a04c11ca6a328286f4455baeab6798227a59ef6f52f",
+    "added": 42,
+    "removed": 8
+  },
+  {
+    "file": "desktop/scripts/test_cloud_telemetry_sync.py",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_cloud_telemetry_sync.py",
+    "new": false,
+    "sha256": "28cc55279dead4782dce20907982a349c0d97b82e2a7f0ee6d7ef2a84a3205f0",
+    "added": 11,
+    "removed": 9
+  },
+  {
+    "file": "desktop/scripts/test_dashboard_workflows.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_dashboard_workflows.js",
+    "new": false,
+    "sha256": "dfbcea2a652d36b998b924bc5c220a9eecfc6755b5e6a1d84edb9d98fced8e51",
+    "added": 8,
+    "removed": 8
+  },
+  {
+    "file": "desktop/scripts/test_maintenance_photo_render.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_maintenance_photo_render.js",
+    "new": true,
+    "sha256": "a027bddd3ed23398df1c8de12dfa11b5ecf6e20374a97aa2a1fb7468f287d1a4",
+    "added": 118,
+    "removed": 0
+  },
+  {
+    "file": "desktop/scripts/test_native_startup.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_native_startup.js",
+    "new": true,
+    "sha256": "1554405f3e852d2727451959f42de2f66119b8f7725d77a9e38f7ecfd96ba212",
+    "added": 54,
+    "removed": 0
+  },
+  {
+    "file": "desktop/scripts/test_panel_workflow_render.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_panel_workflow_render.js",
+    "new": false,
+    "sha256": "2960ea5dfcc597180aa03028237dac11978b5e3a211e9cb585ab02b761056dfa",
+    "added": 2,
+    "removed": 2
+  },
+  {
+    "file": "desktop/scripts/test_rf_frontend_render.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_rf_frontend_render.js",
+    "new": false,
+    "sha256": "a239243eb2335c799437e9a85ffb4f97449f58560a0a9e35eace5be6c0cb3566",
+    "added": 1,
+    "removed": 1
+  },
+  {
+    "file": "desktop/scripts/test_runtime_engine.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_runtime_engine.js",
+    "new": false,
+    "sha256": "892f4184cc83bae365ec457440526e1136ed37b72a523871dd7d4a28712eee16",
+    "added": 6,
+    "removed": 5
+  },
+  {
+    "file": "desktop/scripts/test_telemetry_cadence.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_telemetry_cadence.js",
+    "new": false,
+    "sha256": "40a1297b1493fc9fe34719a0cba219ddb46498ed09f20b01cab2abe75809900e",
+    "added": 28,
+    "removed": 63
+  },
+  {
+    "file": "desktop/scripts/test_telemetry_history.js",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_telemetry_history.js",
+    "new": true,
+    "sha256": "79c369d76ac6a0698a2118e426a582304d899ad777d71a1c74171099d9e8d800",
+    "added": 24,
+    "removed": 0
+  },
+  {
+    "file": "desktop/scripts/test_telemetry_history.py",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackDesktopDashboardNew-main-control\\scripts\\test_telemetry_history.py",
+    "new": true,
+    "sha256": "49b8387434ae86311923c813f0917094449c730db23f227fcf4df7f03bdf1006",
+    "added": 84,
+    "removed": 0
+  },
+  {
+    "file": "mobile/src/app/Maintenance.tsx",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\src\\app\\Maintenance.tsx",
+    "new": false,
+    "sha256": "a97a112a992faf423e26cf5e0f7fc2ff8846149820b1fdb1d2763e389c335007",
+    "added": 2,
+    "removed": 1
+  },
+  {
+    "file": "mobile/src/components/maintenance-photo.tsx",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\src\\components\\maintenance-photo.tsx",
+    "new": true,
+    "sha256": "42e7646a115a0382fcd3a3c3d5167e74e131f7e5839cd3fa031a8066f10a568b",
+    "added": 38,
+    "removed": 0
+  },
+  {
+    "file": "mobile/src/services/private-images.ts",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\src\\services\\private-images.ts",
+    "new": false,
+    "sha256": "64207a217f7231dc7779e2cf870e13a6cd78baa4a8565e207a93a5c111f3a4eb",
+    "added": 4,
+    "removed": 2
+  },
+  {
+    "file": "mobile/src/services/supabase.ts",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\src\\services\\supabase.ts",
+    "new": false,
+    "sha256": "6ddf4995b28231dd49d2bc359ee24abb4bee788c643aaa84eedf27d746a5b0d4",
+    "added": 3,
+    "removed": 11
+  },
+  {
+    "file": "mobile/scripts/test-aircon-state.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-aircon-state.cjs",
+    "new": false,
+    "sha256": "9fdcb1da4576e4e7a5676ef6dc328535e6bb0393ecf780c6bace770de4f2722f",
+    "added": 1,
+    "removed": 1
+  },
+  {
+    "file": "mobile/scripts/test-dashboard-power.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-dashboard-power.cjs",
+    "new": false,
+    "sha256": "55989968ab9cddd2ef47b9f9182a7916bbd3679fd8417abfb8b9d58bae2e0124",
+    "added": 11,
+    "removed": 6
+  },
+  {
+    "file": "mobile/scripts/test-desktop-startup.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-desktop-startup.cjs",
+    "new": false,
+    "sha256": "a47f676e287d507d04d1acecc90c1d2d8b356aaf7925b1073eb4a3b6ee9ba726",
+    "added": 1,
+    "removed": 1
+  },
+  {
+    "file": "mobile/scripts/test-energy-analytics.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-energy-analytics.cjs",
+    "new": false,
+    "sha256": "f73d2082d94539c72f3f22a67fc90ef50d76ef459866090a3043370aee8d8efa",
+    "added": 103,
+    "removed": 175
+  },
+  {
+    "file": "mobile/scripts/test-fetching.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-fetching.cjs",
+    "new": false,
+    "sha256": "9c1acd067a5a0d0971a2059cf869983d40eb1dc76f3b6897f703c8dab7a073fd",
+    "added": 11,
+    "removed": 1
+  },
+  {
+    "file": "mobile/scripts/test-operating-window.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-operating-window.cjs",
+    "new": false,
+    "sha256": "a991bf45720ce30e62f9491e81d1ec265ba05577307f3fa4a6a116d3316de082",
+    "added": 45,
+    "removed": 53
+  },
+  {
+    "file": "mobile/scripts/test-scheduler-controls.cjs",
+    "path": "C:\\Users\\reygay\\Desktop\\EcoTrackAppMobileNew-master-control\\scripts\\test-scheduler-controls.cjs",
+    "new": false,
+    "sha256": "4dc7f8d185f577ab5d4ba24a77b7df37795f5a2f6a1e14841d2a15ae025a8e1d",
+    "added": 19,
+    "removed": 26
+  }
+]

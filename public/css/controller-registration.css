@@ -1,4 +1,10 @@
 #nodeModal { padding: 16px; }
+html body.app-shell #nodeModal #cancelNodeModalBtn {
+ min-height:40px; min-width:90px; padding:9px 18px; border:1px solid var(--eco-input-border)!important;
+ border-radius:10px; background:var(--eco-surface)!important; color:var(--eco-text)!important; font-weight:600;
+}
+html body.app-shell #nodeModal #cancelNodeModalBtn:hover { background:var(--eco-raised)!important; border-color:var(--eco-accent)!important; }
+html body.app-shell #nodeModal #cancelNodeModalBtn:focus-visible { outline:2px solid var(--eco-accent); outline-offset:3px; }
 #nodeModal > div { width:min(760px,100%); max-height:calc(100dvh - 32px); }
 #nodeForm { display:flex; flex-direction:column; min-height:0; overflow:hidden; padding:0; gap:0; }
 #nodeModal .registration-body { min-height:0; overflow:auto; padding:12px 24px 20px; scrollbar-width:thin; }
@@ -7,7 +13,8 @@
 #nodeModal #nodeStep3.hidden { display:none; }
 #nodeModal #registrationCloudStatus { position:sticky; top:0; z-index:3; box-shadow:0 2px 8px #0f172a0a; background:#f0fdfa; }
 #nodeModal #registrationCloudStatus[data-state="failed"],#nodeModal #registrationCloudStatus[data-state="bluetooth"] { background:#fff1f2; }
-#nodeModal #registrationCloudStatus[data-state="verifying"],#nodeModal #registrationCloudStatus[data-state="pending"] { background:#fffbeb; }
+#nodeModal #registrationCloudStatus[data-state="pending"] { background:var(--eco-raised, #f1f5f9); }
+#nodeModal #registrationCloudStatus[data-state="verifying"] { background:#fffbeb; }
 #nodeModal #registrationCloudMessage:empty,#nodeModal #existingCloudMessage:empty { display:none; }
 #nodeModal [hidden] { display:none!important; }
 #nodeModal .registration-assignment { display:flex; gap:8px; margin:8px 0; }
@@ -27,12 +34,36 @@
 #nodeModal #registrationBrandList button:hover,#nodeModal #registrationBrandList .active,#nodeModal #registrationBrandList [aria-selected="true"] { color:#0f766e; background:#ccfbf1; }
 #nodeModal #registrationBrandList p { padding:10px; font-size:12px; color:#64748b; }
 #nodeModal #brandChipsContainer { display:none; }
+html body.app-shell #nodeModal .registration-manual-id-button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:38px; padding:8px 12px; border:1px solid var(--eco-input-border)!important; border-radius:9px; background:var(--eco-surface)!important; color:var(--eco-accent)!important; font-size:12px; font-weight:600; cursor:pointer; }
+html body.app-shell #nodeModal .registration-manual-id-button:hover { background:var(--eco-success-bg)!important; border-color:var(--eco-accent)!important; }
+html body.app-shell #nodeModal .registration-manual-id-button:focus-visible { outline:2px solid var(--eco-accent); outline-offset:3px; }
+#editNodeModal .controller-brand-list { position:relative; margin-top:6px; max-height:180px; overflow:auto; overscroll-behavior:contain; scrollbar-width:thin; padding:5px; border:1px solid var(--eco-input-border); border-radius:10px; background:var(--eco-surface); color:var(--eco-text); }
+#editNodeModal .controller-brand-list[hidden] { display:none!important; }
+html body.app-shell #editNodeModal .controller-brand-list button { display:block; width:100%; min-height:36px; padding:8px 10px; border:0; border-radius:7px; background:transparent; color:var(--eco-text); text-align:left; font-size:13px; cursor:pointer; }
+html body.app-shell #editNodeModal .controller-brand-list button:hover,
+html body.app-shell #editNodeModal .controller-brand-list .active,
+html body.app-shell #editNodeModal .controller-brand-list [aria-selected="true"] { background:var(--eco-success-bg); color:var(--eco-accent); }
+#editNodeModal .controller-brand-list p { padding:8px 10px; color:var(--eco-secondary); font-size:12px; }
+#contextMenuNodeBadge,#viewModalNodeBadge,#editModalNodeBadge { overflow-wrap:anywhere; white-space:normal; min-width:0; }
+#nodeContextMenu { max-width:calc(100vw - 24px); }
+html body.app-shell #viewNodeModal .controller-detail-state { --detail-state:var(--eco-muted); --detail-state-bg:var(--eco-raised); display:inline-flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--eco-border); border-radius:10px; color:var(--detail-state)!important; background:var(--detail-state-bg)!important; }
+html body.app-shell #viewNodeModal .controller-detail-state[data-device-state="online"] { --detail-state:var(--eco-success); --detail-state-bg:var(--eco-success-bg); }
+html body.app-shell #viewNodeModal .controller-detail-state[data-device-state="offline"] { --detail-state:var(--eco-danger); --detail-state-bg:var(--eco-danger-bg); }
+html body.app-shell #viewNodeModal .controller-detail-state[data-device-state="sleeping"] { --detail-state:var(--eco-warning); --detail-state-bg:var(--eco-warning-bg); }
+html body.app-shell #viewNodeModal :is(#viewStatusText,#viewStatusDot) { color:inherit!important; }
+#viewNodeModal .controller-detail-state-icon { display:inline-flex; flex:0 0 20px; align-items:center; justify-content:center; }
+html body.app-shell #viewNodeModal .controller-detail-signal { display:inline-flex; align-items:center; gap:7px; min-height:34px; padding:7px 10px; border:1px solid var(--eco-border); border-radius:9px; background:var(--eco-raised)!important; color:var(--eco-secondary)!important; font-size:11px; font-weight:600; font-variant-numeric:tabular-nums; }
+html body.app-shell #viewNodeModal .controller-detail-signal[data-device-state="online"] { color:var(--eco-success)!important; background:var(--eco-success-bg)!important; }
+html body.app-shell #viewNodeModal .controller-detail-signal-value { display:inline-flex; align-items:center; justify-content:flex-end; gap:7px; color:var(--eco-secondary)!important; }
+#viewNodeModal :is(.controller-detail-signal,.controller-detail-signal-value) svg { width:16px; height:16px; flex:0 0 16px; }
+html body.app-shell #viewNodeModal .controller-detail-signal > span { color:inherit!important; }
 #nodeModal .registration-details { padding:10px 12px; border:1px solid #e2e8f0; border-radius:10px; }
 #nodeModal .registration-details summary { cursor:pointer; font-size:12px; font-weight:600; color:#64748b; }
 #nodeModal .registration-details > div { margin-top:10px; }
 .dark #nodeModal .registration-footer,.dark #nodeModal #registrationBrandList { background:#0f172a; border-color:#334155; }
 .dark #nodeModal #registrationCloudStatus { background:#12352f; }
-.dark #nodeModal #registrationCloudStatus[data-state="pending"],.dark #nodeModal #registrationCloudStatus[data-state="verifying"] { background:#3d321c; }
+.dark #nodeModal #registrationCloudStatus[data-state="pending"] { background:var(--eco-raised, #1e293b); }
+.dark #nodeModal #registrationCloudStatus[data-state="verifying"] { background:#3d321c; }
 .dark #nodeModal #registrationCloudStatus[data-state="failed"],.dark #nodeModal #registrationCloudStatus[data-state="bluetooth"] { background:#451a26; }
 .dark #nodeModal .registration-assignment label:has(:checked) { color:#5eead4; background:#134e4a; }
 .dark #nodeModal .registration-assignment label,.dark #nodeModal .registration-details { border-color:#334155; }
@@ -67,3 +98,6 @@
  #nodeModal #step3NodeBadge { overflow-wrap:anywhere; } #nodeModal #step3IpBadge { display:none; }
  #nodeModal #existingWifiMessage { overflow-wrap:anywhere; }
 }
+
+/* Completed step headers remain legible status indicators. */
+#nodeModal button[data-step-complete="true"] { opacity:1; cursor:default; pointer-events:none; }

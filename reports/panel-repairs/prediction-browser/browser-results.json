@@ -1,0 +1,50 @@
+{
+  "passed": 2,
+  "results": [
+    {
+      "page": "logs",
+      "width": 1460,
+      "theme": "light",
+      "result": {
+        "kwh": 1.3795920488949236,
+        "status": "Estimated from recorded controls and runtime.",
+        "label": "ESTIMATED ENERGY",
+        "estimatedHours": 1
+      },
+      "missing_flag_rejected": true
+    },
+    {
+      "page": "logs",
+      "width": 390,
+      "theme": "dark",
+      "result": {
+        "kwh": 1.3795920488949236,
+        "status": "Estimated from recorded controls and runtime.",
+        "label": "ESTIMATED ENERGY",
+        "estimatedHours": 1
+      },
+      "missing_flag_rejected": true
+    }
+  ],
+  "retired_prediction_page": true,
+  "requests": [
+    {
+      "url": "http://127.0.0.1:57695/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:57695/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:57695/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:57695/api/predict-energy",
+      "method": "POST"
+    }
+  ],
+  "live_hardware_tested": false,
+  "live_cloud_writes": false
+}

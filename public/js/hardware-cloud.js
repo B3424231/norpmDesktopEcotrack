@@ -27,20 +27,27 @@
   function failure(error, operation = '') {
     const missing = ['PGRST202', 'PGRST205', '42P01'].includes(error?.code);
     const registration = /^ecotrack_(controller_registration_status|validate_controller_assignment|prepare_controller_registration|finish_controller_registration)$/.test(operation);
-    const message = missing ? registration
+    const message = missing && /ac_device_assignment|ac_device_registration/.test(operation) ? 'Install the AC device roles migration before registering this device type.' : missing ? registration
       ? 'Registration setup is missing. Run supabase_controller_registration_migration.sql in Supabase SQL Editor after its existing prerequisites.'
       : 'Cloud hardware setup is missing. Run supabase_cloud_hardware_migration.sql in Supabase SQL Editor.' : error?.message || 'Cloud request failed.';
     return Object.assign(new Error(message), { code: error?.code });
   }
-  async function rpc(name, args) {
-    let query = client().rpc(name, args), timer;
-    if (/^ecotrack_(controller_registration_status|validate_controller_assignment|prepare_controller_registration)$/.test(name) &&
-        typeof AbortController === 'function' && typeof query.abortSignal === 'function') {
-      const controller = new AbortController();query=query.abortSignal(controller.signal);
-      timer=setTimeout(()=>controller.abort(),25000);
-    }
-    let response;
-    try {response=await query;} finally {if(timer)clearTimeout(timer);}
+  function awaitCloud(query, deadline = Date.now() + 25000) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    if (controller && typeof query.abortSignal === 'function') query = query.abortSignal(controller.signal);
+    return new Promise((resolve, reject) => {
+      const expired = () => Object.assign(new Error('Cloud request timed out. Refresh device status before retrying.'), { code: 'CLOUD_TIMEOUT' });
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) { reject(expired()); controller?.abort(); return; }
+      const timer = setTimeout(() => { reject(expired()); controller?.abort(); }, remaining);
+      Promise.resolve(query).then(response => {
+        clearTimeout(timer);
+        if (Date.now() >= deadline) reject(expired()); else resolve(response);
+      }, error => { clearTimeout(timer); reject(error); });
+    });
+  }
+  async function rpc(name, args, deadline) {
+    const response = await awaitCloud(client().rpc(name, args), deadline);
     if (response.error) throw failure(response.error, name);
     if (!response.data) throw new Error('Supabase returned no confirmation.');
     return response.data;
@@ -72,27 +79,27 @@
     if (error?.name === 'NetworkError' || /gatt|bluetooth/i.test(error?.message || '')) {
       const connected = device?.gatt?.connected === true;
       const detail = typeof error?.message === 'string' ? error.message : 'No device response.';
-      return Object.assign(new Error((connected ? 'ESP32 Bluetooth is connected, but ' : 'Bluetooth could not complete ') +
-        operation + (connected ? ' failed. ' : '. ') + detail + ' Select Reconnect ESP32 to check the connection again.', { cause: error }), {
+      return Object.assign(new Error((connected ? 'device Bluetooth is connected, but ' : 'Bluetooth could not complete ') +
+        operation + (connected ? ' failed. ' : '. ') + detail + ' Select Reconnect device to check the connection again.', { cause: error }), {
           code: 'BLE_CONNECTION_FAILED', bluetooth_connected: connected, operation, original_name: error?.name, original_code: error?.code
         });
     }
     return error;
   }
   async function readInfo() {
-    if (!state.device?.gatt?.connected || !state.info) throw Object.assign(new Error('Bluetooth disconnected. Select Reconnect ESP32 to continue with the same controller.'), { code: 'BLE_DISCONNECTED' });
+    if (!state.device?.gatt?.connected || !state.info) throw Object.assign(new Error('Bluetooth disconnected. Select Reconnect device to continue with the same controller.'), { code: 'BLE_DISCONNECTED' });
     let value;
     try { const characteristic = state.info; value = await serializeBluetooth(() => characteristic.readValue()); } catch (error) { throw bluetoothFailure(error, 'reading device information'); }
     const info = JSON.parse(new TextDecoder().decode(value));
-    if (!identityMatches(info)) throw new Error('Install the new EcoTrack cloud receiver sketch on this ESP32 first.');
-    if (state.identity && state.identity !== info.device_id) throw Object.assign(new Error('Bluetooth device identity does not match this setup. Reconnect the selected ESP32.'), { code: 'BLE_DEVICE_MISMATCH' });
+    if (!identityMatches(info)) throw new Error('Install the new EcoTrack cloud receiver sketch on this device first.');
+    if (state.identity && state.identity !== info.device_id) throw Object.assign(new Error('Bluetooth device identity does not match this setup. Reconnect the selected device.'), { code: 'BLE_DEVICE_MISMATCH' });
     state.identity = info.device_id;
     if (typeof root.CustomEvent === 'function')
       root.dispatchEvent?.(new root.CustomEvent('ecotrack:bluetooth-info', { detail: { device_id: info.device_id, info } }));
     return info;
   }
   async function attachDevice(device, expectedDeviceId) {
-    let operation = 'connecting to the ESP32';
+    let operation = 'connecting to the device';
     try {
       const server = await device.gatt.connect();
       operation = 'discovering setup characteristics';
@@ -106,7 +113,7 @@
       if (expectedDeviceId && info.device_id !== expectedDeviceId) {
         device.gatt.disconnect();
         state.info = null; state.writer = null; state.service = null; state.capture = null;
-        throw Object.assign(new Error('Reconnect the selected ESP32. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
+        throw Object.assign(new Error('Reconnect the selected device. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
       }
       device.addEventListener?.('gattserverdisconnected', () => {
         if (state.device !== device || state.service !== service) return;
@@ -124,10 +131,11 @@
     try { device = await root.navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'EcoTrack-' }], optionalServices: [SERVICE] }); }
     catch (error) {
       const message = error?.name === 'NotFoundError'
-        ? 'No ESP32 was selected. Select Reconnect ESP32 and choose the same controller.'
-        : 'Bluetooth selection could not be completed. Check Windows Bluetooth and select Reconnect ESP32.';
+        ? 'No device was selected. Select Reconnect device and choose the same controller.'
+        : 'Bluetooth selection could not be completed. Check Windows Bluetooth and select Reconnect device.';
       throw Object.assign(new Error(message), { code: 'BLE_DISCONNECTED' });
     }
+    const finishLoading = showConnectionLoading();
     try {
       const info = await attachDevice(device, expectedDeviceId);
       if (previous.device !== device && previous.device?.gatt?.connected) previous.device.gatt.disconnect();
@@ -136,18 +144,20 @@
       if (device !== previous.device && device.gatt?.connected) device.gatt.disconnect();
       Object.assign(state, previous);
       throw error;
+    } finally {
+      finishLoading();
     }
   }
   async function reconnect(expectedDeviceId) {
     if (!/^esp32s3-[a-f0-9]{12}$/.test(expectedDeviceId || ''))
-      throw Object.assign(new Error('Reconnect the selected ESP32 through Bluetooth.'), { code: 'BLE_DEVICE_MISMATCH' });
+      throw Object.assign(new Error('Reconnect the selected device through Bluetooth.'), { code: 'BLE_DEVICE_MISMATCH' });
     let device = state.device;
     if (device && state.identity && state.identity !== expectedDeviceId) device = null;
     if (!device && root.navigator?.bluetooth?.getDevices) {
       const devices = (await root.navigator.bluetooth.getDevices()).filter(item => item.name === 'EcoTrack-' + expectedDeviceId);
       if (devices.length === 1) device = devices[0];
     }
-    if (!device) throw Object.assign(new Error('Select Reconnect ESP32 and choose the same controller. Keep it powered on and nearby.'), { code: 'BLE_DISCONNECTED' });
+    if (!device) throw Object.assign(new Error('Select Reconnect device and choose the same controller. Keep it powered on and nearby.'), { code: 'BLE_DISCONNECTED' });
     let info;
     if (device === state.device && device.gatt?.connected && state.info) {
       try { info = { ...await readInfo(), bluetooth_name: device.name || expectedDeviceId }; }
@@ -159,7 +169,7 @@
       }
     } else info = await attachDevice(device, expectedDeviceId);
     if (info.device_id !== expectedDeviceId)
-      throw Object.assign(new Error('Reconnect the selected ESP32. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
+      throw Object.assign(new Error('Reconnect the selected device. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
     return info;
   }
   async function resume() {
@@ -202,10 +212,10 @@
       if (current.wifi_status === 'error' || (cloud && current.cloud_status === 'error')) throw new Error(current.error || 'The device rejected this connection.');
       if (current.wifi_status === 'connected' && (!cloud || current.cloud_status === 'verified')) return current;
     }
-    throw new Error(cloud ? 'Wi-Fi connected, but no Supabase device acknowledgement arrived. Check the migration, internet connection, and Serial Monitor.' : 'ESP32 did not confirm Wi-Fi connection. Check its 2.4 GHz network and password.');
+    throw new Error(cloud ? 'Wi-Fi connected, but no Supabase device acknowledgement arrived. Check the migration, internet connection, and Serial Monitor.' : 'device did not confirm Wi-Fi connection. Check its 2.4 GHz network and password.');
   }
   async function registrationStatus(info) {
-    if (!identityMatches(info)) throw new Error('Reconnect the selected ESP32 before checking registration.');
+    if (!identityMatches(info)) throw new Error('Reconnect the selected device before checking registration.');
     const response = await rpc('ecotrack_controller_registration_status', {p_device_id:info.device_id});
     if (response.requires_credentials === true) return {...response,state:'refresh'};
     if (!response.node?.id) throw new Error('Controller registration could not be confirmed.');
@@ -218,14 +228,14 @@
     return {...response,state:'reuse',info,cloud_state:{...cloud,connection_status:'online'}};
   }
   async function validateAssignment(deviceId, setup) {
-    const result = await rpc('ecotrack_validate_controller_assignment', {p_device_id:deviceId,p_setup:setup});
+    const result = await rpc(setup.device_mode ? 'ecotrack_validate_ac_device_assignment' : 'ecotrack_validate_controller_assignment', {p_device_id:deviceId,p_setup:setup});
     if (result.valid !== true) throw new Error('AC assignment was not confirmed.');
     return result;
   }
   async function register(metadata, credentials, expectedDeviceId, options = {}) {
     const info = expectedDeviceId ? await reconnect(expectedDeviceId) : await readInfo();
     if (expectedDeviceId && info.device_id !== expectedDeviceId)
-      throw Object.assign(new Error('Reconnect the selected ESP32. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
+      throw Object.assign(new Error('Reconnect the selected device. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
     validateCredentials(info, credentials || {});
     const config = root.ECOTRACK_CONFIG;
     if (!config?.supabaseUrl?.startsWith('https://') || !publicKey(config.supabaseKey)) throw new Error('A Supabase HTTPS URL and publishable key are required.');
@@ -243,14 +253,14 @@
       return { node: registration.node, info: confirmed, cloud_state: cloudState };
     } finally { delete registration.device_token; }
   }
-  async function resolveNode(nodeId) {
+  async function resolveNode(nodeId, deadline = Date.now() + 25000) {
     const local = root.EcoTrackAirconSystem?.NodeService?.getNode?.(nodeId);
     if (local?.db_id || local?.pb_id) return local.db_id || local.pb_id;
     let query = client().from('nodes').select('id');
-    let response = await query.eq('id', nodeId).maybeSingle();
+    let response = await awaitCloud(query.eq('id', nodeId).maybeSingle(), deadline);
     if (response.error) throw failure(response.error);
     if (response.data?.id) return response.data.id;
-    response = await client().from('nodes').select('id').eq('name', nodeId).maybeSingle();
+    response = await awaitCloud(client().from('nodes').select('id').eq('name', nodeId).maybeSingle(), deadline);
     if (response.error) throw failure(response.error);
     if (!response.data?.id) throw new Error('This controller was not found in Supabase. Complete Save & Verify Controller in the registration wizard first.');
     return response.data.id;
@@ -261,33 +271,47 @@
     if (Number.isFinite(wake) && wake > Date.now()) return 'sleeping';
     return Number.isFinite(seen) && Date.now() - seen <= 45000 && seen <= Date.now() + 5000 ? 'online' : 'offline';
   }
-  async function getStatus(nodeId) {
-    const id = await resolveNode(nodeId);
-    const response = await client().from('ecotrack_device_state').select('*').eq('node_id', id).maybeSingle();
+  async function getStatus(nodeId, deadline = Date.now() + 25000) {
+    const id = await resolveNode(nodeId, deadline);
+    const response = await awaitCloud(client().from('ecotrack_device_state').select('*').eq('node_id', id).maybeSingle(), deadline);
     if (response.error) throw failure(response.error);
     if (!response.data) throw new Error('Provision this controller through Bluetooth first.');
     return { ...response.data, connection_status: describe(response.data) };
   }
   async function listStatus() {
-    const response = await client().from('ecotrack_device_state').select('*');
+    const response = await awaitCloud(client().from('ecotrack_device_state').select('*'));
     if (response.error) throw failure(response.error);
     if (!Array.isArray(response.data)) throw new Error('Invalid cloud device status response.');
     return response.data.map(item => ({ ...item, connection_status: describe(item) }));
   }
   async function request(nodeId, kind, payload = {}, options = {}) {
     const started = timestamp();
-    const id = await resolveNode(nodeId);
-    const queued = await rpc('ecotrack_cloud_request', { p_node_id: id, p_kind: kind, p_payload: payload, p_request_id: root.crypto.randomUUID() });
+    const deadline = options.deadline ?? Date.now() + (options.timeoutMs || 25000);
+    const id = await resolveNode(nodeId, deadline);
+    const requestId = root.crypto.randomUUID();
+    let queued;
+    try {
+      queued = await rpc('ecotrack_cloud_request', { p_node_id: id, p_kind: kind, p_payload: payload, p_request_id: requestId }, deadline);
+    } catch (error) {
+      if (error.code === 'CLOUD_TIMEOUT') throw Object.assign(new Error('Command submission could not be confirmed. Refresh device status before retrying.'), { code: 'COMMAND_UNCONFIRMED', command_id: requestId });
+      throw error;
+    }
     if (!queued.id || queued.node_id !== id || queued.kind !== kind) throw new Error('Supabase did not confirm the hardware request.');
     if (options.wait === false) return queued;
-    return waitForResult(queued, { ...options, started });
+    return waitForResult(queued, { ...options, started, deadline });
   }
   async function waitForResult(queued, options = {}) {
     const id = queued.node_id;
     const started = options.started ?? timestamp();
-    const deadline = Date.now() + (options.timeoutMs || 25000);
+    const deadline = options.deadline ?? Date.now() + (options.timeoutMs || 25000);
     while (Date.now() < deadline) {
-      const response = await client().from('ecotrack_device_commands').select('*').eq('id', queued.id).maybeSingle();
+      let response;
+      try {
+        response = await awaitCloud(client().from('ecotrack_device_commands').select('*').eq('id', queued.id).maybeSingle(), deadline);
+      } catch (error) {
+        if (error.code === 'CLOUD_TIMEOUT') break;
+        throw error;
+      }
       if (response.error) throw failure(response.error);
       const command = response.data;
       if (!command || command.node_id !== id) throw new Error('Hardware request disappeared or became inaccessible.');
@@ -296,21 +320,22 @@
         return { ...command.result, command_id: queued.id, round_trip_ms: Math.round(timestamp() - started), source: 'supabase' };
       }
       if (['failed', 'expired', 'superseded'].includes(command.status)) throw Object.assign(new Error(command.result?.error || `Hardware request ${command.status}.`), { code: command.status.toUpperCase(), command_id: queued.id });
-      await delay(500);
+      await delay(Math.min(500, Math.max(0, deadline - Date.now())));
     }
     throw Object.assign(new Error('No device acknowledgement received. The controller may be asleep, offline, or reconnecting.'), { code: 'ACK_TIMEOUT', command_id: queued.id });
   }
   async function ping(nodeId) {
-    const device = await getStatus(nodeId);
+    const deadline = Date.now() + 20000;
+    const device = await getStatus(nodeId, deadline);
     if (device.connection_status === 'sleeping') throw Object.assign(new Error(`Controller is sleeping until ${new Date(device.sleeping_until).toLocaleString()}.`), { code: 'DEVICE_SLEEPING' });
-    return request(nodeId, 'ping', {}, { timeoutMs: 20000 });
+    return request(nodeId, 'ping', {}, { timeoutMs: 20000, deadline });
   }
   async function learn(nodeId) {
     return request(nodeId, 'learn_ir', {}, { timeoutMs: 30000 });
   }
   async function learnNearby(nodeId, options = {}) {
     const info = await reconnect(nodeId);
-    if (info.device_id !== nodeId) throw new Error('Reconnect the selected ESP32 before listening.');
+    if (info.device_id !== nodeId) throw new Error('Reconnect the selected device before listening.');
     if (info.capabilities?.ble_ir_monitor !== true || !state.service)
       throw new Error('This receiver needs the updated sketch for Bluetooth IR detection. You can also Save & Verify Controller first, then detect its remote in Edit through Supabase.');
     if (!state.capture) {
@@ -325,7 +350,7 @@
       let value;
       try { const characteristic = state.capture; value = await serializeBluetooth(() => characteristic.readValue()); }
       catch (error) { throw bluetoothFailure(error, 'reading the IR capture'); }
-      if (!state.device?.gatt?.connected) throw new Error('Reconnect the ESP32 through Bluetooth.');
+      if (!state.device?.gatt?.connected) throw new Error('Reconnect the device through Bluetooth.');
       return JSON.parse(new TextDecoder().decode(value));
     };
     const first = await readCapture();
@@ -348,11 +373,34 @@
   }
   async function control(nodeId, payload) {
     const device = await getStatus(nodeId);
-    if (device.capabilities?.ir_transmitter !== true) throw Object.assign(new Error('This ESP32 is receiver-only. Add an IR transmitter before using power, temperature, mode, or fan controls.'), { code: 'RECEIVER_ONLY' });
+    if (device.connection_status !== 'online') {
+      throw Object.assign(new Error('Controller offline. IR command was not queued.'), { code: 'NODE_OFFLINE' });
+    }
+    if (device.capabilities?.ir_transmitter !== true) throw Object.assign(new Error('This device is receiver-only. Add an IR transmitter before using power, temperature, mode, or fan controls.'), { code: 'RECEIVER_ONLY' });
     const queued = await request(nodeId, 'ac_intent', payload, { wait: false });
     return { ...queued, command_id: queued.id, command_status: 'queued', commanded_at: queued.created_at };
   }
   let dialogSequence = 0;
+  function showConnectionLoading() {
+    if (!root.document?.body) return () => {};
+    const dialog = root.document.createElement('dialog');
+    if (typeof dialog.showModal !== 'function') return () => {};
+    const id = 'ecotrack-bluetooth-progress-' + ++dialogSequence;
+    dialog.className = 'ecotrack-bluetooth-dialog ecotrack-bluetooth-progress';
+    dialog.setAttribute('aria-labelledby', id + '-title');
+    dialog.setAttribute('aria-describedby', id + '-description');
+    dialog.setAttribute('aria-busy', 'true');
+    dialog.innerHTML = '<span class="ecotrack-bluetooth-progress__spinner" aria-hidden="true"></span>' +
+      '<h2 class="ecotrack-bluetooth-dialog__title" id="' + id + '-title">Connecting to device...</h2>' +
+      '<p class="ecotrack-bluetooth-dialog__description" id="' + id + '-description" role="status">Checking the Bluetooth connection and reading device information. Keep the device powered on and nearby.</p>';
+    // Keep Escape within this modal while the actual Bluetooth request is pending.
+    dialog.addEventListener('cancel', event => event.preventDefault());
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') event.stopPropagation(); });
+    root.document.body.append(dialog);
+    dialog.showModal();
+    return () => { dialog.close(); dialog.remove(); };
+  }
+
   function inputDialog(title, message, choices, passkey = false) {
     return new Promise(resolve => {
       const make = (tag, className, text) => {
@@ -422,12 +470,12 @@
   }
   if (root.electron?.on && root.document) {
     root.electron.on('bluetooth-select-request', async (_event, data) => {
-      const choice = await inputDialog('Select nearby EcoTrack device', 'Choose the ESP32 you want to configure.', [...data.devices.map(item => ({ label: item.deviceName || item.deviceId, value: item.deviceId })), { label: 'Cancel', value: null }]);
+      const choice = await inputDialog('Select nearby EcoTrack device', 'Choose the device you want to configure.', [...data.devices.map(item => ({ label: root.ecoDeviceDisplayName?.(item.deviceName || item.deviceId) || 'AC device', value: item.deviceId })), { label: 'Cancel', value: null }]);
       await root.electron.invoke('bluetooth-select-response', { request_id: data.request_id, device_id: choice });
     });
     root.electron.on('bluetooth-pairing-request', async (_event, data) => {
       const entering = data.pairingKind === 'providePin';
-      const answer = await inputDialog('Secure Bluetooth pairing', entering ? 'Enter the six-digit pairing code printed in the ESP32 Serial Monitor (115200 baud).' : `Confirm pairing with ${data.deviceId}${data.pin ? ': ' + data.pin : ''}.`, [{ label: 'Pair', value: true }, { label: 'Cancel', value: false }], entering);
+      const answer = await inputDialog('Secure Bluetooth pairing', entering ? 'Enter the six-digit pairing code printed in the device Serial Monitor (115200 baud).' : `Confirm pairing with ${root.ecoDeviceDisplayName?.(data.deviceId) || 'AC device'}${data.pin ? ': ' + data.pin : ''}.`, [{ label: 'Pair', value: true }, { label: 'Cancel', value: false }], entering);
       await root.electron.invoke('bluetooth-pairing-response', { request_id: data.request_id, confirmed: !!answer, pin: entering && answer ? answer : undefined });
     });
   }

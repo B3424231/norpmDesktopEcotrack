@@ -1,0 +1,65 @@
+{
+  "method": "Observed read-only DOM measurements through Codex in-app browser; real component styles, controlled fixture data",
+  "results": [
+    {
+      "fixture": "card-dark-390-font1",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "details-dark-390-font1",
+      "horizontalOverflow": false,
+      "scrollableBody": true
+    },
+    {
+      "fixture": "registration-dark-390-font1",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "card-light-390-font1",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "details-light-390-font1",
+      "horizontalOverflow": false,
+      "scrollableBody": true
+    },
+    {
+      "fixture": "registration-light-390-font1",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "card-dark-320-font1.35",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "details-dark-320-font1.35",
+      "horizontalOverflow": false,
+      "scrollableBody": true
+    },
+    {
+      "fixture": "registration-dark-320-font1.35",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "card-light-320-font1.35",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    },
+    {
+      "fixture": "details-light-320-font1.35",
+      "horizontalOverflow": false,
+      "scrollableBody": true
+    },
+    {
+      "fixture": "registration-light-320-font1.35",
+      "horizontalOverflow": false,
+      "scrollableBody": false
+    }
+  ]
+}

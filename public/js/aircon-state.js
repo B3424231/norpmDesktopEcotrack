@@ -89,8 +89,10 @@ function remoteObservation(capture, receivedAt, previous) {
       observed_remote_model:Number.isInteger(decodedFrame.remote_model)&&decodedFrame.remote_model>0?decodedFrame.remote_model:same?saved.observed_remote_model:null,
       observed_remote_capabilities:capabilities||(same?saved.observed_remote_capabilities:null)};
 }
-function selectSettings(value) {
+function selectSettings(value, observedAt) {
     const snapshot=parseAirconSnapshot(value)||{},state={},times={},sources={};
+    const cutoff=observedAt===undefined?Infinity:Date.parse(observedAt||'');
+    if(Number.isNaN(cutoff))return {state:null,source:'unknown',field_sources:{}};
     for(const [kind,data,at] of [
       ['configured',snapshot.configured_state,0],['requested',snapshot.desired_state,Date.parse(snapshot.commanded_at||'')||0],
       ['reported',snapshot.reported_state,Date.parse(snapshot.reported_at||'')||0],['remote',snapshot.observed_remote_state,Date.parse(snapshot.observed_remote_at||'')||0]]){
@@ -98,6 +100,7 @@ function selectSettings(value) {
       for(const [key,value] of Object.entries(input)){
         if(value==null||key==='source')continue;
         const stamp=kind==='remote'?Date.parse(snapshot.observed_remote_field_at?.[key]||snapshot.observed_remote_at||'')||0:at;
+        if(stamp>cutoff+5000)continue;
         if(times[key]===undefined||stamp>=times[key]){state[key]=value;times[key]=stamp;sources[key]=kind;}
       }
     }
@@ -105,8 +108,8 @@ function selectSettings(value) {
     return {state:keys.length?state:null,source:sources.power||sources.mode||sources.temp||sources.fan||sources[keys[0]]||'unknown',field_sources:sources};
 }
 
-function displaySettings(value) {
-    const state=selectSettings(value).state;
+function displaySettings(value, observedAt) {
+    const state=selectSettings(value, observedAt).state;
     const power=powerValue(state?.power);
     const mode=String(state?.mode||'').trim().toLowerCase();
     const fan=String(state?.fan||'').trim().toLowerCase();

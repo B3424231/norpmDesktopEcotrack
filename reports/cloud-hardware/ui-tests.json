@@ -18,12 +18,9 @@
     "control.html",
     "dashboard.html",
     "ir-library.html",
-    "ir-profiles.html",
-    "logs.html",
     "nodes.html",
     "scheduler.html",
-    "staff.html",
-    "telemetry.html"
+    "staff.html"
   ],
   "browser_visual_tested": false
 }

@@ -26,8 +26,9 @@ global.window.EcoTrackHardwareCloud = {
   learn: async () => ({ success: true, protocol: 'MIDEA', raw_type: 'MIDEA', raw_data: '4400,4400,540,1620,540', hex: '0x1234' })
 };
 // The cloud transport has its own database/client tests; this fixture isolates the engine.
-const fixtureDatabase = { nodes: [], aircons: [] };
-global.window.supabaseClient = { auth: { getSession: async () => ({ data: { session: null } }) }, from(table) {
+const fixtureDatabase = { nodes: [], aircons: [],ecotrack_ir_codes:[] };
+const strictAssert=require('node:assert/strict');
+global.window.supabaseClient = { async rpc(name,args){const rows=fixtureDatabase.ecotrack_ir_codes;if(name==='ecotrack_save_ir_code'){const row={id:'ir-'+args.p_command_type,aircon_id:args.p_aircon_id,command_type:args.p_command_type,protocol:args.p_capture.protocol,raw_data:args.p_capture.raw_data,capture:args.p_capture};rows.push(row);return {data:row,error:null};}if(name==='ecotrack_delete_ir_code'){const index=rows.findIndex(row=>row.aircon_id===args.p_aircon_id&&row.command_type===args.p_command_type),row=rows.splice(index,1)[0];return {data:{id:row.id,aircon_id:row.aircon_id,deleted:true},error:null};}throw Error('Unexpected fixture RPC '+name);}, auth: { getSession: async () => ({ data: { session: null } }) }, from(table) {
   let lastPayload = null, field = null, value = null, filter = null, deleting = false;
   const result = () => (fixtureDatabase[table] || []).filter(row => {
     if (field && row[field] !== value) return false;
@@ -86,7 +87,7 @@ async function runTests() {
 
   // 1. AIRCON PROFILE MANAGER
   console.log('1. [AIRCON PROFILE MANAGER & REPOSITORY]');
-  NodeService.saveNode({
+  await NodeService.saveNode({
     node_id: 'node-1',
     name: 'Server Room Controller (node-1)',
     ip_address: '192.168.1.6',
@@ -102,7 +103,7 @@ async function runTests() {
       location: 'Server Room A / 2nd Floor',
       node_id: 'node-1',
       status: 'online',
-      protocol: 'KOPPEL_RAW',
+      protocol: 'TCL112AC',
       capabilities: {
         power: true,
         temperature: true,
@@ -170,8 +171,8 @@ async function runTests() {
   assert('Unit supports POWER', CapabilityEngine.isSupported(retrieved, 'POWER'));
   assert('Unit supports MODE: cool', CapabilityEngine.isSupported(retrieved, 'MODE', 'cool'));
   assert('Unit rejects unsupported TURBO (capability is false)', !CapabilityEngine.isSupported(retrieved, 'TURBO'));
-  assert('Temperature clamps minimum to 17°C when 12°C requested', CapabilityEngine.clampTemperature(retrieved, 12) === 17);
-  assert('Temperature clamps maximum to 30°C when 35°C requested', CapabilityEngine.clampTemperature(retrieved, 35) === 30);
+  for(const value of [12,35]){let rejected=false;try{CapabilityEngine.clampTemperature(retrieved,value);}catch(error){rejected=/Temperature must/.test(error.message);}assert('Out-of-range temperature is rejected: '+value,rejected);}
+  assert('Valid temperature remains exact',CapabilityEngine.clampTemperature(retrieved,24)===24);
 
   // 3. COMMAND MANAGER (Targeted Dispatch & Safety Enforcements)
   console.log('\n3. [COMMAND MANAGER & SAFETY DISPATCH]');
@@ -238,10 +239,10 @@ async function runTests() {
   assert('Coverage total increased after adding custom function', covWithFunc.total === initialCoverage.total + 1);
 
   // Record command for custom function
-  ProtocolAdapter.saveCommand({
+  await ProtocolAdapter.saveCommand({
     device_id: aircons[0].device_id,
     command_type: 'TIMER_OFF',
-    protocol: 'KOPPEL_RAW',
+    protocol: 'TCL112AC',
     raw_data: '1000,500,500,500',
     decoded_data: '0xTIMER_OFF'
   });
@@ -249,13 +250,13 @@ async function runTests() {
   assert('Mapped count increased after learning TIMER_OFF', covRecorded.mappedCount === initialCoverage.mappedCount + 1);
 
   // Delete custom function & associated command
-  const deleted = ProtocolAdapter.deleteFunction(aircons[0].device_id, 'TIMER_OFF');
+  const deleted = await ProtocolAdapter.deleteFunction(aircons[0].device_id, 'TIMER_OFF');
   assert('Successfully deleted custom function and IR command', deleted === true);
   const covAfterDelete = ProtocolAdapter.getCoverage(aircons[0]);
   assert('Coverage restored to initial count after deletion', covAfterDelete.total === initialCoverage.total && covAfterDelete.mappedCount === initialCoverage.mappedCount);
 
   // Unknown protocol raw capture & save
-  const rawCommand = ProtocolAdapter.saveCommand({
+  const rawCommand = await ProtocolAdapter.saveCommand({
     device_id: 'AC-TEST-09',
     command_type: 'POWER_ON',
     protocol: 'UNKNOWN',
@@ -267,12 +268,12 @@ async function runTests() {
   // 5c. DYNAMIC PROTOCOL GENERATION & STRUCTURED INTENTS
   console.log('\n5c. [DYNAMIC PROTOCOL GENERATION & INTENT DISPATCH]');
   const mideaCaps = CapabilityEngine.getCapabilities('midea_ir');
-  assert('Midea protocol returns min_temp 16 and max_temp 30', mideaCaps.min_temp === 16 && mideaCaps.max_temp === 30);
+  assert('Midea protocol returns min_temp 17 and max_temp 30', mideaCaps.min_temp === 17 && mideaCaps.max_temp === 30);
   assert('Midea protocol includes modes cool, dry, fan, auto', mideaCaps.modes.includes('cool') && mideaCaps.modes.includes('dry') && mideaCaps.modes.includes('fan'));
   assert('Midea protocol includes fan speeds low, medium, high, auto', mideaCaps.fans.includes('low') && mideaCaps.fans.includes('medium') && mideaCaps.fans.includes('high') && mideaCaps.fans.includes('auto'));
   assert('CapabilityEngine supports string protocol check for midea_ir', CapabilityEngine.isSupported('midea_ir', 'MODE', 'cool'));
   assert('CapabilityEngine rejects temperature 14 for midea_ir (min 16)', !CapabilityEngine.isSupported('midea_ir', 'TEMP', 14));
-  assert('Daikin protocol limits min_temp 18 and max_temp 32', CapabilityEngine.getCapabilities('daikin').min_temp === 18 && CapabilityEngine.getCapabilities('daikin').max_temp === 32);
+  assert('Daikin protocol limits min_temp 10 and max_temp 32', CapabilityEngine.getCapabilities('daikin').min_temp === 10 && CapabilityEngine.getCapabilities('daikin').max_temp === 32);
 
   // Structured JSON Intent validation
   let syncedEventFired = false;

@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 const read = file => fs.readFileSync(path.join(root, file), 'utf8').replace(/^\uFEFF/, '');
 const copy = value => JSON.parse(JSON.stringify(value));
 const checks = [];
-const pages = ['dashboard.html','control.html','scheduler.html','ir-profiles.html','nodes.html','ir-library.html'];
+const pages = ['dashboard.html','control.html','scheduler.html','nodes.html','ir-library.html'];
 const store = new Map();
 const storage = { getItem: key => store.get(key) ?? null, setItem: (key,val) => store.set(key,String(val)), removeItem: key => store.delete(key) };
 const channels = [];
@@ -104,7 +104,11 @@ function makePage(page){
   const doc={visibilityState:'visible',addEventListener(name,fn){if(!docListeners.has(name))docListeners.set(name,[]);docListeners.get(name).push(fn);},getElementById(){return null;},querySelectorAll(){return [];}};
   const window={localStorage:storage,BroadcastChannel,crypto:crypto.webcrypto,performance,location:{search:'?id='+encodeURIComponent(asset)},addEventListener(name,fn){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(fn);},dispatchEvent(){},ensureLocationHierarchy(){}};
   const context=vm.createContext({window,document:doc,localStorage:storage,BroadcastChannel,console:quiet,Date,performance,TextEncoder,TextDecoder,URLSearchParams,Uint8Array,structuredClone,CustomEvent:class{constructor(type,opts){this.type=type;this.detail=opts.detail;}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;},clearTimeout:id=>timers.delete(id),setInterval:(fn,ms)=>{const id=++timerId;intervals.set(id,{fn,ms});return id;},clearInterval:id=>intervals.delete(id),requestAnimationFrame:fn=>fn(),fetch:async()=>{throw new Error('Network access prohibited in fixtures');}});
+  vm.runInContext(read('public/js/device-labels.js'),context,{filename:page+':labels'});
+  context.ecoDeviceIdentifier=window.ecoDeviceIdentifier;
   vm.runInContext(read('public/js/aircon-system.js'),context,{filename:page+':engine'});
+  context.CapabilityEngine=window.EcoTrackAirconSystem.CapabilityEngine;
+  context.NodeService=window.EcoTrackAirconSystem.NodeService;
   window.supabaseClient=sb;
   vm.runInContext(read('public/js/hardware-cloud.js'),context,{filename:page+':cloud'});
   return {page,context,window,doc,listeners,docListeners,timers,intervals,system:window.EcoTrackAirconSystem};
@@ -123,12 +127,21 @@ function element(tag='div'){
   return el;
 }
 function loadStudio(app,requested=asset){
+  const html=read('public/ir-library.html');
+  const tags=new Map([...html.matchAll(/<([a-z][\w-]*)\b([^>]*\bid="([^"]+)"[^>]*)>/gi)].map(match=>[match[3],{tag:match[1],attributes:match[2]}]));
   const elements=new Map(),callbacks=[];
-  const selectIds=['targetDeviceSelect','protocolSelect','testPowerSelect','testModeSelect','testFanSelect'];
-  const get=id=>{if(!elements.has(id))elements.set(id,element(selectIds.includes(id)?'select':'div'));return elements.get(id);};
+  const get=id=>{
+    if(!tags.has(id))return null;
+    if(!elements.has(id)){
+      const {tag,attributes}=tags.get(id),el=element(tag);
+      el.value=attributes.match(/\bvalue="([^"]*)"/)?.[1]||'';
+      el.classList.add(...(attributes.match(/\bclass="([^"]*)"/)?.[1]||'').split(/\s+/).filter(Boolean));
+      elements.set(id,el);
+    }
+    return elements.get(id);
+  };
   app.doc.getElementById=get;app.doc.createElement=element;app.doc.addEventListener=(name,fn)=>{if(name==='DOMContentLoaded')callbacks.push(fn);};
   app.window.location.search='?id='+encodeURIComponent(requested);
-  const html=read('public/ir-library.html');
   const code=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(x=>x[1]).find(x=>x.includes('let currentDevice = null'));
   assert(code);vm.runInContext(code,app.context,{filename:'ir-library.html:inline'});
   callbacks.forEach(fn=>fn());return {get,elements};
@@ -143,17 +156,18 @@ async function run(){
     for(const block of html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g))new vm.Script(block[1],{filename:page});
   }
   const sidebar=read('public/sidebar-template.html');for(const page of pages)assert(sidebar.includes(page),page+' sidebar route');
-  checks.push('All six navigation routes and local scripts exist; inline JavaScript compiles in every page.');
+  checks.push('All five navigation routes and local scripts exist; inline JavaScript compiles in every page.');
   const apps=pages.map(makePage);for(const app of apps)await app.system.syncWithDatabase();
   for(const app of apps){
     const ac=app.system.AirconProfileManager.getById(asset);
     assert.equal(ac.aircon_id,'db-ac');assert.equal(ac.controller_node_id,'db-node');assert.equal(ac.node_id,deviceId);assert.equal(ac.protocol_name,'DAIKIN2');assert.equal(ac.status,'online');assert.equal(ac.state.temperature,null);
   }
-  checks.push('Six independent page engines resolve the same persisted AC, physical controller, exact protocol, heartbeat, and unknown measurements.');
+  checks.push('Five independent page engines resolve the same persisted AC, physical controller, exact protocol, heartbeat, and unknown measurements.');
   const a=apps[0].system, manager=a.AirconProfileManager, original=copy(manager.getById(asset));
   const dashboardHtml=read('public/dashboard.html');
   const updateCard=dashboardHtml.slice(dashboardHtml.indexOf('      function updateSingleCardDom('),dashboardHtml.indexOf('      function wireCardListeners('));
   const powerHelper=dashboardHtml.slice(dashboardHtml.indexOf('      function getDashboardPowerState('),dashboardHtml.indexOf('      function renderDashboard('));
+  apps[0].context.NodeService=a.NodeService;
   vm.runInContext(updateCard+powerHelper,apps[0].context);
   const fields=new Map();const card=element();
   card.querySelector=selector=>{if(!fields.has(selector))fields.set(selector,element());return fields.get(selector);};
@@ -177,30 +191,19 @@ async function run(){
   assert(events>0);
   for(const app of apps){assert.equal(app.system.AirconProfileManager.getById(asset).protocol_name,'DAIKIN64');await app.system.syncWithDatabase();assert.equal(app.system.AirconProfileManager.getById(asset).protocol_name,'DAIKIN64');}
   checks.push('Protocol changes broadcast to other pages and remain the exact selected variant after database refresh.');
-  const profileElements=new Map(), profileReady=[];
-  const profiles=apps[3];
-  profiles.doc.getElementById=id=>{if(!profileElements.has(id))profileElements.set(id,element());return profileElements.get(id);};
-  profiles.doc.createElement=element;
-  profiles.doc.addEventListener=(name,fn)=>{if(name==='DOMContentLoaded')profileReady.push(fn);};
-  const profileCode=[...read('public/ir-profiles.html').matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map(x=>x[1]).find(x=>x.includes('const supportedProtocols ='));
-  vm.runInContext(profileCode,profiles.context,{filename:'ir-profiles.html:inline'});
-  profileReady.forEach(fn=>fn());
-  assert(profileElements.get('profilesCardsContainer').children[0].innerHTML.includes('value="DAIKIN64" selected'));
-  checks.push('Remote Profiles renders the exact saved IR variant as selected rather than collapsing it into its brand family.');
-  const studio=loadStudio(apps[5]);
+  assert(!fs.existsSync(path.join(root,'public/ir-profiles.html')));
+  assert(!sidebar.includes('ir-profiles.html'));
+  assert(!read('public/ir-library.html').includes('ir-profiles.html'));
+  checks.push('IR Remote Profiles page and its executable handlers are removed; navigation contains no dead links to the deleted page.');
+  const studio=loadStudio(apps[4]);
   assert.equal(studio.get('targetDeviceSelect').value,asset);assert.equal(studio.get('protocolSelect').value,'DAIKIN64');
+  const studioWritesBefore=writes.length,studioCommandsBefore=db.ecotrack_device_commands.length;
   studio.get('protocolSelect').value='DAIKIN2';await studio.get('protocolSelect').trigger('change');
   await a.syncWithDatabase();assert.equal(studio.get('protocolSelect').value,'DAIKIN2');
-  failure={table:'aircons',operation:'upsert',message:'Studio write rejected'};
-  await studio.get('saveProtocolBtn').trigger('click');
-  assert.equal(manager.getById(asset).protocol_name,'DAIKIN64');assert(studio.get('toastContainer').children.at(-1).innerHTML.includes('Studio write rejected'));
-  failure=null;await studio.get('saveProtocolBtn').trigger('click');assert.equal(manager.getById(asset).protocol_name,'DAIKIN2');
-  checks.push('Protocol Studio opens the linked AC, preserves an unsaved draft during heartbeat events, and reports failed saves truthfully.');
-  studio.get('testPowerSelect').value='on';studio.get('testModeSelect').value='dry';studio.get('testFanSelect').value='high';
-  await studio.get('dispatchIntentBtn').trigger('click');
-  const command=db.ecotrack_device_commands.at(-1);assert.equal(command.node_id,'db-node');assert.equal(command.payload.protocol,'DAIKIN2');
-  assert.equal(command.payload.state.mode,'dry');assert.equal(command.payload.state.fan,'high');assert.equal(command.payload.state.power,'on');assert.equal(db.aircons[0].reported_state,undefined);
-  checks.push('Studio dispatch reaches the canonical cloud controller with full selected state; a queued command never creates reported sensor state.');
+  assert.equal(manager.getById(asset).protocol_name,'DAIKIN64');
+  assert.equal(writes.length,studioWritesBefore);assert.equal(db.ecotrack_device_commands.length,studioCommandsBefore);
+  for(const id of ['saveProtocolBtn','dispatchIntentBtn','testPowerSelect','testModeSelect','testFanSelect','jsonPreviewConsole'])assert.equal(studio.get(id),null);
+  checks.push('Protocol Studio preserves the selected browsing protocol during heartbeat events without persisting configuration or sending commands; the removed dispatch console has no remaining controls.');
   db.ecotrack_device_state[0].capabilities.ir_transmitter=false;
   const before=db.ecotrack_device_commands.length;const blocked=await a.CommandManager.dispatch({device_id:asset,command:'POWER',value:false});
   assert.equal(blocked.code,'RECEIVER_ONLY');assert.equal(db.ecotrack_device_commands.length,before);db.ecotrack_device_state[0].capabilities.ir_transmitter=true;
@@ -217,7 +220,7 @@ async function run(){
   vm.runInContext(read('public/js/scheduler.js'),apps[2].context,{filename:'scheduler.js'});
   await vm.runInContext('loadSchedulerWithSWR(true)',apps[2].context);
   let room=vm.runInContext('savedRooms.r2',apps[2].context), node=room.nodes[0];
-  assert.equal(node.id,deviceId);assert.equal(node.pb_id,'db-node');assert.equal(node.ac_tag,asset);assert.equal(node.wakeTime,'00:00');assert.equal(node.intervalVal,500);assert.equal(node.intervalUnit,'Milliseconds');assert.equal(node.temp,null);assert.equal(node.pressure,null);
+  assert.equal(node.id,deviceId);assert.equal(node.pb_id,'db-node');assert.equal(node.ac_tag,asset);assert.equal(node.wakeTime,'00:00');assert.equal(node.intervalVal,500);assert.equal(node.intervalUnit,'Milliseconds');assert.equal(node.temp,null);assert(!('pressure' in node),'Retired pressure is absent from schedule outputs');
   checks.push('Schedules use actual controller and AC IDs, preserve midnight and millisecond values, and keep missing measurements empty.');
   db.nodes[0].room_id=null;await vm.runInContext('loadSchedulerWithSWR(true)',apps[2].context);
   assert.equal(vm.runInContext('savedRooms.__unassigned_controllers__.nodes[0].pb_id',apps[2].context),'db-node');
@@ -260,18 +263,18 @@ async function run(){
   assert.equal(vm.runInContext('getSchedulerTargetTemperature(savedRooms.__unassigned_controllers__.nodes[0])',apps[2].context),'22 °C');
   assert.equal(vm.runInContext('getSchedulerControlMode(savedRooms.__unassigned_controllers__.nodes[0])',apps[2].context),'DRY / HIGH FAN');
   assert.equal(vm.runInContext('getSchedulerPowerMode(savedRooms.__unassigned_controllers__.nodes[0])',apps[2].context),'ON');
-  checks.push('Decoded remote temperature, mode, fan and power agree in all six engines and Schedules while remaining observations, with transmission disabled.');
+  checks.push('Decoded remote temperature, mode, fan and power agree in all five engines and Schedules while remaining observations, with transmission disabled.');
   const nodesHtml=read('public/nodes.html');
-  vm.runInContext(nodesHtml.slice(nodesHtml.indexOf('      function controllerIrSummary('),nodesHtml.indexOf('      function renderNodes(')),apps[4].context);
-  apps[4].context.receiverNode=apps[4].system.NodeService.getNode(deviceId);
-  apps[4].context.attachedProfiles=[apps[4].system.AirconProfileManager.getById(asset)];
-  assert.equal(vm.runInContext('controllerIrSummary(receiverNode,attachedProfiles)',apps[4].context),'Remote: ON • 22°C • DRY • HIGH fan');
+  vm.runInContext(nodesHtml.slice(nodesHtml.indexOf('      function controllerIrSummary('),nodesHtml.indexOf('      function renderNodes(')),apps[3].context);
+  apps[3].context.receiverNode=apps[3].system.NodeService.getNode(deviceId);
+  apps[3].context.attachedProfiles=[apps[3].system.AirconProfileManager.getById(asset)];
+  assert.equal(vm.runInContext('controllerIrSummary(receiverNode,attachedProfiles)',apps[3].context),'Remote: ON • 22°C • DRY • HIGH fan');
   checks.push('Controller Devices displays the same decoded setpoint, mode, fan, and remote power.');
   const flush=()=>new Promise(resolve=>setImmediate(resolve));
   for(const app of apps)app.listeners.get('supabase:ready').forEach(fn=>fn());
   await flush();
   for(const app of apps)assert.equal([...app.intervals.values()].filter(timer=>timer.ms===5000).length,1);
-  checks.push('All six open pages start exactly one automatic five-second cloud refresh.');
+  checks.push('All five open pages start exactly one automatic five-second cloud refresh.');
   apps[0].system.AirconEvents.on('devices:synced',()=>{
     apps[0].context.fixtureAc=manager.getById(asset);apps[0].context.fixtureNode=a.NodeService.getNode(deviceId);
     if(!apps[0].context.fixtureAc)return;
@@ -288,15 +291,15 @@ async function run(){
     assert.equal(profile.state.power,false);assert.equal(profile.state.temperature,24);
     assert.equal(app.window.EcoTrackAirconState.describeAirconState(profile.control_snapshot).label,'REMOTE OFF');
   }
-  assert(fields.get('.ac-status-badge').innerHTML.includes('OFF'));
+  assert(fields.get('.ac-status-badge').innerHTML.includes('Power unconfirmed'));
   assert.equal(fields.get('.power-toggle-btn').getAttribute('data-current-power'),'0');
   await vm.runInContext('loadSchedulerWithSWR(true)',apps[2].context);
   assert.equal(vm.runInContext('getSchedulerPowerMode(savedRooms.__unassigned_controllers__.nodes[0])',apps[2].context),'OFF');
-  checks.push('A TCL112AC OFF cloud event changes all six page states, the dashboard card/toggle and Schedule power without a reload.');
+  checks.push('A TCL112AC OFF cloud event changes all five page states, the dashboard toggle and Schedule power without a reload; its remote observation keeps the operation badge unconfirmed.');
   db.ecotrack_device_state[0].latest_ir={...offFrame,sequence:3,received_at:onTime,state:{power:true,temp:25,mode:'fan',fan:'low'}};
   const writesBeforeRefresh=writes.length,readsBeforeRefresh=reads.length;
   [...apps[0].intervals.values()].find(timer=>timer.ms===5000).fn();await flush();
-  assert.equal(manager.getById(asset).state.power,true);assert(fields.get('.ac-status-badge').innerHTML.includes('ON'));
+  assert.equal(manager.getById(asset).state.power,true);assert(fields.get('.ac-status-badge').innerHTML.includes('Power unconfirmed'));
   assert.equal(String(fields.get('.target-temp-val').textContent),'25');
   assert.equal(writes.length,writesBeforeRefresh);assert(reads.length>readsBeforeRefresh);
   checks.push('With real-time events missing, the timer imports a later remote ON and new setpoint into the open card using reads only.');
@@ -315,10 +318,10 @@ async function run(){
   db.aircons[0].desired_state={power:'off',temp:25,mode:'cool',fan:'auto'};db.aircons[0].commanded_at=new Date(Date.now()+8000).toISOString();db.aircons[0].command_status='queued';
   db.ecotrack_device_state[0].latest_ir={...offFrame,sequence:3,received_at:onTime,state:{power:true,temp:25,mode:'fan',fan:'low'}};
   [...apps[0].intervals.values()].find(timer=>timer.ms===5000).fn();await flush();
-  assert.equal(manager.getById(asset).state.power,false);assert(fields.get('.ac-status-badge').innerHTML.includes('OFF'));
+  assert.equal(manager.getById(asset).state.power,false);assert(fields.get('.ac-status-badge').innerHTML.includes('Power unconfirmed'));
   db.aircons[0].command_status='transmitted';[...apps[0].intervals.values()].find(timer=>timer.ms===5000).fn();await flush();
-  assert(fields.get('.ac-status-badge').innerHTML.includes('OFF'));
-  checks.push('A newer UI OFF request replaces an older remote ON; the open card advances from requested to sent on the ESP32 receipt.');
+  assert(fields.get('.ac-status-badge').innerHTML.includes('Power unconfirmed'));
+  checks.push('A newer UI OFF request replaces an older remote ON; the request and receipt remain unconfirmed physical operation on the open card.');
   const helper=apps[0].window.EcoTrackAirconState;
   const stableSnapshot=copy(manager.getById(asset).control_snapshot);
   failure={table:'ecotrack_device_state',message:'Temporary hardware read failure'};
@@ -328,14 +331,14 @@ async function run(){
   const tclOff={protocol:'TCL112AC',frame_kind:'full_state',raw_data:'3000,1650,500',raw_count:227,sequence:40,hex:'0x23CB2601002003074000000080CB',captured_at_epoch_ms:Date.now()+13000,received_at:new Date(Date.now()+13000).toISOString(),state:{power:false,temp:24,mode:'cool',fan:'auto'}};
   db.ecotrack_device_state[0].latest_ir=tclOff;
   [...apps[0].intervals.values()].find(timer=>timer.ms===5000).fn();await flush();
-  assert.equal(manager.getById(asset).state.power,false);assert(fields.get('.ac-status-badge').innerHTML.includes('OFF'));
+  assert.equal(manager.getById(asset).state.power,false);assert(fields.get('.ac-status-badge').innerHTML.includes('Power unconfirmed'));
   const actualOffTime=manager.getById(asset).control_snapshot.observed_remote_at;
   db.ecotrack_device_state[0].latest_ir={protocol:'TCL112AC',frame_kind:'settings_only',raw_count:227,raw_data:'3000,1650,500',sequence:41,received_at:new Date(Date.now()+14000).toISOString(),state:{power:true,temp:23,mode:'fan',fan:'low'},last_decoded:tclOff};
   [...apps[0].intervals.values()].find(timer=>timer.ms===5000).fn();await flush();
   for(const app of apps)assert.equal(app.system.AirconProfileManager.getById(asset).state.power,false);
   assert.equal(manager.getById(asset).control_snapshot.observed_remote_at,actualOffTime);
-  assert(fields.get('.ac-status-badge').innerHTML.includes('OFF'));
-  checks.push('A full TCL OFF stays OFF across all six pages when an auxiliary packet carries the previous ON fields; auxiliary power is never a fresh reading.');
+  assert(fields.get('.ac-status-badge').innerHTML.includes('Power unconfirmed'));
+  checks.push('A full TCL OFF stays OFF across all five pages when an auxiliary packet carries the previous ON fields; auxiliary power is never a fresh reading.');
   const delayed=helper.remoteObservation({...tclOff,captured_at_epoch_ms:Date.parse('2026-10-09T15:00:00Z'),received_at:'2026-10-09T15:00:10Z'},'2026-10-09T15:00:10Z');
   assert.equal(delayed.observed_remote_at,'2026-10-09T15:00:00.000Z');
   assert.equal(helper.selectSettings({...delayed,desired_state:{power:'on'},commanded_at:'2026-10-09T15:00:05Z'}).source,'requested');
@@ -389,7 +392,7 @@ async function run(){
   checks.push('Schedules poll matching queued receipts when real-time is missed, deduplicate concurrent reads and preserve Queued on read failure without writes.');
   db.ecotrack_device_state[0].last_seen=new Date(Date.now()-60000).toISOString();
   for(const app of apps){await app.system.syncWithDatabase();assert.equal(app.system.AirconProfileManager.getById(asset).status,'offline');assert.equal(app.system.NodeService.getNode(deviceId).status,'Offline');}
-  checks.push('Expired heartbeats mark controllers and linked ACs offline across all six engines even when legacy status says online.');
+  checks.push('Expired heartbeats mark controllers and linked ACs offline across all five engines even when legacy status says online.');
   db.ecotrack_device_state[0].last_seen=stamp();await a.syncWithDatabase();
   const countBefore=writes.length;
   await assert.rejects(a.NodeService.deleteDevice(deviceId),/Unassign/);assert.equal(writes.length,countBefore);assert.equal(db.aircons.length,1);
@@ -397,7 +400,7 @@ async function run(){
   failure={table:'aircons',operation:'delete',message:'Deletion denied'};
   await assert.rejects(manager.delete(asset),/Deletion denied/);assert(manager.getById(asset));failure=null;
   await manager.delete(asset);for(const app of apps)await app.system.syncWithDatabase();
-  assert.equal(db.nodes.length,1);assert.equal(manager.getAll().length,0);assert.equal(studio.get('targetDeviceSelect').value,'');assert.equal(studio.get('dispatchIntentBtn').disabled,true);
+  assert.equal(db.nodes.length,1);assert.equal(manager.getAll().length,0);assert.equal(studio.get('targetDeviceSelect').value,'');assert.equal(studio.get('autoDetectBtn').disabled,true);assert.equal(studio.get('latestLearnedFrameBtn').disabled,true);assert(studio.get('learnedFramePanel').classList.contains('hidden'));
   checks.push('Profile deletion clears every page, preserves its controller, and cannot be recreated by stale cache or Devices rendering.');
   await a.NodeService.saveNode({cloud_registered:true,node_id:deviceId,db_id:'db-node',name:'Real receiver',brand:'Daikin',protocol_name:'DAIKIN2',aircon_type:'Split',room_id:'r1',cloud_state:copy(db.ecotrack_device_state[0])});
   assert.equal(db.aircons.length,1);assert.equal(db.aircons[0].controller_node_id,'db-node');assert.equal(db.aircons[0].protocol_name,'DAIKIN2');
@@ -419,19 +422,19 @@ async function run(){
   assert.equal(writes.length,beforeAtomic+1);assert.equal(writes.at(-1).table,'registration');
   for(const app of apps){await app.system.syncWithDatabase();const ac=app.system.AirconProfileManager.getById('AC-Existing');
     assert.equal(ac.controller_node_id,'db-node');assert.equal(ac.node_id,deviceId);assert.equal(ac.aircon_type,'Custom ceiling unit');assert.equal(ac.protocol_name,'DAIKIN64');}
-  checks.push('Atomic registration publishes the same persisted AC identity, custom type and exact protocol to all six connected page engines without separate writes.');
+  checks.push('Atomic registration publishes the same persisted AC identity, custom type and exact protocol to all five connected page engines without separate writes.');
   failure={operation:'rpc',message:'Atomic registration denied'};
   await assert.rejects(()=>a.NodeService.saveNode({...atomicPayload,registration_assignment:{...assignment,controller_name:'Should not persist'}}),/Atomic registration denied/);failure=null;
   assert.equal(db.nodes[0].name,'Registered controller');assert.equal(db.aircons.length,1);
   checks.push('Failed atomic registration keeps the previous controller and AC relationship across all pages.');
   // Verify missing-target navigation never silently selects a different unit.
   const absent=loadStudio(makePage('missing-target'), 'deleted-target');
-  assert.equal(absent.get('targetDeviceSelect').value,'');assert.equal(absent.get('dispatchIntentBtn').disabled,true);
+  assert.equal(absent.get('targetDeviceSelect').value,'');assert.equal(absent.get('autoDetectBtn').disabled,true);assert.equal(absent.get('latestLearnedFrameBtn').disabled,true);assert(absent.get('learnedFramePanel').classList.contains('hidden'));
   checks.push('A missing Studio deep-link target stays unavailable and never changes another AC.');
 }
 run().then(()=>{
   const report={status:'passed',count:checks.length,checks,liveDatabaseModified:false,physicalHardwareTested:false};
   fs.mkdirSync(path.join(root,'reports/page-connections'),{recursive:true});
   fs.writeFileSync(path.join(root,'reports/page-connections/integration-tests.json'),JSON.stringify(report,null,2)+'\n');
-  console.log('Six-page integration: '+checks.length+' checks passed (in-memory fixtures, no network).');
+  console.log('Five-page integration: '+checks.length+' checks passed (in-memory fixtures, no network).');
 }).catch(error=>{console.error(error);process.exitCode=1;});

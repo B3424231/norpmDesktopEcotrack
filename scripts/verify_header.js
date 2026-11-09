@@ -1,17 +1,19 @@
 const fs = require('fs');
-const html = fs.readFileSync('public/logs.html', 'utf8');
+const html = fs.readFileSync(require('node:path').join(__dirname, '../public/sensor-logs.html'), 'utf8');
 
 const ids = [
-  'logsPageHeading',
-  'headerPeriodTabsWrapper',
-  'headerPeriodDailyBtn',
-  'headerPeriodWeeklyBtn',
-  'headerPeriodMonthlyBtn',
+  'sensorSelect',
+  'sensorDateSelect',
+  'sensorFrom',
+  'sensorTimeStart',
+  'sensorTimeEnd',
+  'sensorClearTime',
   'openTopConsumersModalBtn',
-  'openTariffModalBtn',
+  'sensorTariff',
   'headerTariffDisplay',
   'headerExportPdfBtn',
-  'headerExportExcelBtn'
+  'headerExportExcelBtn',
+  'openFutureCostBtn'
 ];
 
 console.log('=== HEADER ROW 1 INTEGRITY CHECK ===');

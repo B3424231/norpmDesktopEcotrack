@@ -1,7 +1,17 @@
 // ===== NOTIFICATIONS PAGE LOGIC =====
 const sb = window.supabaseClient || window.sb;
 const pb = window.pb || (typeof PocketBase === 'function' ? new PocketBase() : null);
+const installationNotifications = window.EcoTrackInstallations;
 const notificationReadStateKey = 'ecoTrackNotificationReadState';
+
+function updateInstallationAvailability(records) {
+  const notice = document.getElementById('installationAvailabilityNotice');
+  if (!notice) return;
+  const unavailable = records.some(record => record.type === 'controller_installation' &&
+    (!rooms[record.installation?.room_id] || !installationNotifications?.toMessage(record)));
+  notice.classList.toggle('hidden', !unavailable);
+  notice.textContent = unavailable ? 'Some installation records have unavailable room or installation details. Their saved history has been retained.' : '';
+}
 
 let selectedRoomId = null;
 let messages = [];
@@ -14,8 +24,59 @@ let floors = {};
 let rooms = {};
 let currentViewMessageId = null;
 let currentNotificationFilter = 'all';
+let currentNotificationType = 'all';
+let scheduleDialogFocus = null;
 let pendingDeleteMessageId = null;
 let isInitializing = false;
+let notificationLoadRequest = 0;
+let notificationInboxMutationPending = false;
+const rememberedNotificationView = window.EcoTrackPageState?.read() || {};
+let notificationViewRestored = false;
+window.addEventListener('pagehide', () => window.EcoTrackPageState?.save({selectedRoomId,currentNotificationFilter,messagesCurrentPage}));
+
+function advanceNotificationInboxRevision() {
+  window._notificationInboxRevision = (window._notificationInboxRevision || 0) + 1;
+  try { localStorage.setItem('ecoTrackNotificationInboxRevision', String(Date.now()) + '-' + Math.random()); } catch (_) {}
+}
+
+function beginNotificationInboxMutation() {
+  if (notificationInboxMutationPending) return false;
+  notificationInboxMutationPending = true;
+  window._notificationInboxMutations = (window._notificationInboxMutations || 0) + 1;
+  notificationLoadRequest += 1;
+  advanceNotificationInboxRevision();
+  return true;
+}
+
+function endNotificationInboxMutation() {
+  notificationInboxMutationPending = false;
+  window._notificationInboxMutations = Math.max(0, (window._notificationInboxMutations || 1) - 1);
+  advanceNotificationInboxRevision();
+  window.syncNotificationBadges?.();
+}
+
+function assertInboxDismissalReceipt(records, ids) {
+  const returned = new Set(Array.isArray(records) ? records.filter(row => row?.is_dismissed_from_inbox === true).map(row => String(row.id)) : []);
+  if (!Array.isArray(records) || records.length !== ids.length || returned.size !== ids.length || ids.some(id => !returned.has(String(id)))) {
+    throw new Error('The server did not confirm every requested notification dismissal');
+  }
+}
+
+async function persistNotificationInboxDismissal(targets) {
+  const ids = [...new Set(targets.map(message => message.pbId || message.id).filter(id => id && !String(id).startsWith('v_hist_')))];
+  if (!ids.length) return;
+  if (window.electron && typeof window.electron.invoke === 'function') {
+    const result = await window.electron.invoke('notifications-update', { ids, updates: { is_dismissed_from_inbox: true } });
+    if (!result?.success) throw new Error(result?.error || 'Dismissal failed');
+    assertInboxDismissalReceipt(result.data, ids);
+    return;
+  }
+  const client = window.supabaseClient || window.sb || sb;
+  if (!client) throw new Error('Database service unavailable');
+  const result = await client.from('notifications').update({ is_dismissed_from_inbox: true, updated: new Date().toISOString() }).in('id', ids).select('id,is_dismissed_from_inbox');
+  if (result.error) throw result.error;
+  assertInboxDismissalReceipt(result.data, ids);
+}
 
 // ===== 12-HOUR TIME FORMATTING HELPERS =====
 function formatTime12Hour(timeStr) {
@@ -88,7 +149,42 @@ function parseTimeToMinutes(timeStr) {
   return null;
 }
 
+function notificationLocation(room) {
+  if (!room) return 'Location unavailable';
+  const floor = floors[room.floor_id] || {};
+  const building = buildings[floor.building_id || room.building_id] || {};
+  return [building.name || room.building_name, floor.name || room.floor_name, room.name].filter(Boolean).join(' • ') || 'Location unavailable';
+}
+
+function notificationNodeMatches(node, identifier) {
+  const target = String(identifier || '').trim().toLowerCase();
+  const aliases = typeof node === 'string' ? [node] : [node.id,node.name,node.pb_id,node.node_id,node.device_id,node.hardware_id];
+  return !!target && aliases.some(value => value && String(value).toLowerCase() === target);
+}
+
+function notificationControllerName(node) {
+  const name = String(typeof node === 'string' ? node : node?.name || '').trim();
+  return name && !/^(?:AC-)?esp32s3-[a-f0-9]{12}$/i.test(name) &&
+    !(typeof node === 'object' && name === String(node.pb_id || '')) ? name : 'Unnamed controller';
+}
+
+function notificationAirconType(node) {
+  const equipment=window.EcoTrackMaintenance?.resolveReportEquipment?.({node_id:node.pb_id || node.node_id || node.id,aircon_type:node.aircon_type});
+  return equipment?.airconType || String(node.aircon_type || 'Type unavailable')
+    .replace(/^.+?\s+[-–—]\s+(?=(?:split|window|cassette|ducted?|portable|floor|ceiling|central|wall|tower|multi[- ]split)\b)/i, '');
+}
+
 // ===== TARGET CONTROL / NODE EXTRACTION HELPER =====
+function notificationRoomId(explicitRoomId, nodeId) {
+  if (rooms[explicitRoomId]) return explicitRoomId;
+  const identity = String(nodeId || '').trim().toLowerCase();
+  if (!identity) return '';
+  const matches = Object.entries(rooms).filter(([, room]) => (room.nodes || []).some(node =>
+    (typeof node === 'string' ? [node] : [node.pb_id, node.node_id, node.device_id, node.id, node.name])
+      .some(value => value && String(value).toLowerCase() === identity)));
+  return matches.length === 1 ? matches[0][0] : '';
+}
+
 function extractTargetNodes(content, roomRef, explicitNodeId = null) {
   let actualContent = content ? String(content).trim() : '';
   let specificNode = explicitNodeId || null;
@@ -168,15 +264,14 @@ function extractTargetNodes(content, roomRef, explicitNodeId = null) {
 
   // If a specific node was found, look up its proper object and friendly display name
   if (specificNode) {
-    let friendlyName = specificNode;
-    const nodeObj = roomNodes.find(n => 
-      (typeof n === 'string' ? n.toLowerCase() === specificNode.toLowerCase() : 
-       (n.id && n.id.toLowerCase() === specificNode.toLowerCase()) || 
-       (n.name && n.name.toLowerCase() === specificNode.toLowerCase()))
-    );
-    if (nodeObj) {
-      friendlyName = typeof nodeObj === 'string' ? nodeObj : (nodeObj.name || nodeObj.id);
-    }
+    const allNodes = [...roomNodes, ...Object.values(rooms || {}).flatMap(room => room.nodes || [])];
+    const matches = allNodes.filter(node => notificationNodeMatches(node, specificNode));
+    const unique = new Map(matches.map(node => [typeof node==='string' ? node : node.pb_id || node.node_id || node.id,node]));
+    const nodeObj = unique.size===1 ? [...unique.values()][0] : null;
+    const service = window.EcoTrackAirconSystem?.NodeService;
+    const directId = /^(?:esp32s3-[a-f0-9]{12}|[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/i.test(specificNode);
+    const current = nodeObj ? service?.getNode?.(nodeObj.pb_id || specificNode) : !matches.length && directId ? service?.getNode?.(specificNode) : null;
+    const friendlyName = current ? notificationControllerName(current) : nodeObj ? notificationControllerName(nodeObj) : 'Controller unavailable';
     return {
       specificNodeId: specificNode,
       nodeNames: [friendlyName],
@@ -213,7 +308,7 @@ if (document.readyState === 'loading') {
 }
 
 window.addEventListener('page:init', () => {
-  if (window.location.pathname.includes('notifications.html') || window.location.hash.includes('notifications')) {
+  if (/(?:Notification|notifications)\.html$/i.test(window.location.pathname) || window.location.hash.includes('notifications')) {
     setupNotificationsPage();
   }
 });
@@ -225,11 +320,18 @@ async function initializeNotifications() {
       window.EcoTrackSkeletons.renderTableSkeleton('messagesTableBody', { rows: 5, cols: 7, colWidths: ['w-16', 'w-20', 'w-24', 'w-32', 'w-48', 'w-20', 'w-20'] });
     }
 
-    await window.EcoDataBus.query('notifications:data', async () => {
-      await loadRooms();
-      await loadNotificationMessages();
-      return { rooms, messages };
-    });
+    window.EcoDataBus.onQuery('notifications:data', { onSuccess: ({data}) => {
+      ({rooms, messages, buildings, floors} = data); renderHierarchy(); updateMessagesTable();
+    } });
+    try {
+      await window.EcoDataBus.query('notifications:data', async () => {
+        if (await loadRooms() === false || await loadNotificationMessages() === false) throw new Error('Unable to refresh notifications. Please retry.');
+        return { rooms, messages, buildings, floors };
+      });
+    } catch (error) {
+      window.EcoToast?.warning(error.message);
+      window.EcoTrackSkeletons?.renderLoadingError('messagesTableBody', error);
+    }
   } else {
     // Load rooms from database first
     await loadRooms();
@@ -246,7 +348,8 @@ async function initializeNotifications() {
 
   // 2. Read sessionStorage pendingNav or localStorage fallback
   let pendingNav = null;
-  const pendingNavStr = sessionStorage.getItem('pendingNav');
+  let pendingNavStr = null;
+  try { pendingNavStr = sessionStorage.getItem('pendingNav'); } catch (_) {}
   if (pendingNavStr) {
     try {
       pendingNav = JSON.parse(pendingNavStr);
@@ -254,7 +357,8 @@ async function initializeNotifications() {
     } catch (_) {}
   }
   if (!pendingNav) {
-    const localNavStr = localStorage.getItem('ecoTrack_pendingNotificationNav');
+    let localNavStr = null;
+    try { localNavStr = localStorage.getItem('ecoTrack_pendingNotificationNav'); } catch (_) {}
     if (localNavStr) {
       try {
         const parsed = JSON.parse(localNavStr);
@@ -266,7 +370,8 @@ async function initializeNotifications() {
     }
   }
 
-  const roomToSelectId = targetRoomParam || pendingNav?.room;
+  const hasExplicitContext = Boolean(targetRoomParam || targetNotifParam || targetControlParam || pendingNav);
+  const roomToSelectId = targetRoomParam || pendingNav?.room || (!hasExplicitContext && !notificationViewRestored ? rememberedNotificationView.selectedRoomId : selectedRoomId);
   const notifToHighlightId = targetNotifParam || pendingNav?.notif || pendingNav?.highlight;
   const controlToHighlight = targetControlParam || pendingNav?.control;
   const messageSnippet = pendingNav?.message || pendingNav?.content || '';
@@ -326,6 +431,12 @@ async function initializeNotifications() {
   if (targetRoom) {
     selectRoom(targetRoom);
   }
+  if (!notificationViewRestored && !hasExplicitContext) {
+    if (['all','unread','read','schedule'].includes(rememberedNotificationView.currentNotificationFilter)) setNotificationFilter(rememberedNotificationView.currentNotificationFilter);
+    const savedPage = rememberedNotificationView.messagesCurrentPage;
+    if (targetRoom?.id === rememberedNotificationView.selectedRoomId && Number.isInteger(savedPage) && savedPage > 0) { messagesCurrentPage = savedPage; updateMessagesTable(); }
+  }
+  notificationViewRestored = true;
   
   // Setup event listeners
   const refreshBtn = document.getElementById('refreshBtn');
@@ -340,10 +451,9 @@ async function initializeNotifications() {
   if (filterReadBtn) filterReadBtn.addEventListener('click', () => setNotificationFilter('read'));
   const clearAllMessagesBtn = document.getElementById('clearAllMessagesBtn');
   document.getElementById('notificationFilterScheduleBtn')?.addEventListener('click', () => setNotificationFilter('schedule'));
+  document.getElementById('notificationTypeFilter')?.addEventListener('change', e => { currentNotificationType = e.target.value; messagesCurrentPage = 1; updateMessagesTable(); });
   if (clearAllMessagesBtn) clearAllMessagesBtn.addEventListener('click', openClearAllModal);
 
-  // Initialize Selected AC Controls collapsible container
-  initSelectedNodesCollapse();
   
   // Clear All confirmation modal listeners
   const confirmClearAllBtn = document.getElementById('confirmClearAllBtn');
@@ -393,6 +503,10 @@ async function initializeNotifications() {
 
   // Global ESC key dismiss for all Notification modals
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && scheduleDialogFocus && document.getElementById('viewMessageModal').style.display === 'flex') {
+      const items = [...document.querySelectorAll('#viewMessageModal button, #viewMessageModal a[href]')].filter(el => !el.disabled && el.getClientRects().length);
+      if (items.length && (e.shiftKey ? document.activeElement === items[0] : document.activeElement === items[items.length - 1])) { e.preventDefault(); (e.shiftKey ? items[items.length - 1] : items[0]).focus(); }
+    }
     if (e.key === 'Escape') {
       closeViewMessageModal();
       closeDeleteModal();
@@ -421,19 +535,20 @@ async function focusAndOpenNotification(targetId, context = {}) {
   if (!targetId && !context.control && !context.message && !context.room) return;
 
   const cleanTargetId = targetId ? String(targetId).trim() : '';
+  const hasTargetId = Boolean(cleanTargetId && cleanTargetId !== 'null' && cleanTargetId !== 'undefined');
 
   // 1. Search existing messages array
   let msg = null;
-  if (cleanTargetId && cleanTargetId !== 'null' && cleanTargetId !== 'undefined') {
+  if (hasTargetId) {
     msg = messages.find(m => String(m.id) === cleanTargetId || String(m.pbId) === cleanTargetId);
   }
 
   // 2. If not found by ID, try finding by message content snippet or control name
-  if (!msg && context.message) {
+  if (!msg && !hasTargetId && context.message) {
     const snippet = context.message.split('|||').pop().trim();
     msg = messages.find(m => m.content && (m.content.includes(snippet.substring(0, 25)) || snippet.includes(m.content.substring(0, 25))));
   }
-  if (!msg && context.control) {
+  if (!msg && !hasTargetId && context.control) {
     const cleanControl = String(context.control).toLowerCase().trim();
     msg = messages.find(m => {
       if (m.node && String(m.node).toLowerCase().includes(cleanControl)) return true;
@@ -443,13 +558,16 @@ async function focusAndOpenNotification(targetId, context = {}) {
   }
 
   // 3. If still not found and Supabase is available, re-fetch latest records
-  if (!msg && sb) {
+  if (!msg && (sb || typeof window.electron?.invoke === 'function')) {
     try {
-      await loadNotificationMessages();
-      if (cleanTargetId && cleanTargetId !== 'null' && cleanTargetId !== 'undefined') {
+      if (await loadNotificationMessages() === false) {
+        showNotification('Could not refresh notifications. Please try again.');
+        return false;
+      }
+      if (hasTargetId) {
         msg = messages.find(m => String(m.id) === cleanTargetId || String(m.pbId) === cleanTargetId);
       }
-      if (!msg && context.message) {
+      if (!msg && !hasTargetId && context.message) {
         const snippet = context.message.split('|||').pop().trim();
         msg = messages.find(m => m.content && (m.content.includes(snippet.substring(0, 25)) || snippet.includes(m.content.substring(0, 25))));
       }
@@ -468,27 +586,12 @@ async function focusAndOpenNotification(targetId, context = {}) {
     }
   }
 
-  // 5. If still no specific message found, check if context provided the alert details!
-  if (!msg && (context.message || context.control)) {
-    const nodePrefix = context.control ? `${context.control}|||` : '';
-    const fullText = context.content || (context.message && context.message.includes('|||') ? context.message : `${nodePrefix}${context.message || 'Environmental threshold exceeded'}`);
-    msg = {
-      id: cleanTargetId || 'alert_' + Date.now(),
-      pbId: cleanTargetId || 'alert_' + Date.now(),
-      room: targetRoomId || selectedRoomId,
-      content: fullText,
-      node: context.control || (fullText.includes('|||') ? fullText.split('|||')[0].trim() : ''),
-      nodes: [context.control || (fullText.includes('|||') ? fullText.split('|||')[0].trim() : '')],
-      date: new Date().toISOString().split('T')[0],
-      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }),
-      read: true,
-      triggered: true
-    };
-    if (!messages.some(m => m.id === msg.id || (m.content === msg.content && m.room === msg.room))) {
-      messages.unshift(msg);
-      updateMessagesTable();
-    }
-  } else if (!msg && targetRoomId) {
+  // A stale link is not a persisted notification. Never recreate it from its URL text.
+  if (!msg && (hasTargetId || context.message || context.control)) {
+    showNotification('This notification is no longer available.');
+    return false;
+  }
+  if (!msg && targetRoomId) {
     const roomAlerts = messages.filter(m => m.room === targetRoomId && m.triggered);
     if (roomAlerts.length > 0) {
       msg = roomAlerts[roomAlerts.length - 1];
@@ -512,19 +615,6 @@ async function focusAndOpenNotification(targetId, context = {}) {
     if (msg) {
       markMessageAsRead(msg.id);
       openViewMessageModal(msg);
-    } else if (context.message || context.control) {
-      // Ephemeral fallback message so modal ALWAYS opens with the alert content
-      const fallbackMsg = {
-        id: cleanTargetId || 'alert_' + Date.now(),
-        room: targetRoomId || selectedRoomId,
-        content: context.message || 'EcoTrack Threshold Alert',
-        node: context.control || '',
-        date: new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }),
-        time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-        read: false,
-        triggered: true
-      };
-      openViewMessageModal(fallbackMsg);
     }
   }, 200);
 }
@@ -592,6 +682,7 @@ async function loadRooms() {
         .map(n => ({
           id: n.name,
           pb_id: n.id,
+          node_id:n.node_id, device_id:n.device_id, hardware_id:n.hardware_id,
           name: n.name,
           aircon_type: n.aircon_type || 'Split Type (Inverter)',
           status: n.status || 'offline',
@@ -603,10 +694,10 @@ async function loadRooms() {
       rooms[record.id] = { ...record, nodeLimit: record.node_limit || 5, nodes: roomNodes };
     });
   } catch (error) {
-    console.warn('Supabase load error (rooms):', error);
+    console.warn('Supabase load error (rooms):', error); return false;
   }
   
-  renderHierarchy();
+  renderHierarchy(); return true;
 }
 
 function renderHierarchy() {
@@ -634,9 +725,11 @@ function renderHierarchy() {
   Object.values(buildings).forEach(building => {
     const bDiv = document.createElement('div');
     bDiv.className = 'mb-2';
+    bDiv.classList.add('eco-location-building-group');
     
-    const bHeader = document.createElement('div');
-    bHeader.className = 'flex items-center gap-2 bg-[#10b981]/10 px-3 py-2 rounded-t border-b border-[#10b981]/30 dark:border-[#10b981]/20 cursor-pointer hover:bg-[#10b981]/20 transition-colors';
+    const bHeader = document.createElement('button');
+    bHeader.type = 'button';
+    bHeader.className = 'eco-location-building';
     bHeader.innerHTML = `
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" class="text-[#10b981]">
         <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
@@ -647,6 +740,7 @@ function renderHierarchy() {
     
     const floorsContainer = document.createElement('div');
     floorsContainer.className = 'bg-white dark:bg-slate-900 border-x border-b border-gray-200 dark:border-white/5 rounded-b p-2 flex flex-col gap-2';
+    floorsContainer.classList.add('eco-location-floors');
     
     bHeader.addEventListener('click', () => {
       floorsContainer.style.display = floorsContainer.style.display === 'none' ? 'flex' : 'none';
@@ -658,9 +752,11 @@ function renderHierarchy() {
     myFloors.forEach(floor => {
       const fDiv = document.createElement('div');
       fDiv.className = 'border border-gray-100 dark:border-white/5 rounded bg-gray-50 dark:bg-slate-950/40';
+      fDiv.classList.add('eco-location-floor');
       
-      const fHeader = document.createElement('div');
-      fHeader.className = 'flex items-center px-2 py-1 border-b border-gray-100 dark:border-white/5 cursor-pointer hover:bg-gray-100 dark:hover:bg-slate-800/60';
+      const fHeader = document.createElement('button');
+      fHeader.type = 'button';
+      fHeader.className = 'eco-location-floor-heading';
       fHeader.innerHTML = `
         <span class="text-xs font-semibold text-gray-700 dark:text-gray-200 flex items-center gap-1">
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" class="text-gray-400 dark:text-gray-500">
@@ -672,6 +768,7 @@ function renderHierarchy() {
       
       const roomsContainer = document.createElement('div');
       roomsContainer.className = 'p-1 flex flex-col gap-1';
+      roomsContainer.classList.add('eco-location-rooms');
       
       fHeader.addEventListener('click', () => {
         roomsContainer.style.display = roomsContainer.style.display === 'none' ? 'flex' : 'none';
@@ -681,15 +778,17 @@ function renderHierarchy() {
       if (myRooms.length === 0) roomsContainer.innerHTML = '<div class="text-[10px] text-gray-400 dark:text-gray-500 p-1 text-center">No rooms</div>';
       
       myRooms.forEach(room => {
-        const roomItem = document.createElement('div');
+        const roomItem = document.createElement('button');
+        roomItem.type = 'button';
         const occupancy = room.nodeLimit > 0 ? Math.min((room.nodes.length / room.nodeLimit) * 100, 100) : 0;
-        roomItem.className = 'room-item bg-white dark:bg-slate-900 border border-gray-200 dark:border-white/10 p-2.5 rounded-xl cursor-pointer relative hover:border-[#10b981] transition-all shadow-xs';
+        roomItem.className = 'eco-location-room room-item';
         roomItem.setAttribute('data-room', room.id);
+        roomItem.setAttribute('aria-selected', String(selectedRoomId === room.id));
         roomItem.innerHTML = `
           <div class="flex items-center justify-between gap-2">
             <div class="min-w-0 flex-1">
               <p class="text-xs font-bold text-[#18392B] dark:text-[#a7f3d0] truncate">${room.name}</p>
-              <p class="text-[10px] text-gray-500 dark:text-gray-400 font-medium">${room.nodes.length} ac control nodes</p>
+              <p class="text-[10px] text-gray-500 dark:text-gray-400 font-medium">${room.nodes.length} AC device node${room.nodes.length === 1 ? '' : 's'}</p>
             </div>
             <span id="roomBadge-${room.id}" class="hidden min-w-[22px] h-[22px] px-1.5 bg-rose-500 text-white text-[11px] font-black rounded-full flex items-center justify-center shadow-xs shrink-0" style="color: #ffffff !important; background-color: #ef4444 !important;">0</span>
           </div>
@@ -732,8 +831,6 @@ function selectRoom(room) {
     roomEl.setAttribute('aria-selected', 'true');
   }
   
-  // Display nodes for selected room
-  displayRoomNodes(resolvedRoom);
   
   // Show messages table when room is selected
   const tableContainer = document.getElementById('messagesTableContainer');
@@ -744,122 +841,44 @@ function selectRoom(room) {
   // Render what we already have immediately so the table is never blank
   updateMessagesTable();
 
-  // Then silently refresh in the background to catch any new records
-  const fetchRecordsPromise = (async () => {
-    if (window.electron && typeof window.electron.invoke === 'function') {
-      try {
-        const res = await window.electron.invoke('notifications-fetch-all');
-        if (res && res.success && res.data) return res.data;
-      } catch (ipcErr) {
-        console.warn('IPC notifications-fetch-all error, fallback to sb:', ipcErr);
-      }
-    }
-    if (sb) {
-      const { data: records, error } = await sb.from('notifications').select('*').order('created', { ascending: false });
-      if (!error && records) return records;
-    }
-    return [];
-  })();
+  // Share the guarded loader so room selection cannot restore dismissed alerts.
+  return loadNotificationMessages().catch(error => console.warn('Background notification refresh failed:', error));
 
-  fetchRecordsPromise.then(records => {
-    if (!records || !records.length) return;
-    const readState = loadReadStateMap();
-
-    // Sync all violation records to persistent audit store
-    if (typeof saveViolationToAuditHistory === 'function') {
-      (records || []).forEach(r => {
-        if (isRuleViolationNotification(r)) {
-          saveViolationToAuditHistory(r);
-        }
-      });
-    }
-
-    const activeRecords = (records || []).filter(r => !isInboxDismissedNotification(r));
-    const storedAudit = (typeof getStoredViolationAuditHistory === 'function' ? getStoredViolationAuditHistory() : []) ||
-                        (typeof window.getStoredViolationAuditHistory === 'function' ? window.getStoredViolationAuditHistory() : []);
-    storedAudit.forEach(av => {
-      const alreadyHas = activeRecords.some(r =>
-        (r.id && av.id && String(r.id) === String(av.id)) ||
-        (r.content === av.content && r.date === av.date && String(r.room_id) === String(av.room_id))
-      );
-      if (!alreadyHas && !isInboxDismissedNotification(av)) {
-        activeRecords.push(av);
-      }
-    });
-    const freshMessages = activeRecords.map(r => {
-      let roomId = String(r.room_id || r.roomId || r.room || '').trim();
-      
-      const rawContent = r.content || r.message || r.name || '';
-      const target = extractTargetNodes(rawContent, rooms[roomId], r.node_id || r.node || r.control);
-      let specificNode = target.specificNodeId;
-
-      if ((!roomId || !rooms[roomId]) && specificNode) {
-        for (const [rmId, rmObj] of Object.entries(rooms)) {
-          if (rmObj.nodes && rmObj.nodes.some(n => (typeof n === 'string' ? n.toLowerCase() === specificNode.toLowerCase() : (n.name?.toLowerCase() === specificNode.toLowerCase() || n.id?.toLowerCase() === specificNode.toLowerCase() || n.pb_id === specificNode)))) {
-            roomId = rmId;
-            break;
-          }
-        }
-      }
-
-      if (!roomId || !rooms[roomId]) {
-        const firstRoomId = Object.keys(rooms)[0];
-        if (firstRoomId) roomId = firstRoomId;
-      }
-
-      const createdDate = r.created ? new Date(r.created) : new Date();
-      const rawTime = r.time || (r.created ? createdDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : '');
-      const timeVal = formatTime12Hour(rawTime);
-      const dateVal = r.date || createdDate.toISOString().split('T')[0];
-      const contentVal = rawContent || 'Notification Alert';
-
-      return {
-        pbId: r.id,
-        id: r.id,
-        time: timeVal,
-        date: dateVal,
-        content: contentVal,
-        type: r.type || 'standard',
-        room_id: r.room_id,
-        rule_id: r.rule_id,
-        report_id: r.report_id,
-        room: roomId,
-        node: specificNode,
-        nodes: target.nodeNames,
-        triggered: r.triggered ?? true,
-        read: Boolean(readState[r.id] || readState[r.pbId] || readState[String(r.pbId || r.id_internal || r.id || '')]),
-      };
-    });
-    if (JSON.stringify(freshMessages.map(m => m.id + m.triggered + m.read))
-        !== JSON.stringify(messages.map(m => m.id + m.triggered + m.read))) {
-      messages = freshMessages;
-      updateMessagesTable();
-    }
-  }).catch(err => console.warn('Background notification refresh failed:', err));
 }
 
 async function loadNotificationMessages() {
+  if (notificationInboxMutationPending) return;
+  const request = ++notificationLoadRequest;
+  const revision = window._notificationInboxRevision || 0;
+  const storedRevision = localStorage.getItem('ecoTrackNotificationInboxRevision');
+  const isCurrent = () => request === notificationLoadRequest && !notificationInboxMutationPending &&
+    revision === (window._notificationInboxRevision || 0) && storedRevision === localStorage.getItem('ecoTrackNotificationInboxRevision');
   const readState = loadReadStateMap();
 
   try {
-    let records = [];
+    let records = null;
+    let fetchError = null;
     let ipcLoaded = false;
     if (window.electron && typeof window.electron.invoke === 'function') {
       try {
         const res = await window.electron.invoke('notifications-fetch-all');
-        if (res && res.success && res.data) {
+        if (res?.success && Array.isArray(res.data)) {
           records = res.data;
           ipcLoaded = true;
-        }
+        } else fetchError = res?.error || 'Notification read was not confirmed';
       } catch (ipcErr) {
         console.warn('IPC notifications-fetch-all error, fallback to sb:', ipcErr);
+        fetchError = ipcErr.message;
       }
     }
     if (!ipcLoaded && sb) {
       const { data, error } = await sb.from('notifications').select('*').order('created', { ascending: false });
-      if (!error && data) records = data;
+      if (error) fetchError = error.message;
+      else if (Array.isArray(data)) records = data;
     }
+    if (!Array.isArray(records)) throw new Error(fetchError || 'Database service unavailable');
 
+    if (!isCurrent()) return;
     // Sync all violation records to persistent audit store
     if (typeof saveViolationToAuditHistory === 'function') {
       (records || []).forEach(r => {
@@ -870,18 +889,12 @@ async function loadNotificationMessages() {
     }
 
     const activeRecords = (records || []).filter(r => !isInboxDismissedNotification(r));
-    const storedAudit = (typeof getStoredViolationAuditHistory === 'function' ? getStoredViolationAuditHistory() : []) ||
-                        (typeof window.getStoredViolationAuditHistory === 'function' ? window.getStoredViolationAuditHistory() : []);
-    storedAudit.forEach(av => {
-      const alreadyHas = activeRecords.some(r =>
-        (r.id && av.id && String(r.id) === String(av.id)) ||
-        (r.content === av.content && r.date === av.date && String(r.room_id) === String(av.room_id))
-      );
-      if (!alreadyHas && !isInboxDismissedNotification(av)) {
-        activeRecords.push(av);
-      }
-    });
+    // Retained violation audit belongs in history. It must not recreate inbox rows
+    // that no longer exist remotely and cannot receive a dismissal update.
+    updateInstallationAvailability(activeRecords);
     messages = activeRecords.map(r => {
+      if (r.type === 'ac_command_schedule') return window.EcoTrackScheduleNotifications?.toMessage(r, readState) || null;
+      if (r.type === 'controller_installation') return installationNotifications?.toMessage(r, readState) || null;
       let roomId = String(r.room_id || r.roomId || r.room || '').trim();
       
       // If roomId is missing or not in loaded rooms, infer room by matching node name inside content
@@ -889,19 +902,7 @@ async function loadNotificationMessages() {
       const target = extractTargetNodes(rawContent, rooms[roomId], r.node_id || r.node || r.control);
       let specificNode = target.specificNodeId;
 
-      if ((!roomId || !rooms[roomId]) && specificNode) {
-        for (const [rmId, rmObj] of Object.entries(rooms)) {
-          if (rmObj.nodes && rmObj.nodes.some(n => (typeof n === 'string' ? n.toLowerCase() === specificNode.toLowerCase() : (n.name?.toLowerCase() === specificNode.toLowerCase() || n.id?.toLowerCase() === specificNode.toLowerCase() || n.pb_id === specificNode)))) {
-            roomId = rmId;
-            break;
-          }
-        }
-      }
-
-      if (!roomId || !rooms[roomId]) {
-        const firstRoomId = Object.keys(rooms)[0];
-        if (firstRoomId) roomId = firstRoomId;
-      }
+      roomId = notificationRoomId(roomId, specificNode);
 
       const createdDate = r.created ? new Date(r.created) : new Date();
       const rawTime = r.time || (r.created ? createdDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true }) : '');
@@ -925,14 +926,18 @@ async function loadNotificationMessages() {
         triggered: r.triggered ?? true,
         read: Boolean(readState[r.id] || readState[r.pbId] || readState[String(r.pbId || r.id_internal || r.id || '')]),
       };
-    });
+    }).filter(Boolean);
   } catch (error) {
     console.warn('Supabase load error (notifications):', error);
-    messages = [];
+    if (!isCurrent()) return;
+    // Keep the last confirmed inbox during a failed read; an error is not an empty result.
+    return false;
   }
   
+  if (!isCurrent()) return;
   // Always re-render so the table reflects the latest state
   updateMessagesTable();
+  return true;
 }
 
 function loadReadStateMap() {
@@ -1000,226 +1005,6 @@ function _isMessageDue(message) {
 }
 
 
-function updateSelectedControlsSummary(nodeNames = []) {
-  const summaryBadge = document.getElementById('selectedControlsSummaryBadge');
-  const summaryText = document.getElementById('selectedControlsSummaryText');
-  if (!summaryBadge || !summaryText) return;
-
-  if (!nodeNames || nodeNames.length === 0) {
-    summaryBadge.classList.add('hidden');
-    summaryBadge.classList.remove('flex');
-    return;
-  }
-
-  summaryBadge.classList.remove('hidden');
-  summaryBadge.classList.add('flex');
-  if (nodeNames.length <= 3) {
-    summaryText.textContent = `${nodeNames.join(', ')} (${nodeNames.length})`;
-  } else {
-    summaryText.textContent = `${nodeNames.slice(0, 3).join(', ')} +${nodeNames.length - 3} more (${nodeNames.length})`;
-  }
-}
-
-let _selectedNodesCollapseInitialized = false;
-function initSelectedNodesCollapse() {
-  if (_selectedNodesCollapseInitialized) return;
-  _selectedNodesCollapseInitialized = true;
-
-  const toggleBtn = document.getElementById('toggleSelectedNodesBtn');
-  const toggleHeader = document.getElementById('selectedNodesHeader');
-  const wrapper = document.getElementById('nodesDisplayWrapper');
-  const chevron = document.getElementById('selectedNodesChevron');
-  const label = document.getElementById('toggleSelectedNodesLabel');
-  const container = document.getElementById('selectedNodesContainer');
-
-  if (!wrapper) return;
-
-  let isCollapsed = localStorage.getItem('ecoTrack_selectedNodesCollapsed') === 'true';
-
-  function applyCollapseState(collapsed) {
-    if (collapsed) {
-      wrapper.classList.add('hidden');
-      if (chevron) chevron.classList.remove('rotate-180');
-      if (label) label.textContent = 'Expand';
-      if (container) {
-        container.classList.remove('p-6');
-        container.classList.add('p-4');
-      }
-    } else {
-      wrapper.classList.remove('hidden');
-      if (chevron) chevron.classList.add('rotate-180');
-      if (label) label.textContent = 'Collapse';
-      if (container) {
-        container.classList.remove('p-4');
-        container.classList.add('p-6');
-      }
-    }
-  }
-
-  applyCollapseState(isCollapsed);
-
-  function toggleCollapse(e) {
-    if (e) e.preventDefault();
-    isCollapsed = !isCollapsed;
-    localStorage.setItem('ecoTrack_selectedNodesCollapsed', isCollapsed ? 'true' : 'false');
-    applyCollapseState(isCollapsed);
-  }
-
-  toggleBtn?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    toggleCollapse(e);
-  });
-
-  toggleHeader?.addEventListener('click', (e) => {
-    if (e.target.closest('button') && e.target.closest('button') !== toggleBtn) return;
-    toggleCollapse(e);
-  });
-}
-
-async function displayRoomNodes(room) {
-  const nodesDisplay = document.querySelector('#nodesDisplay .flex');
-  if (!nodesDisplay) return;
-  nodesDisplay.innerHTML = '';
-  let roomNodes = Array.isArray(room.nodes) ? room.nodes : [];
-  
-  if (roomNodes.length === 0) {
-    nodesDisplay.innerHTML = '<p class="text-gray-500 text-sm">No nodes in this room</p>';
-    updateSelectedControlsSummary([]);
-    return;
-  }
-
-  const allNodes = Array.isArray(window.activeNodesData) ? window.activeNodesData : [];
-  const controlNames = [];
-  
-  for (const nodeEntry of roomNodes) {
-    let node = typeof nodeEntry === 'string'
-      ? allNodes.find(n => n.id === nodeEntry || n.name === nodeEntry) || { id: nodeEntry, name: nodeEntry }
-      : { ...nodeEntry };
-    controlNames.push(node.name || node.id);
-      
-    // Fetch live control data from Supabase / PocketBase (control logs)
-    if (sb) {
-      try {
-        const { data: telem } = await sb.from('telemetry').select('*').or(`node_id.eq.${node.id},sensor_name.eq.${node.id}`).order('created', { ascending: false }).limit(1).maybeSingle();
-        if (telem) {
-          node.temp = telem.temperature;
-          node.pressure = telem.pressure;
-          node.battery = telem.battery;
-          node.rssi = telem.rssi;
-          node.status = telem.status;
-        } else {
-          const { data: nodeRecord } = await sb.from('nodes').select('*').eq('name', node.id).maybeSingle();
-          if (nodeRecord) {
-            node.temp = nodeRecord.temp;
-            node.pressure = nodeRecord.pressure;
-            node.battery = nodeRecord.battery;
-            node.rssi = nodeRecord.rssi;
-            node.status = nodeRecord.status;
-          }
-        }
-      } catch (_) {}
-    } else if (pb && typeof pb.collection === 'function') {
-      try {
-        const telem = await pb.collection('telemetry').getFirstListItem(`node_id=${JSON.stringify(node.id)} || sensor_name=${JSON.stringify(node.name || node.id)}`, { sort: '-created' });
-        node.temp = telem.temperature;
-        node.pressure = telem.pressure;
-        node.battery = telem.battery;
-        node.rssi = telem.rssi;
-        node.status = telem.status;
-      } catch (e) {}
-    }
-
-    const temp = Number(node.temp ?? node.temperature ?? 0);
-    const pressure = Number(node.pressure ?? 0);
-    const battery = Number(node.battery ?? 0);
-    const signal = Number(node.rssi ?? node.signal ?? 0);
-    const isOnline = String(node.status ?? '').toLowerCase() === 'online';
-    const batteryPercent = Math.round((battery / 4.2) * 100);
-    const signalBars = (signal > -60) ? 4 : (signal > -70) ? 3 : (signal > -80) ? 2 : 1;
-
-    let batteryColor = '#34d399';
-    if (batteryPercent < 20) batteryColor = '#f87171';
-    else if (batteryPercent < 50) batteryColor = '#fbbf24';
-    
-    let signalColorClass = 'text-rose-400';
-    if (signalBars >= 4) signalColorClass = 'text-emerald-400';
-    else if (signalBars >= 3) signalColorClass = 'text-emerald-400';
-    else if (signalBars >= 2) signalColorClass = 'text-amber-400';
-
-    const snowflakeSvg = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="mb-0.5"><line x1="12" y1="2" x2="12" y2="22"/><path d="M20 12H4"/><path d="m6 8 6 4-6 4"/><path d="m18 8-6 4 6 4"/><path d="m8 4 4 4 4-4"/><path d="m8 20 4-4 4 4"/></svg>`;
-    const fanSvg = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="mb-0.5"><path d="M10.827 16.379a6.082 6.082 0 0 1-8.618-7.002l5.412 1.45a6.082 6.082 0 0 1 7.002-8.618l-1.45 5.412a6.082 6.082 0 0 1 8.618 7.002l-5.412-1.45a6.082 6.082 0 0 1-7.002 8.618l1.45-5.412Z"/><path d="M12 12v.01"/></svg>`;
-    const powerSvg = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="mb-0.5"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>`;
-
-    let acState = 'ACTIVE COOLING';
-    let activeIconSvg = snowflakeSvg;
-    
-    if (temp >= 28) {
-      acState = 'OFF';
-      activeIconSvg = powerSvg;
-    } else if (temp >= 26) {
-      acState = 'FAN ONLY';
-      activeIconSvg = fanSvg;
-    } else {
-      acState = 'ACTIVE COOLING';
-      activeIconSvg = snowflakeSvg;
-    }
-
-    if (!isOnline) { 
-      acState = 'OFF'; 
-      activeIconSvg = powerSvg;
-    }
-
-    const thermSvg = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" class="mb-0.5"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>`;
-
-    const nodeCard = document.createElement('div');
-    nodeCard.className = 'selected-node-card bg-white dark:bg-slate-900 rounded-2xl p-4 flex-shrink-0 w-[20rem] border-[2px] border-[#10b981] dark:border-[#10b981]/25 shadow-sm';
-    let signalColorClassUpdated = signalBars >= 3 ? 'text-gray-800 dark:text-gray-200' : 'text-gray-500 dark:text-gray-500';
-    nodeCard.innerHTML = `
-      <div class="flex items-center justify-between mb-1">
-        <div class="text-[10px] uppercase tracking-widest text-[#10b981] font-bold">Selected Control</div>
-        <div class="flex items-center gap-3">
-          <div class="flex items-center gap-1.5">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" class="${signalColorClassUpdated}">
-              <rect x="2" y="16" width="4" height="6" rx="1" fill="currentColor" opacity="${signalBars >= 1 ? 1 : 0.25}"/>
-              <rect x="8" y="11" width="4" height="11" rx="1" fill="currentColor" opacity="${signalBars >= 2 ? 1 : 0.25}"/>
-              <rect x="14" y="6" width="4" height="16" rx="1" fill="currentColor" opacity="${signalBars >= 3 ? 1 : 0.25}"/>
-              <rect x="20" y="1" width="4" height="21" rx="1" fill="currentColor" opacity="${signalBars >= 4 ? 1 : 0.25}"/>
-            </svg>
-          </div>
-          <div class="flex items-center gap-1">
-            <svg viewBox="0 0 24 16" width="20" height="13" fill="none">
-              <rect x="0.5" y="1" width="20" height="14" rx="2.5" stroke="#10b981" stroke-width="1.5"/>
-              <rect x="21" y="5" width="2.5" height="6" rx="1" fill="#10b981"/>
-              <rect x="2.5" y="3" width="${Math.min(batteryPercent, 100) * 0.16}" height="10" rx="1.5" fill="#10b981"/>
-            </svg>
-            <span class="text-[11px] text-gray-700 dark:text-gray-200 font-bold">${batteryPercent.toFixed(0)}%</span>
-          </div>
-        </div>
-      </div>
-      <div class="flex items-center justify-between gap-3 mb-4 mt-1">
-        <h4 class="text-[#18392B] dark:text-[#a7f3d0] font-bold text-lg leading-tight truncate">${node.name || node.id}</h4>
-        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[9px] font-bold tracking-widest uppercase whitespace-nowrap ${isOnline ? 'bg-green-100 dark:bg-emerald-950/20 text-[#10b981] dark:text-emerald-400' : 'bg-red-100 dark:bg-rose-950/20 text-red-500 dark:text-rose-400'}">
-          <span class="w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-[#10b981]' : 'bg-red-500'}"></span>
-          ${isOnline ? 'Online' : 'Offline'}
-        </span>
-      </div>
-      <div class="grid grid-cols-2 gap-2 text-sm">
-        <div class="rounded-lg bg-gray-50 dark:bg-slate-950/40 border-[2px] border-[#10b981] dark:border-[#10b981]/20 p-2 flex flex-col items-center justify-center text-center">
-          <div class="text-[#10b981] mb-1">${thermSvg}</div>
-          <div class="uppercase tracking-widest text-[#18392B] dark:text-cyan-400 text-[8px] font-bold mb-1 whitespace-nowrap">Temp</div>
-          <div class="text-[#18392B] dark:text-[#a7f3d0] font-bold text-[0.95rem] leading-none">${Math.round(temp)}<span class="text-[0.55rem] text-gray-500 dark:text-gray-400 ml-0.5">°C</span></div>
-        </div>
-        <div class="rounded-lg bg-gray-50 dark:bg-slate-950/40 border-[2px] border-[#10b981] dark:border-[#10b981]/20 p-2 flex flex-col items-center justify-center text-center">
-          <div class="text-[#10b981] mb-1">${activeIconSvg}</div>
-          <div class="uppercase tracking-widest text-[#18392B] dark:text-cyan-400 text-[8px] font-bold mb-1 whitespace-nowrap">AC State</div>
-          <div class="text-[#18392B] dark:text-[#a7f3d0] font-bold text-[0.6rem] leading-tight uppercase tracking-tighter">${acState}</div>
-        </div>
-      </div>
-    `;
-    nodesDisplay.appendChild(nodeCard);
-  }
-  updateSelectedControlsSummary(controlNames);
-}
 
 
 function showNotification(message, duration = 3000) {
@@ -1249,6 +1034,8 @@ function showNotification(message, duration = 3000) {
 // ===== MESSAGES & NOTIFICATIONS =====
 function isMessageForRoom(msg, targetRoomId) {
   if (!msg || !targetRoomId) return false;
+  if (msg.type === 'controller_installation') return String(msg.installation?.room_id || '') === String(targetRoomId);
+  if (msg.type === 'ac_command_schedule') return String(msg.room_id || '') === String(targetRoomId);
   const msgRoom = msg.room || msg.room_id || msg.roomId;
   if (msgRoom === targetRoomId) return true;
 
@@ -1295,6 +1082,11 @@ function updateRoomBadges() {
 }
 
 function updateMessagesTable() {
+  if (selectedRoomId && !rooms[selectedRoomId]) {
+    const fallback = Object.values(rooms)[0];
+    if (fallback) { selectRoom(fallback); return; }
+    selectedRoomId = null;
+  }
   updateRoomBadges();
   
   const tbody = document.getElementById('messagesTableBody');
@@ -1336,9 +1128,11 @@ function updateMessagesTable() {
   console.log('UpdateMessagesTable - all messages:', messages.length, messages);
   const filtered = messages.filter(msg => {
     if (!isMessageForRoom(msg, selectedRoomId)) return false;
+    if (currentNotificationType === 'commands' && msg.type !== 'ac_command_schedule') return false;
+    if (currentNotificationType === 'schedule' && (msg.type === 'ac_command_schedule' || msg.type === 'controller_installation' || !/wake|sleep|schedule|interval/i.test(msg.content || ''))) return false;
     if (currentNotificationFilter === 'read') return Boolean(msg.read);
     if (currentNotificationFilter === 'unread') return !msg.read;
-    if (currentNotificationFilter === 'schedule') return /wake|sleep|schedule|interval/i.test(msg.content || '');
+    if (currentNotificationFilter === 'schedule') return msg.type !== 'controller_installation' && /wake|sleep|schedule|interval/i.test(msg.content || '');
     return true;
   });
 
@@ -1421,7 +1215,9 @@ function updateMessagesTable() {
   tbody.innerHTML = '';
   pageItems.forEach(msg => {
     const room = rooms[msg.room];
-    const target = extractTargetNodes(msg.content, room, msg.node);
+    const installation = msg.type === 'controller_installation';
+    const commandSchedule = msg.type === 'ac_command_schedule';
+    const target = commandSchedule ? { specificNodeId: msg.node, actualContent: msg.content, nodeNames: msg.nodes } : installation ? { specificNodeId: msg.node, actualContent: msg.content, nodeNames: [msg.installation.controller_name] } : extractTargetNodes(msg.content, room, msg.node);
     const specificNodeId = target.specificNodeId;
     const actualContent = target.actualContent;
     const nodeNames = target.nodeNames;
@@ -1431,15 +1227,17 @@ function updateMessagesTable() {
       // Find node globally to get its aircon_type
       for (const r of Object.values(rooms)) {
         const found = r.nodes?.find(n => (typeof n === 'string' ? n.toLowerCase() === specificNodeId.toLowerCase() : (n.id?.toLowerCase() === specificNodeId.toLowerCase() || n.name?.toLowerCase() === specificNodeId.toLowerCase() || n.pb_id === specificNodeId)));
-        if (found && found.aircon_type) { acType = found.aircon_type; break; }
+        if (found) { acType = notificationAirconType(found); break; }
       }
     } else if (msg.room_id && rooms[msg.room_id] && rooms[msg.room_id].nodes && rooms[msg.room_id].nodes.length === 1) {
-      acType = rooms[msg.room_id].nodes[0].aircon_type || 'Split Type (Inverter)';
+      acType = notificationAirconType(rooms[msg.room_id].nodes[0]);
     } else {
       acType = 'Split Type (Inverter)';
     }
     
-    const nodeLabel = nodeNames.length ? nodeNames.join(', ') : '—';
+    if (installation) acType = msg.installation.aircon_type || 'Unavailable';
+    if (commandSchedule) acType = msg.schedule_event?.aircon_type || msg.schedule_event?.ac_type || 'Unavailable';
+    const nodeLabel = installationNotifications.escapeHtml(nodeNames.length ? nodeNames.join(', ') : '—');
     const row = document.createElement('tr');
     row.className = `bg-white dark:bg-transparent border-b border-gray-100 dark:border-white/5 hover:bg-emerald-50/40 dark:hover:bg-slate-800/60 text-sm transition-colors cursor-pointer`;
     row.setAttribute('data-id', msg.id);
@@ -1447,9 +1245,10 @@ function updateMessagesTable() {
       <td class="px-6 py-4 align-middle whitespace-nowrap">
         <div class="flex flex-col gap-1.5">
           <span class="font-bold text-[#18392B] dark:text-white text-sm">${formatTime12Hour(msg.time)}</span>
-          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold tracking-widest uppercase ${msg.triggered ? 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-400 dark:border dark:border-emerald-800/40' : 'bg-cyan-100 dark:bg-cyan-950/70 text-cyan-800 dark:text-cyan-400 dark:border dark:border-cyan-800/40'} w-fit">
-            ${msg.triggered ? 'Triggered' : 'Scheduled'}
-          </span>
+          ${commandSchedule ? `<span class="text-xs ${msg.read ? 'text-gray-500' : 'text-rose-600'}">● ${msg.read ? 'Read' : 'Unread'}</span>` : `          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-bold tracking-widest uppercase ${msg.triggered ? 'bg-emerald-100 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-400 dark:border dark:border-emerald-800/40' : 'bg-cyan-100 dark:bg-cyan-950/70 text-cyan-800 dark:text-cyan-400 dark:border dark:border-cyan-800/40'} w-fit">
+            ${commandSchedule ? installationNotifications.escapeHtml(msg.status) : installation ? 'Installation' : msg.triggered ? 'Triggered' : 'Scheduled'}
+          </span>`}
+
         </div>
       </td>
       <td class="px-6 py-4 align-middle whitespace-nowrap">
@@ -1466,30 +1265,32 @@ function updateMessagesTable() {
       <td class="px-6 py-4 align-middle">
         <div class="flex flex-col">
           <div class="font-bold text-[#18392B] dark:text-gray-100 text-sm">${nodeLabel}</div>
-          <div class="text-gray-400 dark:text-gray-400 text-xs mt-0.5">${nodeNames.length ? `${nodeNames.length} node${nodeNames.length > 1 ? 's' : ''}` : 'Room-wide broadcast'}</div>
+          <div class="text-gray-400 dark:text-gray-400 text-xs mt-0.5">${commandSchedule ? installationNotifications.escapeHtml(msg.schedule_event?.aircon_name || 'AC unavailable') : nodeNames.length ? `${nodeNames.length} node${nodeNames.length > 1 ? 's' : ''}` : 'Room-wide broadcast'}</div>
         </div>
       </td>
       <td class="px-6 py-4 align-middle text-[#18392B] dark:text-gray-200 text-sm font-semibold whitespace-nowrap">
-        ${acType}
+        ${installation || commandSchedule ? installationNotifications.escapeHtml(acType) : acType}
       </td>
       <td class="px-6 py-4 align-middle">
         <div class="text-gray-800 dark:text-gray-200 text-sm font-medium leading-relaxed">
-          ${/wake|sleep|schedule|interval/i.test(msg.content || '') ? '<span class="text-emerald-600 text-xs font-bold">Schedule · </span>' : ''}${actualContent.substring(0, 96)}${actualContent.length > 96 ? '...' : ''}
+          ${installation ? '<span class="text-emerald-600 text-xs font-bold">Installation · </span>' : /wake|sleep|schedule|interval/i.test(msg.content || '') ? '<span class="text-emerald-600 text-xs font-bold">Schedule · </span>' : ''}${installation || commandSchedule ? installationNotifications.escapeHtml(actualContent.substring(0, 160)) : actualContent.substring(0, 96)}${actualContent.length > (installation ? 160 : 96) ? '...' : ''}
         </div>
       </td>
       <td class="px-6 py-4 align-middle text-center">
-        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase ${msg.read ? 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-white/10' : 'bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/40'}">
+        ${commandSchedule ? `<span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold ${window.EcoTrackScheduleNotifications.statusClass(msg.status)}"><span aria-hidden="true">●</span>${installationNotifications.escapeHtml(msg.status)}</span>` : `        <span class="inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase ${msg.read ? 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-white/10' : 'bg-red-100 dark:bg-red-950/70 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/40'}">
           ${msg.read ? 'Read' : 'Unread'}
-        </span>
+        </span>`}
+
       </td>
       <td class="px-6 py-4 align-middle">
-        <button class="deleteTableBtn flex items-center gap-1.5 px-3.5 py-1.5 bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900/40 text-red-500 dark:text-red-400 rounded-lg text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer" data-id="${msg.id}">
+        ${commandSchedule ? '<button type="button" class="viewScheduleNotificationBtn text-emerald-600 font-bold mr-2">View</button>' : ''}
+        <button ${commandSchedule ? 'aria-label="Remove notification"' : ''} class="deleteTableBtn flex items-center gap-1.5 px-3.5 py-1.5 bg-white dark:bg-slate-900 border border-red-200 dark:border-red-900/40 text-red-500 dark:text-red-400 rounded-lg text-xs font-bold hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer" data-id="${msg.id}">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M3 6h18" />
             <path d="M8 6V4h8v2" />
             <path d="M6 6l1 14h10l1-14" />
           </svg>
-          Remove
+          ${commandSchedule ? '' : 'Remove'}
         </button>
       </td>
     `;
@@ -1500,6 +1301,7 @@ function updateMessagesTable() {
       if (e.target.closest('.deleteTableBtn')) {
         return;
       }
+      if (msg.type === 'ac_command_schedule') scheduleDialogFocus = { id: msg.id };
       markMessageAsRead(msg.id);
       if (msg.type === 'maintenance_verification' && msg.report_id) {
         window.location.href = `staff.html?verifyReport=${encodeURIComponent(msg.report_id)}`;
@@ -1549,6 +1351,7 @@ function isInboxDismissedNotification(notification) {
 }
 
 function isRuleViolationNotification(notif) {
+  if (notif?.type === 'controller_installation' || notif?.type === 'ac_command_schedule') return false;
   if (!notif) return false;
   const content = String(notif.content || notif.message || notif.title || '').toLowerCase();
   // Strictly exclude routine schedule alerts (wake up, sleep time, schedules) and battery alerts
@@ -1583,86 +1386,37 @@ function isRuleViolationNotification(notif) {
 }
 
 async function confirmDeleteMessage() {
-  if (!pendingDeleteMessageId) return;
+  if (!pendingDeleteMessageId || !beginNotificationInboxMutation()) return;
   const id = pendingDeleteMessageId;
-  const msgToDelete = messages.find(m => m.id === id);
-  const targetId = msgToDelete?.pbId || msgToDelete?.id || id;
-  
-  const isViolation = isRuleViolationNotification(msgToDelete);
-
-  if (targetId && !String(targetId).startsWith('v_hist_')) {
-    const currentSb = window.supabaseClient || window.sb || sb;
-    const hasElectron = Boolean(window.electron && typeof window.electron.invoke === 'function');
-
-    if (hasElectron) {
-      try {
-        if (isViolation) {
-          const result = await window.electron.invoke('notifications-update', { id: targetId, updates: { is_dismissed_from_inbox: true } });
-          if (!result?.success) throw new Error(result?.error || 'Dismissal failed');
-        } else {
-          const result = await window.electron.invoke('notifications-delete', [targetId]);
-          if (!result?.success) throw new Error(result?.error || 'Deletion failed');
-        }
-      } catch (ipcErr) {
-        console.warn('IPC notification delete/update error:', ipcErr);
-        showNotification(`Could not remove notification: ${ipcErr.message}`);
-        return false;
-      }
-    } else if (currentSb) {
-      try {
-        if (isViolation) {
-          // Soft delete from inbox in Supabase so Rule Management retains the violation data
-          const result = await currentSb.from('notifications').update({ is_dismissed_from_inbox: true }).eq('id', targetId).select('id');
-          if (result.error) throw result.error;
-          if (!result.data?.length) throw new Error('No notification was updated');
-        } else {
-          const result = await currentSb.from('notifications').delete().eq('id', targetId);
-          if (result.error) throw result.error;
-        }
-      } catch(e) {
-        console.warn('Failed to update/delete notification from Supabase:', e);
-        showNotification(`Could not remove notification: ${e.message}`);
-        return false;
-      }
-    } else {
-      showNotification('Could not remove notification: database service unavailable');
-      return false;
+  const msgToDelete = messages.find(message => message.id === id);
+  try {
+    if (!msgToDelete) throw new Error('This notification is no longer available. Refresh and try again.');
+    await persistNotificationInboxDismissal([msgToDelete]);
+    if (isRuleViolationNotification(msgToDelete) && typeof saveViolationToAuditHistory === 'function') {
+      saveViolationToAuditHistory({ ...msgToDelete, is_dismissed_from_inbox: true });
     }
+    const stateMap = loadReadStateMap();
+    const stateKey = getNotificationStateKey(msgToDelete);
+    if (stateKey && stateMap[stateKey]) {
+      delete stateMap[stateKey];
+      saveReadStateMap(stateMap);
+    }
+    messages = messages.filter(message => message.id !== id && message.pbId !== id);
+    window.EcoDataBus?.invalidate('notifications:data');
+    window.EcoDataBus?.invalidate('notifications');
+    updateMessagesTable();
+    const viewModal = document.getElementById('viewMessageModal');
+    if (viewModal && viewModal.style.display !== 'none') closeViewMessageModal();
+    showNotification('Message deleted');
+    cancelDeleteMessage();
+    return true;
+  } catch (error) {
+    console.warn('Notification dismissal failed:', error);
+    showNotification('Could not remove notification: ' + error.message);
+    return false;
+  } finally {
+    endNotificationInboxMutation();
   }
-  // Persist dismissal only after the database accepted it (or for a local-only audit entry).
-  if (isViolation && typeof saveViolationToAuditHistory === 'function') {
-    saveViolationToAuditHistory({ ...msgToDelete, is_dismissed_from_inbox: true });
-  }
-
-  const stateMap = loadReadStateMap();
-  const stateKey = getNotificationStateKey(msgToDelete);
-  if (stateKey && stateMap[stateKey]) {
-    delete stateMap[stateKey];
-    saveReadStateMap(stateMap);
-  }
-  
-  messages = messages.filter(m => m.id !== id && m.pbId !== id);
-
-  if (window.EcoDataBus) {
-    window.EcoDataBus.invalidate('notifications:data');
-    window.EcoDataBus.invalidate('notifications');
-  }
-  
-  // Update global badge
-  if (typeof window.syncNotificationBadges === 'function') {
-    window.syncNotificationBadges();
-  } else if (typeof resetNotificationCount === 'function') {
-    resetNotificationCount();
-  }
-  // Update the view
-  updateMessagesTable();
-  const viewModal = document.getElementById('viewMessageModal');
-  if (viewModal && viewModal.style.display !== 'none') {
-    closeViewMessageModal();
-  }
-  
-  showNotification('Message deleted');
-  cancelDeleteMessage();
 }
 
 function cancelDeleteMessage() {
@@ -1729,129 +1483,67 @@ function closeClearAllModal() {
 }
 
 async function clearAllMessages() {
-  if (!selectedRoomId) {
-    showNotification('Please select a room first');
-    return;
-  }
-
+  if (!selectedRoomId) { showNotification('Please select a room first'); return; }
   const roomMessages = messages.filter(message => isMessageForRoom(message, selectedRoomId));
-  if (roomMessages.length === 0) {
-    showNotification('No notifications to clear');
-    return;
-  }
-
-  const currentSb = window.supabaseClient || window.sb || sb;
-  const hasElectron = Boolean(window.electron && typeof window.electron.invoke === 'function');
-
-  const violationMsgs = [];
-  const nonViolationIds = [];
-
-  roomMessages.forEach(m => {
-    if (isRuleViolationNotification(m)) {
-      violationMsgs.push(m);
-    } else {
-      const tid = m.pbId || m.id;
-      if (tid) nonViolationIds.push(tid);
-    }
-  });
-
-  if (hasElectron) {
-    try {
-      for (const vm of violationMsgs) {
-        const tid = vm.pbId || vm.id;
-        if (!tid) continue;
-        if (String(tid).startsWith('v_hist_')) continue;
-        const result = await window.electron.invoke('notifications-update', { id: tid, updates: { is_dismissed_from_inbox: true } });
-        if (!result?.success) throw new Error(result?.error || 'Dismissal failed');
-      }
-      if (nonViolationIds.length > 0) {
-        const result = await window.electron.invoke('notifications-delete', nonViolationIds);
-        if (!result?.success) throw new Error(result?.error || 'Deletion failed');
-      }
-    } catch (ipcErr) {
-      console.warn('IPC clearAllMessages error:', ipcErr);
-      showNotification(`Could not clear notifications: ${ipcErr.message}`);
-      await loadNotificationMessages();
-      return false;
-    }
-  } else if (currentSb) {
-    try {
-      // Soft-dismiss violation records in Supabase so Rule Management retains full compliance history
-      for (const vm of violationMsgs) {
-        const tid = vm.pbId || vm.id;
-        if (!tid) continue;
-        if (String(tid).startsWith('v_hist_')) continue;
-        const result = await currentSb.from('notifications').update({ is_dismissed_from_inbox: true }).eq('id', tid).select('id');
-        if (result.error) throw result.error;
-        if (!result.data?.length) throw new Error('No notification was updated');
-      }
-
-      // Hard-delete manual/routine non-violation messages
-      if (nonViolationIds.length > 0) {
-        const result = await currentSb.from('notifications').delete().in('id', nonViolationIds);
-        if (result.error) throw result.error;
-      }
-    } catch (error) {
-      console.warn('Failed to update/delete notifications from Supabase during clear all:', error);
-      showNotification(`Could not clear notifications: ${error.message}`);
-      await loadNotificationMessages();
-      return false;
-    }
-  } else {
-    showNotification('Could not clear notifications: database service unavailable');
+  if (!roomMessages.length) { showNotification('No notifications to clear'); return; }
+  if (!beginNotificationInboxMutation()) return;
+  try {
+    // One room-scoped update preserves event keys and audit records for every alert type.
+    await persistNotificationInboxDismissal(roomMessages);
+    roomMessages.filter(isRuleViolationNotification).forEach(message => {
+      window.saveViolationToAuditHistory?.({ ...message, is_dismissed_from_inbox: true });
+    });
+    const stateMap = loadReadStateMap();
+    roomMessages.forEach(message => { delete stateMap[getNotificationStateKey(message)]; });
+    saveReadStateMap(stateMap);
+    const clearedIds = new Set(roomMessages.map(message => String(message.pbId || message.id)));
+    messages = messages.filter(message => !clearedIds.has(String(message.pbId || message.id)));
+    messagesCurrentPage = 1;
+    window.EcoDataBus?.invalidate('notifications:data');
+    window.EcoDataBus?.invalidate('notifications');
+    const viewModal = document.getElementById('viewMessageModal');
+    if (viewModal && viewModal.style.display !== 'none') closeViewMessageModal();
+    updateMessagesTable();
+    showNotification('Cleared ' + roomMessages.length + ' notification' + (roomMessages.length === 1 ? '' : 's'));
+    return true;
+  } catch (error) {
+    console.warn('Notification dismissal failed during clear all:', error);
+    showNotification('Could not clear notifications: ' + error.message);
     return false;
+  } finally {
+    endNotificationInboxMutation();
   }
-  violationMsgs.forEach(message => window.saveViolationToAuditHistory?.({ ...message, is_dismissed_from_inbox: true }));
-
-  // Remove read state tracking for cleared messages
-  const stateMap = loadReadStateMap();
-  roomMessages.forEach(message => {
-    const stateKey = getNotificationStateKey(message);
-    if (stateKey && stateMap[stateKey]) {
-      delete stateMap[stateKey];
-    }
-  });
-  saveReadStateMap(stateMap);
-
-  // Remove all matched room messages by IDs from in-memory array
-  const clearedIds = new Set(roomMessages.map(m => String(m.id || m.pbId)));
-  messages = messages.filter(message => !clearedIds.has(String(message.id)) && !clearedIds.has(String(message.pbId)));
-
-  // Reset pagination to first page
-  messagesCurrentPage = 1;
-
-  // Invalidate query caches
-  if (window.EcoDataBus) {
-    window.EcoDataBus.invalidate('notifications:data');
-    window.EcoDataBus.invalidate('notifications');
-  }
-
-  // Synchronize global badges
-  if (typeof window.syncNotificationBadges === 'function') {
-    window.syncNotificationBadges();
-  } else if (typeof resetNotificationCount === 'function') {
-    resetNotificationCount();
-  }
-
-  // Close view modal if it was open
-  const viewModal = document.getElementById('viewMessageModal');
-  if (viewModal && viewModal.style.display !== 'none') {
-    closeViewMessageModal();
-  }
-
-  // Re-render table and inform the user
-  updateMessagesTable();
-  showNotification(`Cleared ${roomMessages.length} notification${roomMessages.length === 1 ? '' : 's'}`);
 }
 
 // ===== VIEW MESSAGE MODAL =====
 function openViewMessageModal(message) {
   markMessageAsRead(message.id);
+  if (message.type === 'ac_command_schedule' && window.EcoTrackScheduleNotifications) {
+    scheduleDialogFocus = scheduleDialogFocus || { element: document.activeElement, id: message.id };
+    document.getElementById('viewMessageCombined').innerHTML = window.EcoTrackScheduleNotifications.renderDetails(message.schedule_event, message);
+    document.getElementById('viewMessageLegacyHeading').style.display = 'none';
+    document.getElementById('closeViewMessageModal').style.marginLeft = 'auto';
+    document.getElementById('closeViewModalBtn').style.display = 'none';
+    const link = document.getElementById('scheduleViewLink');
+    const url = window.EcoTrackScheduleNotifications.scheduleUrl(message);
+    if (url) { link.setAttribute('href', url); link.style.display = 'block'; }
+    else { link.removeAttribute('href'); link.style.display = 'none'; }
+    currentViewMessageId = message.id;
+    document.getElementById('viewMessageModal').style.display = 'flex';
+    document.getElementById('closeViewMessageModal').focus();
+    return;
+  }
+  if (message.type === 'controller_installation' && message.installation && installationNotifications) {
+    document.getElementById('viewMessageCombined').innerHTML = installationNotifications.renderDetails(message.installation);
+    currentViewMessageId = message.id;
+    document.getElementById('viewMessageModal').style.display = 'flex';
+    return;
+  }
   
   const roomRef = rooms[message.room] || 
                   Object.values(rooms || {}).find(r => r.id === message.room || r.name === message.room || (r.name && message.room && r.name.toLowerCase() === String(message.room).toLowerCase())) || 
                   rooms[selectedRoomId];
-  const roomLabel = roomRef?.name || rooms[message.room]?.name || message.room || 'Unassigned';
+  const roomLabel = notificationLocation(roomRef);
   
   const target = extractTargetNodes(message.content, roomRef, message.node);
   const actualContent = target.actualContent;
@@ -1874,13 +1566,13 @@ function openViewMessageModal(message) {
           <div class="p-2.5 rounded-xl bg-white dark:bg-[#0c1328] shadow-sm border border-gray-200 dark:border-white/10 text-[#10b981] dark:text-emerald-400">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
           </div>
-          <span class="font-medium">Room: <span class="text-[#18392B] dark:text-emerald-300 font-bold ml-1">${roomLabel}</span></span>
+          <span class="font-medium">Location: <span class="text-[#18392B] dark:text-emerald-300 font-bold ml-1">${installationNotifications.escapeHtml(roomLabel)}</span></span>
         </div>
         <div class="flex items-center gap-4">
           <div class="p-2.5 rounded-xl bg-white dark:bg-[#0c1328] shadow-sm border border-gray-200 dark:border-white/10 text-[#10b981] dark:text-emerald-400">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z" /><path d="M12 12l-8-4.3 8-4.3 8 4.3" /></svg>
           </div>
-          <span class="font-medium">Controls: <span class="text-[#18392B] dark:text-gray-200 font-bold ml-1">${controlsText}</span></span>
+          <span class="font-medium">Controls: <span class="text-[#18392B] dark:text-gray-200 font-bold ml-1">${installationNotifications.escapeHtml(controlsText)}</span></span>
         </div>
         <div class="flex items-center gap-4">
           <div class="p-2.5 rounded-xl bg-white dark:bg-[#0c1328] shadow-sm border border-gray-200 dark:border-white/10 text-[#10b981] dark:text-emerald-400">
@@ -1919,7 +1611,16 @@ function openViewMessageModal(message) {
 
 function closeViewMessageModal() {
   document.getElementById('viewMessageModal').style.display = 'none';
+  document.getElementById('viewMessageLegacyHeading').style.display = '';
+  document.getElementById('closeViewMessageModal').style.marginLeft = '';
+  document.getElementById('closeViewModalBtn').style.display = '';
+  document.getElementById('scheduleViewLink').style.display = 'none';
   currentViewMessageId = null;
+  if (scheduleDialogFocus) {
+    const focus = scheduleDialogFocus; scheduleDialogFocus = null;
+    const button = [...document.querySelectorAll('#messagesTableBody tr')].find(row => row.getAttribute('data-id') === String(focus.id))?.querySelector('.viewScheduleNotificationBtn');
+    (button || document.getElementById('notificationTypeFilter') || focus.element)?.focus?.();
+  }
 }
 
 function toggleNotifications() {
@@ -1952,13 +1653,14 @@ function startNotificationCheck() {
 
     let tableNeedsUpdate = false;
     messages.forEach(msg => {
+      if (msg.type === 'ac_command_schedule') return;
       if (_isMessageDue(msg) && !msg.triggered) {
         msg.triggered = true;
         tableNeedsUpdate = true;
+        if (!msg.read && !msg.isRead) triggerGlobalNotification(msg.content, { ...msg, id: msg.pbId || msg.id });
       }
       if (!msg.triggered || lastTriggeredIds.has(msg.id)) return;
       lastTriggeredIds.add(msg.id);
-      triggerGlobalNotification(msg.content);
     });
 
     // Re-render the table if any message changed trigger state
@@ -1980,20 +1682,7 @@ function showGlobalNotification(message) {
 }
 
 function updateNotificationBadge() {
-  const isNotifEnabled = localStorage.getItem('ecoTrack_notifications_enabled') !== 'false';
-  const badge = document.getElementById('notificationBadge');
-  
-  if (badge) {
-    const count = getTriggeredNotificationCount();
-    if (isNotifEnabled && count > 0) {
-      badge.classList.remove('hidden');
-      badge.style.display = 'flex';
-      badge.textContent = count;
-    } else {
-      badge.classList.add('hidden');
-      badge.style.display = 'none';
-    }
-  }
+  renderSidebarNotificationBadge(getTriggeredNotificationCount());
 }
 
 // Auto-refresh notifications table every 2.5 seconds to reflect newly triggered alerts
@@ -2005,4 +1694,3 @@ setInterval(() => {
 
 window.loadNotificationMessages = loadNotificationMessages;
 window.setupNotificationsPage = setupNotificationsPage;
-

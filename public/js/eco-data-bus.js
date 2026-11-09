@@ -11,13 +11,19 @@
 
 (function (window) {
   'use strict';
+  // Pages and the sidebar loader can both request this shared script.
+  if (window.EcoDataBus) return;
 
   class EcoDataBusEngine {
     constructor() {
       this.listeners = new Map();
       this.cache = new Map(); // key -> { data, timestamp, ttl }
       this.inFlightControllers = new Map(); // key -> AbortController
+      this.inFlightRequests = new Map(); // key -> shared read promise
       this.realtimeChannels = new Map();
+      this.sessionCacheKey = 'ecoTrack_page_data_v1';
+      this.sessionScope = this._sessionScope();
+      this._restoreSessionCache();
       this.DEFAULT_TTL_MS = 45000; // 45 seconds default SWR validity
 
       // Broadcast channel for multi-tab / electron window sync
@@ -25,7 +31,7 @@
         if (window.BroadcastChannel) {
           this.bc = new BroadcastChannel('eco_data_bus_channel');
           this.bc.onmessage = (msg) => {
-            if (msg.data && msg.data.event) {
+            if (msg.data && msg.data.event && !msg.data.event.startsWith('data:query:')) {
               this._dispatchLocal(msg.data.event, msg.data.payload);
             }
           };
@@ -37,7 +43,52 @@
         this.cancelAll();
       });
 
+      window.addEventListener('storage', () => this._ensureScope());
       this._initRealtimeBridge();
+    }
+
+    // Session data survives full-document navigation, and ends with the account/app session.
+    _sessionScope() {
+      try {
+        if (window.localStorage.getItem('ecoTrack_require_login')) return null;
+        const user = JSON.parse(window.localStorage.getItem('ecoTrack_profile_user') || '{}');
+        return user.id ? JSON.stringify([user.id, window.localStorage.getItem('ecoTrack_workspace_mode'),
+          window.ECOTRACK_CONFIG?.backendUrl || window.electron?.env?.BACKEND_URL || 'localhost:5000']) : null;
+      } catch (_) { return null; }
+    }
+
+    _ensureScope() {
+      const scope = this._sessionScope();
+      if (scope !== this.sessionScope) { this.clear(); this.sessionScope = scope; }
+    }
+
+    _restoreSessionCache() {
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(this.sessionCacheKey) || 'null');
+        if (!this.sessionScope || saved?.scope !== this.sessionScope || !Array.isArray(saved.entries)) {
+          window.sessionStorage.removeItem(this.sessionCacheKey); return;
+        }
+        for (const [key, value] of saved.entries) {
+          if (typeof key === 'string' && value && Number.isFinite(value.timestamp) && 'data' in value)
+            this.cache.set(key, { ...value, restored: true });
+        }
+      } catch (_) { /* Blocked/corrupt browser storage falls back to a first load. */ }
+    }
+
+    _saveSessionCache() {
+      if (!this.sessionScope) return;
+      try {
+        const entries = [...this.cache].sort((a, b) => b[1].timestamp - a[1].timestamp).slice(0, 24);
+        // Bound disposable page snapshots; SQLite remains the history store.
+        while (entries.length) {
+          const saved = JSON.stringify({ scope: this.sessionScope, entries });
+          if (saved.length <= 2000000) {
+            try { window.sessionStorage.setItem(this.sessionCacheKey, saved); return; } catch (_) {}
+          }
+          entries.pop();
+        }
+        window.sessionStorage.removeItem(this.sessionCacheKey);
+      } catch (_) {}
     }
 
     // --------------------------------------------------------------------------
@@ -64,7 +115,7 @@
       this._dispatchLocal(event, payload);
       // Synchronize across windows/tabs
       try {
-        if (this.bc) {
+        if (this.bc && !event.startsWith('data:query:')) {
           this.bc.postMessage({ event, payload });
         }
       } catch (_) {}
@@ -120,7 +171,8 @@
      * @param {Object} options { ttl, forceRefresh, silent }
      */
     async query(key, fetcherFn, options = {}) {
-      const ttl = options.ttl || this.DEFAULT_TTL_MS;
+      this._ensureScope();
+      const ttl = options.ttl ?? this.DEFAULT_TTL_MS;
       const forceRefresh = options.forceRefresh || false;
       const cached = this.cache.get(key);
       const now = Date.now();
@@ -139,83 +191,62 @@
         });
 
         // If still fresh, no background fetch needed
-        if (isFresh) {
+        if (isFresh && !cached.restored) {
           return cached.data;
         }
 
         // If stale, revalidate in background without blocking UI
-        this._executeFetch(key, fetcherFn, ttl, true).catch(() => {});
+        cached.restored = false;
+        this._executeFetch(key, fetcherFn, ttl, true, options.timeout).catch(() => {});
         return cached.data;
       }
 
       // No cache or forceRefresh: execute fetch foreground
-      return this._executeFetch(key, fetcherFn, ttl, false);
+      return this._executeFetch(key, fetcherFn, ttl, Boolean(cached), options.timeout);
     }
 
-    async _executeFetch(key, fetcherFn, ttl, isBackground = false) {
-      // Cancel previous in-flight query for same key to avoid race conditions
-      if (this.inFlightControllers.has(key)) {
-        const prevController = this.inFlightControllers.get(key);
-        prevController.abort();
-        this.emit('data:query:cancelled', { key });
-        this.inFlightControllers.delete(key);
-      }
-
+    _executeFetch(key, fetcherFn, ttl, isBackground = false, timeoutMs = 15000) {
+      // Multiple consumers share a read; explicit invalidation/cancellation replaces it.
+      if (this.inFlightRequests.has(key)) return this.inFlightRequests.get(key);
+      const scope = this.sessionScope;
       const controller = new AbortController();
       this.inFlightControllers.set(key, controller);
-
-      // Emit start
-      this.emit('data:query:start', {
-        key,
-        isBackground,
-        timestamp: Date.now()
+      let timer, onAbort;
+      const request = Promise.resolve().then(async () => {
+        if (controller.signal.aborted) return null;
+        this.emit('data:query:start', { key, isBackground, timestamp: Date.now() });
+        try {
+          const deadline = new Promise((_resolve, reject) => {
+            onAbort = () => { const error = new Error('Read cancelled'); error.name = 'AbortError'; reject(error); };
+            controller.signal.addEventListener('abort', onAbort, { once: true });
+            timer = setTimeout(() => {
+              const error = new Error('Data request timed out. Please retry.');
+              error.name = 'TimeoutError'; reject(error); controller.abort();
+            }, timeoutMs);
+          });
+          const data = await Promise.race([Promise.resolve().then(() => fetcherFn(controller.signal)), deadline]);
+          this._ensureScope();
+          if (scope !== this.sessionScope || controller.signal.aborted || this.inFlightControllers.get(key) !== controller) return null;
+          this.cache.set(key, { data, timestamp: Date.now(), ttl });
+          this._saveSessionCache();
+          this.emit('data:query:success', { key, data, fromCache: false, isFresh: true, timestamp: Date.now() });
+          return data;
+        } catch (error) {
+          if (error.name !== 'TimeoutError' && (error.name === 'AbortError' || controller.signal.aborted)) return null;
+          this.emit('data:query:error', { key, error, isBackground, timestamp: Date.now() });
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          controller.signal.removeEventListener('abort', onAbort);
+          // An obsolete read must never remove the replacement read's bookkeeping.
+          if (this.inFlightControllers.get(key) === controller) {
+            this.inFlightControllers.delete(key);
+            this.inFlightRequests.delete(key);
+          }
+        }
       });
-
-      try {
-        const data = await fetcherFn(controller.signal);
-
-        // Check if aborted while resolving
-        if (controller.signal.aborted) {
-          return null;
-        }
-
-        this.inFlightControllers.delete(key);
-
-        // Update cache
-        this.cache.set(key, {
-          data,
-          timestamp: Date.now(),
-          ttl
-        });
-
-        // Emit success
-        this.emit('data:query:success', {
-          key,
-          data,
-          fromCache: false,
-          isFresh: true,
-          timestamp: Date.now()
-        });
-
-        return data;
-      } catch (err) {
-        this.inFlightControllers.delete(key);
-
-        if (err.name === 'AbortError' || controller.signal.aborted) {
-          this.emit('data:query:cancelled', { key });
-          return null;
-        }
-
-        console.error(`[EcoDataBus] Query error for key "${key}":`, err);
-
-        this.emit('data:query:error', {
-          key,
-          error: err,
-          timestamp: Date.now()
-        });
-
-        throw err;
-      }
+      this.inFlightRequests.set(key, request);
+      return request;
     }
 
     /**
@@ -225,6 +256,7 @@
       if (this.inFlightControllers.has(key)) {
         this.inFlightControllers.get(key).abort();
         this.inFlightControllers.delete(key);
+        this.inFlightRequests.delete(key);
         this.emit('data:query:cancelled', { key });
       }
     }
@@ -238,13 +270,21 @@
         this.emit('data:query:cancelled', { key });
       }
       this.inFlightControllers.clear();
+      this.inFlightRequests.clear();
+    }
+
+    clear() {
+      this.cancelAll(); this.cache.clear();
+      try { window.sessionStorage.removeItem(this.sessionCacheKey); } catch (_) {}
     }
 
     /**
      * Invalidate cached data for a key and notify subscribers
      */
     invalidate(key) {
+      this.cancel(key);
       this.cache.delete(key);
+      this._saveSessionCache();
       this.emit('data:invalidated', { key, timestamp: Date.now() });
     }
 
@@ -252,6 +292,7 @@
      * Mutate cached data optimistically without refetching immediately
      */
     mutate(key, updater) {
+      this._ensureScope();
       const cached = this.cache.get(key);
       let newData = updater;
       if (typeof updater === 'function' && cached) {
@@ -263,6 +304,7 @@
         ttl: cached ? cached.ttl : this.DEFAULT_TTL_MS
       });
 
+      this._saveSessionCache();
       this.emit('data:query:success', {
         key,
         data: newData,
@@ -276,6 +318,7 @@
      * Get currently cached data synchronously without fetching
      */
     getCached(key) {
+      this._ensureScope();
       const cached = this.cache.get(key);
       return cached ? cached.data : null;
     }
@@ -308,6 +351,17 @@
       const setup = () => {
         const sb = window.supabaseClient || window.sb;
         if (!sb || typeof sb.channel !== 'function') return;
+        if (this.realtimeClient === sb) return;
+        this.realtimeChannels.forEach(channel => this.realtimeClient?.removeChannel?.(channel));
+        this.authSubscription?.unsubscribe?.();
+        this.realtimeClient = sb;
+        let account;
+        this.authSubscription = sb.auth?.onAuthStateChange?.((_event, session) => {
+          const next = session?.user?.id || null;
+          if (!next || (account !== undefined && next !== account)) this.clear();
+          account = next;
+          this._ensureScope();
+        })?.data?.subscription;
 
         try {
           const channel = sb.channel('eco_data_bus_realtime');

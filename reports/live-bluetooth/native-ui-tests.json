@@ -1,5 +1,5 @@
 {
-  "passed": 54,
+  "passed": 60,
   "isolated_production_components": true,
   "live_hardware_tested": false,
   "results": [
@@ -8,6 +8,9 @@
       "checks": [
         "Actual Chromium DOMException numeric code does not crash the Bluetooth handler",
         "Native Bluetooth errors display reconnect guidance instead of an exception or Supabase failure",
+        "Normal setup explains the next step and hides reconnect",
+        "Pending device confirmation offers a connection check",
+        "A verified connection does not claim the assignment is saved",
         "Edit restores actual ancestors with repeated location names",
         "Floors are restricted to the selected building",
         "Changing buildings clears incompatible descendants",
@@ -19,7 +22,7 @@
         "Status absent; hardware IP read-only",
         "Password Enter cannot submit registration",
         "Bluetooth detection enabled before registration",
-        "Detection result updates brand and releases buttons",
+        "Detection shows the exact protocol, preserves the manufacturer field, and releases buttons",
         "Live disconnect uses Bluetooth status instead of a Supabase failure",
         "Disconnected setup identifies Wi-Fi as previously confirmed",
         "Reconnect provides immediate busy feedback and guards Save",
@@ -40,6 +43,9 @@
       "checks": [
         "Actual Chromium DOMException numeric code does not crash the Bluetooth handler",
         "Native Bluetooth errors display reconnect guidance instead of an exception or Supabase failure",
+        "Normal setup explains the next step and hides reconnect",
+        "Pending device confirmation offers a connection check",
+        "A verified connection does not claim the assignment is saved",
         "Edit restores actual ancestors with repeated location names",
         "Floors are restricted to the selected building",
         "Changing buildings clears incompatible descendants",
@@ -51,7 +57,7 @@
         "Status absent; hardware IP read-only",
         "Password Enter cannot submit registration",
         "Bluetooth detection enabled before registration",
-        "Detection result updates brand and releases buttons",
+        "Detection shows the exact protocol, preserves the manufacturer field, and releases buttons",
         "Live disconnect uses Bluetooth status instead of a Supabase failure",
         "Disconnected setup identifies Wi-Fi as previously confirmed",
         "Reconnect provides immediate busy feedback and guards Save",

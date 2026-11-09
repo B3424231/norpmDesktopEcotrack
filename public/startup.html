@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'">
+  <title>Starting EcoTrack</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { display: grid; place-items: center; background: #03140e; color: #ecfdf5; font-family: "Segoe UI", sans-serif; }
+    main { text-align: center; padding: 24px; }
+    img { width: 54px; height: 54px; object-fit: contain; border-radius: 12px; }
+    h1 { margin: 14px 0 8px; font-size: 23px; font-weight: 600; }
+    p { margin: 0; color: #a7c6b7; font-size: 14px; }
+    .spinner { width: 26px; height: 26px; margin: 22px auto 0; border: 3px solid #174c37; border-top-color: #34d399; border-radius: 50%; animation: spin .9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="./assets/ecoTrack.png" alt="EcoTrack">
+    <h1>Starting EcoTrack</h1>
+    <p role="status">Preparing your workspace…</p>
+    <div class="spinner" role="progressbar" aria-label="Starting EcoTrack"></div>
+  </main>
+</body>
+</html>

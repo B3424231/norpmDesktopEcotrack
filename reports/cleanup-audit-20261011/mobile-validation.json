@@ -1,0 +1,6 @@
+{
+  "project": "mobile",
+  "check": "npm run typecheck",
+  "exitCode": 0,
+  "status": "PASS"
+}

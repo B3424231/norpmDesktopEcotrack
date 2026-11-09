@@ -1,0 +1,63 @@
+flowchart LR
+  Admin["Admin - desktop"]
+  Staff["Staff - mobile"]
+  Device["ESP32-S3 - RPM, IR and reported battery"]
+  D1[("D1 EcoTrack data - Supabase cloud and SQLite history")]
+  P1("1.0 Authenticate users")
+  P2("2.0 Register devices")
+  P3("3.0 Monitor RPM and battery")
+  P4("4.0 Control AC and learn IR")
+  P5("5.0 Rules and native notifications")
+  P6("6.0 Maintenance and repair review")
+  P7("7.0 Analyze, forecast and export")
+  P8("8.0 Schedule AC automation")
+  Admin -->|"Credentials"| P1
+  P1 -->|"Login result"| Admin
+  Admin -->|"Device details"| P2
+  P2 -->|"Device list"| Admin
+  Admin -->|"Node selection"| P3
+  P3 -->|"Readings / charge"| Admin
+  Admin -->|"Control settings"| P4
+  P4 -->|"Command status"| Admin
+  Admin -->|"Rules / inbox data"| P5
+  P5 -->|"Desktop alerts"| Admin
+  Admin -->|"Assign / verify"| P6
+  P6 -->|"Repair outcomes"| Admin
+  Admin -->|"Report / cost inputs"| P7
+  P7 -->|"Reports / estimates"| Admin
+  Admin -->|"Presets / hours"| P8
+  P8 -->|"Run status"| Admin
+  Staff -->|"Sign-in data"| P1
+  P1 -->|"Session access"| Staff
+  Staff -->|"Room setup"| P2
+  P2 -->|"Assigned nodes"| Staff
+  Staff -->|"Status request"| P3
+  P3 -->|"Live status"| Staff
+  Staff -->|"Inbox actions"| P5
+  P5 -->|"Mobile notices"| Staff
+  Staff -->|"Progress / submit"| P6
+  P6 -->|"Tasks / approval"| Staff
+  Device -->|"Device ID"| P2
+  P2 -->|"Setup config"| Device
+  Device -->|"RPM / battery"| P3
+  P3 -->|"Upload ACK"| Device
+  Device -->|"IR results"| P4
+  P4 -->|"Control / capture"| Device
+  Device -->|"Dispatch receipt"| P8
+  P8 -->|"Timing / commands"| Device
+  P1 -->|"Account query"| D1
+  D1 -->|"User profile"| P1
+  P2 -->|"Registry changes"| D1
+  D1 -->|"Saved devices"| P2
+  P3 -->|"History / heartbeat"| D1
+  D1 -->|"Latest samples"| P3
+  P4 -->|"Commands / IR codes"| D1
+  D1 -->|"Control context"| P4
+  P5 -->|"Rules / messages"| D1
+  D1 -->|"Alert context"| P5
+  P6 -->|"Work / evidence"| D1
+  D1 -->|"Maintenance records"| P6
+  P7 -->|"History query"| D1
+  D1 -->|"Archived logs"| P7
+  P8 -->|"Timers / run log"| D1
+  D1 -->|"Presets / receipts"| P8

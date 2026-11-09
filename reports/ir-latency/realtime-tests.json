@@ -1,7 +1,7 @@
 {
   "passed": 14,
   "checks": [
-    "A compact Postgres event updates power, temperature, mode, fan, Turbo and receiver capabilities across six engines immediately, with zero database fetches or writes.",
+    "A compact Postgres event updates power, temperature, mode, fan, Turbo and receiver capabilities across five engines immediately, with zero database fetches or writes.",
     "Private Broadcast and Postgres delivery of the same observation produce one update per page.",
     "Private Broadcast updates the UI directly without waiting for the fallback polling timer.",
     "Delayed older OFF events cannot overwrite a newer ON observation.",

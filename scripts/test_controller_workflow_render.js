@@ -1,6 +1,6 @@
 // Isolated Chromium production-component checks; no account or network.
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'reports/live-bluetooth');
+const root=path.resolve(__dirname,'..'),out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root,'reports/live-bluetooth');
 app.setPath('userData',path.join(root,'scratch/controller-workflow-electron'));app.disableHardwareAcceleration();app.on('window-all-closed',()=>{});
 const read=file=>fs.readFileSync(path.join(root,file),'utf8'),html=read('public/nodes.html'),control=read('public/control.html');
 const section=(source,start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a);assert(a>=0&&b>a,start);return source.slice(a,b);};
@@ -8,6 +8,7 @@ const form=id=>html.match(new RegExp('<form\\b[^>]*id="'+id+'"[^>]*>[\\s\\S]*?</
 const buttons=['masterPowerBtn','tempMinusBtn','tempPlusBtn','modeButton','fanButton','specialButton','remoteSim'];
 async function check(theme){
  const win=new BrowserWindow({width:950,height:1000,show:false,webPreferences:{offscreen:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false,partition:'controller-workflow-qa'}});
+ win.webContents.on('console-message',event=>{if(event.level==='error')console.error('RENDERER: '+event.message);});
  win.webContents.session.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_d,done)=>done({cancel:true}));
  const markup='<!doctype html><html class="'+(theme==='dark'?'dark':'')+'"><head><meta charset="utf-8"><style>'+read('public/styles.css')+'</style><style>.hidden{display:none!important}.qa{padding:24px;margin:auto;max-width:730px;}input,select{padding:8px;max-width:100%}#editNodeModal{margin-top:30px;border-top:1px solid #aaa;}#nodeStep3>div{margin-bottom:12px;}</style></head><body class="app-shell"><main class="qa"><div id="nodeModal">'+form('nodeForm')+'</div><div id="editNodeModal">'+form('editNodeForm')+'<button id="saveEditNodeBtn">Save</button></div><p id="hardwareRoleMessage"></p>'+buttons.map(id=>'<button id="'+id+'"'+(id==='remoteSim'?' class="sim-btn" data-cmd="POWER"':'')+'>fixture command</button>').join('')+'</main></body></html>';
  await win.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(markup));
@@ -24,7 +25,7 @@ async function check(theme){
  section(html,'      // Enter in a text field',"      form.addEventListener('submit',"),
  "document.getElementById('nodeStep1').classList.add('hidden');document.getElementById('nodeStep2').classList.add('hidden');document.getElementById('nodeStep3').classList.remove('hidden');document.getElementById('saveNodeBtn').classList.remove('hidden');",
  "document.getElementById('nodeFormId').value='esp32s3-fixture';document.getElementById('nodeFormName').value='Fixture receiver';document.getElementById('nodeFormIp').value='10.0.0.4';document.getElementById('nodeFormSsid').value='Fixture network';",
- "registrationBluetoothLive=true;registrationCheck={state:'refresh'};registrationUi.mount(()=>{});registrationUi.chooseMode('new');document.getElementById('registrationAcName').value='Fixture AC';existingWifiInfo={device_id:'esp32s3-fixture',wifi_status:'connected',wifi_ssid:'Fixture network',ip_address:'10.0.0.4',cloud_status:'error'};refreshExistingWifiPanel();",
+ "registrationBluetoothLive=true;registrationCheck={state:'refresh'};registrationUi.mount(()=>{});registrationUi.setDeviceMode('both');registrationUi.chooseMode('new');document.getElementById('registrationAcName').value='Fixture AC';existingWifiInfo={device_id:'esp32s3-fixture',wifi_status:'connected',wifi_ssid:'Fixture network',ip_address:'10.0.0.4',cloud_status:'error'};refreshExistingWifiPanel();",
  "const cache={buildings:[{id:'b1',name:'East'},{id:'b2',name:'West'}],floors:[{id:'f1',name:'Ground',building_id:'b1'},{id:'f2',name:'Ground',building_id:'b2'}],rooms:[{id:'r1',name:'Lab',floor_id:'f1'},{id:'r2',name:'Lab',floor_id:'f2'}]};",
  "EcoTrackControllerLocations.bind('nodeForm',cache);EcoTrackControllerLocations.bind('editNode',cache,{room_id:'r2'});document.getElementById('editNodeName').value='Fixture edited receiver';resetRemoteDetection('register');true;"
  ].join('\n');
@@ -35,6 +36,12 @@ async function check(theme){
  reportRegistrationFailure(window.__qaBluetoothError);
  check(document.getElementById('registrationCloudStatus').dataset.state==='bluetooth'&&!document.getElementById('registrationCloudMessage').textContent.includes('startsWith'),'Native Bluetooth errors display reconnect guidance instead of an exception or Supabase failure');
  setRegistrationCloudStatus('pending');registrationBluetoothLive=true;
+ check(document.getElementById('registrationCloudTitle').textContent==='Finish device setup'&&document.getElementById('reconnectRegistrationBtn').classList.contains('hidden')&&document.getElementById('registrationCloudMessage').textContent.includes('Save & Verify Device'),'Normal setup explains the next step and hides reconnect');
+ setRegistrationCloudStatus('waiting');
+ check(!document.getElementById('reconnectRegistrationBtn').classList.contains('hidden')&&document.getElementById('reconnectRegistrationBtn').textContent==='Check connection again','Pending device confirmation offers a connection check');
+ setRegistrationCloudStatus('connected');
+ check(document.getElementById('reconnectRegistrationBtn').classList.contains('hidden')&&document.getElementById('summaryStatusBadge').textContent==='Connection verified','A verified connection does not claim the assignment is saved');
+ setRegistrationCloudStatus('pending');
  const get=id=>document.getElementById(id),change=(id,value)=>{get(id).value=value;get(id).dispatchEvent(new Event('change',{bubbles:true}));};
  check(get('editNodeBuilding').value==='b2'&&get('editNodeFloor').value==='f2'&&get('editNodeRoom').value==='r2','Edit restores actual ancestors with repeated location names');
  change('nodeFormBuilding','b1');check([...get('nodeFormFloor').options].some(o=>o.value==='f1')&&![...get('nodeFormFloor').options].some(o=>o.value==='f2'),'Floors are restricted to the selected building');
@@ -52,7 +59,7 @@ async function check(theme){
  const event=new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true});get('registrationWifiPassword').dispatchEvent(event);check(event.defaultPrevented,'Password Enter cannot submit registration');
  check(!get('registerRemoteBtn').disabled,'Bluetooth detection enabled before registration');
  let request;window.ProtocolAdapter={detectRemoteBrand:async(id,options)=>{request=options;options.onListening();return {success:true,brand:'Daikin',protocol:'DAIKIN64'};}};
- await listenForRemote('register');check(request.nearby===true&&get('nodeFormBrand').value==='Daikin'&&!get('registerRemoteBtn').disabled,'Detection result updates brand and releases buttons');
+ await listenForRemote('register');check(request.nearby===true&&get('nodeFormBrand').value===''&&get('registerRemoteStatus').textContent.includes('DAIKIN64')&&!get('registerRemoteBtn').disabled,'Detection shows the exact protocol, preserves the manufacturer field, and releases buttons');
  const preserved={name:get('nodeFormName').value,room:get('nodeFormRoom').value,brand:get('nodeFormBrand').value,password:get('registrationWifiPassword').value};
  let resolveReconnect,selectedId;const reply=new Promise(resolve=>resolveReconnect=resolve);
  window.EcoTrackHardwareCloud={registrationStatus:async()=>({state:'refresh'}),reconnect:async id=>{selectedId=id;return reply;},connect:async()=>{throw Error('Reconnect should preserve the current link');}};

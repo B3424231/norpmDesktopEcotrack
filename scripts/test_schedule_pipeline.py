@@ -16,6 +16,7 @@ spec.loader.exec_module(backend)
 class SchedulePipelineTests(unittest.TestCase):
     def setUp(self):
         self.api = backend.app.test_client()
+        self.api.environ_base['HTTP_AUTHORIZATION'] = 'Bearer ' + backend.monitoring_service.admin_token
         self.executor = patch.object(backend._schedule_executor, 'submit')
         self.submit = self.executor.start()
         self.addCleanup(self.executor.stop)

@@ -1,0 +1,762 @@
+[
+  {
+    "project": "desktop",
+    "path": "create_telemetry_table.sql",
+    "bytes": 6001,
+    "mtime": 1788081657.2812996,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "94cbf05f03f1e338d5d7d84013ae8853e2628b513bfdb6d47d678eaeff922c22"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_ac_capabilities_migration.sql",
+    "bytes": 40344,
+    "mtime": 1791613936.4069777,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "ba3ee2a2158d415a2790ce997df31c17d0e578c0c7551266b2f7a519b752ac62"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_ac_recording_migration.sql",
+    "bytes": 6833,
+    "mtime": 1791623079.7375438,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "5b31855840e71b49e1c8dcc3983bf8ebf8988da6a17ef5b5f6d10b36c2fcd7d2"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_aircons_protocol_migration.sql",
+    "bytes": 1651,
+    "mtime": 1790307370.111494,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "f7eed65b1d2cc77fb6982a4bae5167c9e1b56d671217296fa7f49842371900c5"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_aircons_rls_setup.sql",
+    "bytes": 1726,
+    "mtime": 1790595922.6492045,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "ee1a0ef80fa68e8afaed917a23c2e9eb4240188783bff019146bf64dd860e382"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_aircon_names_migration.sql",
+    "bytes": 9865,
+    "mtime": 1791578241.0274992,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "a5f29c6e6719f0dc882af92b6fb8724a2d0461c669cd531482f98eeefc1637c9"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_cloud_hardware_migration.sql",
+    "bytes": 18403,
+    "mtime": 1791557897.360107,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "175073e433113fc9519085dafa0565d9ba6464c697a2b7e4a50186d0e14f5d61"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_command_retention_migration.sql",
+    "bytes": 11574,
+    "mtime": 1791557968.1998768,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "27de891f17d59642c215d4253605cabdf7f9245cc9c4261af7143af4b39476bd"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_controller_details_migration.sql",
+    "bytes": 5768,
+    "mtime": 1791578007.764159,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "73fa71885d4bfc1faf8a4f9f4127cc333d29ee94db05e9891e79c4f227e92d99"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_controller_registration_migration.sql",
+    "bytes": 12216,
+    "mtime": 1791573544.4630919,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "a260bc7963b25f048c258d2d12f2246ecdc3fe78acfac6391ecf6b6856d8f1ef"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_dashboard_workflows_migration.sql",
+    "bytes": 4544,
+    "mtime": 1790919117.8707576,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "f4ce6c8de614833834c9c2e7256ce60f56898670e0b85c2eb3d318d70a62f26b"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_device_nodes_sync_migration.sql",
+    "bytes": 3762,
+    "mtime": 1790603357.2798264,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "5939288344faa3280fa3de57cccb6710782269d97a19ab3af53dceec022d96ba"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_hardware_pipeline_migration.sql",
+    "bytes": 636,
+    "mtime": 1790930274.8645525,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "aa434aa2633845996f94dde87471cfd9d681cac674628fe5383e3c1482f79943"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_ir_realtime_migration.sql",
+    "bytes": 7160,
+    "mtime": 1791568126.5594647,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "4a54dc654bd6169817da420f98717e9991f243fa16f536861fa6a7c66c3c00ed"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_mobile_notifications_setup.sql",
+    "bytes": 7045,
+    "mtime": 1791462367.1189528,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "7916e88f938cb06f7b9fcfadd001919f5b9e6f3e8d4b1d61aa8e21b9f60e4d10"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_schema.sql",
+    "bytes": 11141,
+    "mtime": 1791462968.6763544,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "a53ed2ded8d0f4ce8294cb4f9b1306de4f6ba89333ee863aad1f4dff2b985ae5"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_telemetry_cadence_migration.sql",
+    "bytes": 1453,
+    "mtime": 1790920702.736999,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "dc16bdbfb7ba08f717f0f3f794204113f58e4493c4223a1786b9bf5713f723ee"
+  },
+  {
+    "project": "desktop",
+    "path": "config/ac-capabilities.sql.source",
+    "bytes": 14717,
+    "mtime": 1791577917.0209057,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "9e769448fc73c1b7259af270c5e6c0fe0fdad58ae3c8b1ac6108de7f51fb8b73"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ac-off-recording/APPLY_SUPABASE.sql",
+    "bytes": 6833,
+    "mtime": 1791623079.7375438,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "5b31855840e71b49e1c8dcc3983bf8ebf8988da6a17ef5b5f6d10b36c2fcd7d2"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/database-audit/dependency-review.sql",
+    "bytes": 1283,
+    "mtime": 1791463568.365285,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "44e82f822b91210bf7f9b3d71af9b8874c2674935c6e490f0eb2ddb63ae8981c"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ir-latency/before/supabase_ir_realtime_migration.sql",
+    "bytes": 6669,
+    "mtime": 1791568126.5594647,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "ddc47a0e6705b6d5a863899d66f5a6499aa867aeaf2f6f2b6059510dac4c0fc9"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/migration-deadlock/DIAGNOSE_LOCKS.sql",
+    "bytes": 850,
+    "mtime": 1791610949.3195877,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "32befe13066d9227b51750b743ddf89073a48a885737f21fe3c818b691937fbf"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/migration-deadlock/before/APPLY_SUPABASE.sql",
+    "bytes": 76721,
+    "mtime": 1791579295.8626628,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "4627269faf420a9a4d4ad9ed74c770f45f7a4e033e306d375634652044a982d0"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/mobile-home-registration/APPLY_SUPABASE.sql",
+    "bytes": 1187,
+    "mtime": 1791713216.2346163,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "9b3bc851893fdcb0fa1d2cad9b7f78d3cf3660d6dce9e9de87684dd59af94604"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/APPLY_SUPABASE.sql",
+    "bytes": 77968,
+    "mtime": 1791610830.4134371,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "fe1c4a6f3a180baa2d363cd4e6e0f99a0b8fda1b8892caffc89dbddecf4f4f83"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/supabase_ac_recording_migration.sql",
+    "bytes": 6321,
+    "mtime": 1791622951.7625608,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "708053c428fa152817a9b42ee5f5cef84d91742e6f33537d636989b7e502ea2b"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/supabase_controller_details_migration.sql",
+    "bytes": 5484,
+    "mtime": 1791578007.7631547,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "ca44651f38b4d3fd77343f867f5cce5ce18d0f50bc24d174e2eeacec44c1b1d4"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/config/ac-capabilities.sql.source",
+    "bytes": 13542,
+    "mtime": 1791576005.4270945,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "ab1b4703b47e52b331d27ae414c0576624110f3dd7dc4e8aa86a74373bb9afbd"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/reports/ac-off-recording/APPLY_SUPABASE.sql",
+    "bytes": 6321,
+    "mtime": 1791622951.7781868,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "708053c428fa152817a9b42ee5f5cef84d91742e6f33537d636989b7e502ea2b"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/registration-modal/before/supabase_controller_registration_migration.sql",
+    "bytes": 9788,
+    "mtime": 1791571532.7270977,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "56783ec0e0e86baa3fcaad614b1640b441c930e5953352ff6197846727785a24"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/remote-power/before/supabase_cloud_hardware_migration.sql",
+    "bytes": 18075,
+    "mtime": 1791557897.3490515,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "1df718e2976ea13ee76450560bfa57e179ebc943d190befa72d6702fc10d25c7"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/remote-power/before/supabase_command_retention_migration.sql",
+    "bytes": 4098,
+    "mtime": 1791557897.360107,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "97c929cc6d362044aef2f626a873e63a2178f32a0052f15e6b487c89937bcd34"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/demo-seeds/legacy_notifications_demo.sql",
+    "bytes": 2056,
+    "mtime": 1791462367.1189528,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "3fbad70c18488bd10fefa1768926c6e09bbc2fddeb9ea39cf49d36811ceb41b4"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/demo-seeds/legacy_schema_demo.sql",
+    "bytes": 2134,
+    "mtime": 1791462367.1177335,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "498298d5f7a0c90e85330ad2417197f4e3da38e9a4a8f31101d866cc9473cb98"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_aircons_rls_setup.sql",
+    "bytes": 2554,
+    "mtime": 1790778900.6291485,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "feea1455c2b386bf9db50fd8c2acd73427ccaa6ae6a1595b44ac7a06c9803a05"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_backend_integrity_patch.sql",
+    "bytes": 1184,
+    "mtime": 1790769695.7788506,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "c86869a9beb2b28ba883274cd19081b5bcc59021e3b805149b31e8202f865286"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_device_nodes_sync_migration.sql",
+    "bytes": 3762,
+    "mtime": 1790603357.2798264,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "5939288344faa3280fa3de57cccb6710782269d97a19ab3af53dceec022d96ba"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_image_storage_setup.sql",
+    "bytes": 7566,
+    "mtime": 1790778900.6291485,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "c609c88fa4ac1bbdf4a9d679304245d7c0fec10d5e74e3ed4601fcc59776ece7"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_maintenance_relationships.sql",
+    "bytes": 1657,
+    "mtime": 1788681889.9564495,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "cb7018faf73c4d5c6d97daf7aeacfaf0eb903759dc992598b12156f5f684f57f"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_mobile_notifications_setup.sql",
+    "bytes": 8422,
+    "mtime": 1790778900.6358726,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "c91db56c151d381a936dc4e0d9c350a11e186063c84567de73c062911592e473"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_nodes_schema.sql",
+    "bytes": 4746,
+    "mtime": 1790778900.6375158,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "faf2914fc7bcfe98f1bf6fabbf94a1d89d7c02c196f1d74a5271b2fab2959fcf"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/push-delivery-setup.sql",
+    "bytes": 2907,
+    "mtime": 1791002727.930991,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "629c83c7a77b88c5a57385d69038f1f398ac991d147641a9b3957985e99e742d"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300001_auth_authorization.sql",
+    "bytes": 20050,
+    "mtime": 1790778879.760046,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "d19349ea6713a18eb070ea0653d44fcae01a5e995155074bee9d64836b5558f0"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300002_maintenance_transactions.sql",
+    "bytes": 21880,
+    "mtime": 1790778130.2599514,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "d1971a90ee7c379a9a17b12a9de1f1cb0fa64508a18c96c3e119ccc8b9541251"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300003_notification_delivery.sql",
+    "bytes": 17311,
+    "mtime": 1790776428.4865294,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "7ac696326f9a97972e241560aee871fd64a5ea3fa988726cc0fc5954ec37b03a"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300004_device_transactions.sql",
+    "bytes": 12461,
+    "mtime": 1790776719.5459569,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "b93ca4b19614eb477d63940b0c0bb8a20a6608edbb9caf5e0bc3f392b7a294a7"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300005_submitted_repair_backfill.sql",
+    "bytes": 1842,
+    "mtime": 1790778772.6802163,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "386ebd78b7d7e777e9f44a62c71fba5517ac4aa427664bdef9c5a8826b799f83"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300006_desktop_integration.sql",
+    "bytes": 15412,
+    "mtime": 1790780314.4230185,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "6f3b2e773b7dc45a3e643b081b7b771b21b5af660807432128360de69a213496"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610020001_cross_system_access.sql",
+    "bytes": 6104,
+    "mtime": 1790957288.2512925,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "4c9c158c621c131a92298ccb1cfd23862e36d3b49fd94d0e8fb6f1b76c4c7ca3"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610020002_remote_push.sql",
+    "bytes": 5655,
+    "mtime": 1790956093.992977,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "d7cb1cc4a64ee9fc43bbc33fe52c63a893d9fe309adeff8372cfbee7f24755bc"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030001_push_worker_authorization.sql",
+    "bytes": 1268,
+    "mtime": 1790959265.6101694,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "812200832c56941e2bce6812542d8c9f3ca13b2ec8d665ec8efe08af9338d8b3"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030002_auth_provisioning_commit.sql",
+    "bytes": 2239,
+    "mtime": 1790960362.0416632,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "5adf220a46de688e5c1dcbbae3b43a2ec680f4b519b6e277712484b402d3faa4"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030003_report_edit_compatibility.sql",
+    "bytes": 11011,
+    "mtime": 1790961201.8151991,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "19b0af1b3c1ef4f1cf4e20fd7a2eede13eab1c4a088c4f15b10542c505d03b43"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030004_push_worker_role_guard.sql",
+    "bytes": 1547,
+    "mtime": 1791002158.78624,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "fc0ce3718ab24d22b9c0dbdf39198001f7b18268d1716d3042094a54ca2611fb"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030005_aircon_control_snapshots.sql",
+    "bytes": 6979,
+    "mtime": 1791042377.3827324,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "b2d3375b25a4e59d7265689d507d32da191730c9b7c0618daa397cff5ceeaba7"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610110001_assigned_staff_hardware_read.sql",
+    "bytes": 1187,
+    "mtime": 1791713210.843517,
+    "reason": "SQL file or SQL template; expressly excluded by user",
+    "sha256": "9b3bc851893fdcb0fa1d2cad9b7f78d3cf3660d6dce9e9de87684dd59af94604"
+  },
+  {
+    "project": "desktop",
+    "path": "backend/app.py",
+    "bytes": 56000,
+    "mtime": 1791623079.7375438,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "a705cd3647fedc2c91bb4979541a618739c92ddddcdb0c1c156784d2d9ed6dca"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ac-off-recording/before/backend/app.py",
+    "bytes": 53555,
+    "mtime": 1791622163.380594,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "5113f6d67751935384221ae7f4835677e669e5510a23fcd50d6a0e2c717d1f79"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/analytics-reset/hardcoded-candidates-after.json",
+    "bytes": 25581,
+    "mtime": 1791465360.0207033,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "389eca7330bb717d812997d4d9254c874a77a66a1e2d50b87db6a60c24393a29"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/analytics-reset/hardcoded-candidates.json",
+    "bytes": 36894,
+    "mtime": 1791464287.9959857,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "c3062af002fe996462755b5bc6b9b797ad31c78fb3140bbb5ffb5ecc90aa84e2"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/database-audit/column-references.json",
+    "bytes": 13075544,
+    "mtime": 1791460933.69172,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "aeca972acb73b533e56e56608eb4eafa22389eab7f3a0b7de9c8bcf8ce945d7e"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/database-audit/table-references.json",
+    "bytes": 298333,
+    "mtime": 1791460856.6437132,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "ceaff6424d63816cf4e176ca2be624b6ef953515d19b3e54f2638da7a5938129"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ir-latency/before/scripts/test_ir_realtime_database.js",
+    "bytes": 9035,
+    "mtime": 1791568233.2103307,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "f8e607e8d25dfaa195156ca0b5849048e14c2303e6293e64c85e93ded63da1e4"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ir-transmitter/before/scripts/test_cloud_hardware_database.js",
+    "bytes": 11868,
+    "mtime": 1791538956.4556546,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "f0205fae066a153e414cdf1a1301baa007afd451adc31eae1fe084078f4f2d06"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/mobile-home-registration/before/scripts/test-database-contracts.cjs",
+    "bytes": 46322,
+    "mtime": 1791714106.6919892,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "100cfe24b374d72d7462de3cdd0fec94fbbeb15c293fada7704240dd78bf8ea0"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/verification.stderr.log",
+    "bytes": 2015,
+    "mtime": 1791578353.0765817,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "ae211924e4065fd6fb83a90d66aafb4339491914d2f3cb0efe800a08ebc67bf1"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/backend/app.py",
+    "bytes": 53555,
+    "mtime": 1791622168.226555,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "5113f6d67751935384221ae7f4835677e669e5510a23fcd50d6a0e2c717d1f79"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/generate_aircon_names_migration.py",
+    "bytes": 2972,
+    "mtime": 1791578007.7511523,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "19ddf225e30e35a938507373be37aaeceffaa540b1a0c84fdc8e97000628cd74"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/test_ac_recording_database.js",
+    "bytes": 7087,
+    "mtime": 1791622951.7781868,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "3542fb240c9a6454da2f7210f21a371cf91ab606bbeeab887134b38d3afed194"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/test_capability_verification_render.js",
+    "bytes": 9735,
+    "mtime": 1791577172.6886265,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "ebaafccc6b96261a16964fee064842bd7081b10360454871a9e118403f0d21bb"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/test_multi_brand_database.js",
+    "bytes": 8127,
+    "mtime": 1791575878.0388794,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "cb3ba33021c4eca96a110cf341edcfbdd4f70719ad8a4a50aa54eca60669ffb1"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/implementation-provenance/update_controller_details_layout.py.txt",
+    "bytes": 4758,
+    "mtime": 1791575593.9635458,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "d4edd644e037c0360901681f12689b5f55abec81afae6d85170d09d3fe662845"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/normal-control-ui/before/scripts/test_capability_verification_render.js",
+    "bytes": 12147,
+    "mtime": 1791613888.1674984,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "644b7ae3e37839f029f729d26bc05845cf3ce48f5b3caa945b94b473ebce861b"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/registration-modal/before/scripts/test_controller_registration_database.js",
+    "bytes": 7842,
+    "mtime": 1791571956.9911797,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "24df25a81e75ac87c87a9ee2aa1c6f645bc8e2224e70e2c1094b1822b7fa6d68"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/remote-power/before/scripts/test_command_retention.js",
+    "bytes": 10054,
+    "mtime": 1791557897.360107,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "ca34eb1a0cd40aa392d04b2bc3a40e47351565bfb04164d78df8de537ad59a60"
+  },
+  {
+    "project": "desktop",
+    "path": "scratch/inspect_schema_tables.js",
+    "bytes": 634,
+    "mtime": 1790603151.2193913,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "dd71e154af419a16991f851753e3c9d39527b6419978785be4e9af049b75e099"
+  },
+  {
+    "project": "desktop",
+    "path": "scratch/cloud-db-test-runtime/node_modules/@electric-sql/pglite/dist/live/index.cjs",
+    "bytes": 21357,
+    "mtime": 1791470120.0791504,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "9de9765fc699b46cf0f179b153e4f67592d1710531baa98453499f7ac7dec69c"
+  },
+  {
+    "project": "desktop",
+    "path": "scratch/cloud-db-test-runtime/node_modules/@electric-sql/pglite/dist/live/index.js",
+    "bytes": 11231,
+    "mtime": 1791470120.4095824,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "93cea97af317afe95158544b2548cadba1ab806341cff7a929c12fcb97fe8507"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/generate_ac_capabilities.py",
+    "bytes": 7251,
+    "mtime": 1791577917.0416317,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "221e6e0870ab5f8917290336132d017a3394960001a7a210e6e665f327772932"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/generate_aircon_names_migration.py",
+    "bytes": 7026,
+    "mtime": 1791578240.931047,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "5c582931b00410016158c88b6d2fb59a2e82349e7b292ab2a7b54f229ead980f"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_ac_recording_database.js",
+    "bytes": 7928,
+    "mtime": 1791623079.7375438,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "6aaa8b11623ef9cb487925653680c71decf477f7cd526af9dd975fd1ab16bdc7"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_capability_verification_render.js",
+    "bytes": 11001,
+    "mtime": 1791614185.2277942,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "049bc5e289a2774065a822029f67542f75ec99fe5ddac33b2475031dbfe1c518"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_cloud_hardware_database.js",
+    "bytes": 13865,
+    "mtime": 1791538956.4556546,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "bfadc24b614053b288ca1ef9837f37848e08a3157721a55383074fc8f870b9df"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_command_retention.js",
+    "bytes": 10925,
+    "mtime": 1791557968.1998768,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "62f346e0ed67c1158483f75cb9ec732195cd88a1846827ab73d2eba27e7440e8"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_controller_registration_database.js",
+    "bytes": 8227,
+    "mtime": 1791573544.4630919,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "d5193adc3b7165e5eb20d38aadf83226138e479e809f4cee35e28ba2f0df2348"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_database_cleanup.py",
+    "bytes": 4974,
+    "mtime": 1791462548.3943245,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "d99c7fff7f9a827ae463f87448d81d95a63c6da4c6a02071ff9b6fe029dffbc5"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_ir_realtime_database.js",
+    "bytes": 9369,
+    "mtime": 1791568829.1137717,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "97c47cf470c52058dd2a109c9477e9a8693b597c1c83703067f727fe2f682f4c"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_multi_brand_database.js",
+    "bytes": 11057,
+    "mtime": 1791579293.0475798,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "e628510e54046fa71608af3ba0a85243ab8a67e71586dfcb52ae4813fee82ac8"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_supabase_delivery_safety.js",
+    "bytes": 5757,
+    "mtime": 1791610949.3195877,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "0407c5b53abcd85e4d6e2ee51f2e0ece01a4c63a5ad75ea9bd29c2b9e74da542"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/verify_maintenance_supabase.js",
+    "bytes": 3781,
+    "mtime": 1787993403.8732736,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "4438edf4f05740ca7c68d0d9d9144a91d5721a4ea6c1838d2a176c83e3220f16"
+  },
+  {
+    "project": "mobile",
+    "path": "scratch/purge-telemetry-cutoff.py",
+    "bytes": 6917,
+    "mtime": 1791048932.3711088,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "82d078c3c252b1961bef661b27f5eebf4058d1294db0e869a8159f7f360067a0"
+  },
+  {
+    "project": "mobile",
+    "path": "scratch/aircon-state/desktop/backend/app.py",
+    "bytes": 43276,
+    "mtime": 1791042780.8390684,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "7c383bf23030fadffcf35823d1056abc0dc30af557ee3efd4fbefce3ce756097"
+  },
+  {
+    "project": "mobile",
+    "path": "scratch/backend-audit/secure-storage-sql.cjs",
+    "bytes": 4919,
+    "mtime": 1790778033.8030176,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "da8a063955088ac37aa33d52f05b63d963461d659f98dfbbd77f0395a2fd353a"
+  },
+  {
+    "project": "mobile",
+    "path": "scripts/test-database-contracts.cjs",
+    "bytes": 47140,
+    "mtime": 1791714106.709924,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "295d45c11ae3a6e6a95dd77bb2648e37c39f66ac8d09958507332fddbe6d380e"
+  },
+  {
+    "project": "mobile",
+    "path": "scripts/test-mobile-hardware-read-policy.cjs",
+    "bytes": 6329,
+    "mtime": 1791713248.3360064,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries",
+    "sha256": "a10b5f2483535f59b518c38abba3bd60b31f7b64f0112924426146f227a533b8"
+  }
+]

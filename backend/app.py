@@ -1,8 +1,9 @@
 """
 EcoTrack Python Backend - Machine Learning Microservice
-Dedicated strictly to HVAC energy consumption machine learning predictions.
-Models supported: Random Forest, Decision Tree, XGBoost Regression.
+Telemetry and hardware services with one Extra Trees energy forecast model.
+Energy outputs are labeled research-based estimates, not measured telemetry.
 """
+from contextlib import closing
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_restful import Api, Resource
@@ -21,8 +22,6 @@ import subprocess
 import re
 import threading
 import atexit
-import joblib
-import pandas as pd
 import numpy as np
 
 warnings.filterwarnings('ignore')
@@ -30,6 +29,11 @@ warnings.filterwarnings('ignore')
 app = Flask(__name__)
 CORS(app)
 api = Api(app)
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from backend.telemetry_schema import remove_legacy_pressure
 
 # ===== NATIVE SQLITE3 SENSOR LOGS DATABASE =====
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -47,6 +51,9 @@ def init_sqlite_db():
     """Initialize the SQLite3 database schema for high-frequency sensor logs."""
     conn = get_db_connection()
     try:
+        backup = remove_legacy_pressure(conn, backup_dir=os.getenv('ECOTRACK_SQLITE_SCHEMA_BACKUP_DIR'))
+        if backup:
+            print(f'[*] Removed legacy telemetry pressure column; backup: {backup}')
         with conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS telemetry (
@@ -58,7 +65,6 @@ def init_sqlite_db():
                     building_name TEXT,
                     aircon_type TEXT,
                     temperature REAL,
-                    pressure REAL,
                     battery REAL,
                     rssi REAL,
                     status TEXT,
@@ -70,7 +76,7 @@ def init_sqlite_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_telem_sensor ON telemetry (sensor_name);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_telem_node ON telemetry (node_id);")
             existing_columns = {row['name'] for row in conn.execute('PRAGMA table_info(telemetry)')}
-            for column, column_type in [('event_type', 'TEXT'), ('interval_seconds', 'INTEGER'), ('wake_time', 'TEXT'), ('sleep_time', 'TEXT'), ('ac_on', 'INTEGER'), ('aircon_id', 'TEXT'), ('control_snapshot', 'TEXT'), ('ac_state', 'TEXT')]:
+            for column, column_type in [('event_type', 'TEXT'), ('interval_seconds', 'INTEGER'), ('wake_time', 'TEXT'), ('sleep_time', 'TEXT'), ('ac_on', 'INTEGER'), ('aircon_id', 'TEXT'), ('control_snapshot', 'TEXT'), ('ac_state', 'TEXT'), ('rotation_rpm', 'REAL'), ('rotation_quality', 'TEXT'), ('observed_at', 'TEXT'), ('boot_id', 'TEXT'), ('sequence', 'INTEGER')]:
                 if column not in existing_columns:
                     conn.execute(f'ALTER TABLE telemetry ADD COLUMN {column} {column_type}')
             conn.execute('''CREATE TABLE IF NOT EXISTS schedule_dispatches (
@@ -80,9 +86,27 @@ def init_sqlite_db():
             conn.execute('''CREATE TABLE IF NOT EXISTS cloud_sync_state (
                 source TEXT PRIMARY KEY, cursor_created TEXT NOT NULL, cursor_id TEXT NOT NULL
             )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_cloud_receipts (
+                id TEXT PRIMARY KEY, payload TEXT NOT NULL, cleaned_at TEXT
+            )''')
+            conn.execute('CREATE INDEX IF NOT EXISTS telemetry_cloud_pending ON telemetry_cloud_receipts(id) WHERE cleaned_at IS NULL')
+            conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_monitor_sources (
+                source_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, payload TEXT NOT NULL
+            )''')
             conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_local_reset (
                 id INTEGER PRIMARY KEY CHECK (id = 1), deleted_through TEXT NOT NULL
             )''')
+            # Inserts append rowids. Any edit/deletion invalidates incremental
+            # snapshots, including backfilled imports and rowid reuse after clears.
+            conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_history_generation (
+                id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL
+            )''')
+            conn.execute('INSERT OR IGNORE INTO telemetry_history_generation VALUES (1, ?)', (uuid.uuid4().hex,))
+            for operation in ('UPDATE', 'DELETE'):
+                conn.execute(f'''CREATE TRIGGER IF NOT EXISTS telemetry_history_{operation.lower()}
+                    AFTER {operation} ON telemetry BEGIN
+                    UPDATE telemetry_history_generation SET token=lower(hex(randomblob(16))) WHERE id=1;
+                    END''')
         print(f"[*] SQLite3 Sensor Logs Database initialized at: {SQLITE_DB_PATH}")
     finally:
         conn.close()
@@ -90,163 +114,92 @@ def init_sqlite_db():
 # Initialize SQLite3 database on startup
 init_sqlite_db()
 
-# ===== MACHINE LEARNING MODEL CACHE =====
-_model_cache = {}
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+from backend.monitoring import register_monitoring
+monitoring_service = register_monitoring(app, get_db_connection,
+    os.path.join(os.path.dirname(os.path.abspath(SQLITE_DB_PATH)), '.ecotrack-monitoring-admin.key'))
+atexit.register(monitoring_service.stop.set)
+from backend.local_access import register_local_access
+register_local_access(app, lambda: monitoring_service.admin_token)
 
-# Restrict selection to the project's three original HVAC artifacts.
-MODEL_FILES = {
-    'random_forest': os.path.join('backend', 'ml', 'hvac_consumption_model_randomforestregressionFinal.pkl'),
-    'decision_tree': os.path.join('backend', 'ml', 'hvac_decision_tree_model_decision_tree_regression Final.pkl'),
-    'xgboost': os.path.join('backend', 'ml', 'hvac_xgboost_final_XGBoost_RegressionFinal.pkl')
-}
-UNVERIFIED_MODEL_REASON = (
-    'The original HVAC model target/output units and required measurement history '
-    'have not been verified. Energy prediction is unavailable for this model.'
-)
+# ===== EXTRA TREES RESEARCH-ESTIMATE SERVICE =====
+from backend.energy_prediction import EnergyPredictor, PredictionError
+
+energy_predictor = EnergyPredictor(os.path.join(
+    PROJECT_ROOT, 'backend', 'ml', 'control_extra_trees'))
 
 
-def _load_model(model_type: str):
-    """Load an original HVAC artifact with its saved preprocessing pipeline."""
-    if model_type in _model_cache:
-        return _model_cache[model_type]
-    filename = MODEL_FILES.get(model_type)
-    if not filename:
-        return None
-    filepath = os.path.join(PROJECT_ROOT, filename)
-    if not os.path.exists(filepath):
-        return None
-    model = joblib.load(filepath)
-    _model_cache[model_type] = model
-    return model
+def prediction_error_response(error):
+    return {'error': str(error), 'error_code': error.code,
+            'model': EnergyPredictor.MODEL_ID,
+            'available_models': [EnergyPredictor.MODEL_ID],
+            'prediction_status': 'unavailable',
+            'physical_accuracy_validated': False}, error.status
 
-
-def _prediction_number(value, name, minimum=None, maximum=None):
-    if value is None or isinstance(value, bool):
-        raise ValueError(f'{name} must be a finite number')
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        raise ValueError(f'{name} must be a finite number') from None
-    if not np.isfinite(number):
-        raise ValueError(f'{name} must be a finite number')
-    if minimum is not None and number < minimum:
-        raise ValueError(f'{name} must be at least {minimum}')
-    if maximum is not None and number > maximum:
-        raise ValueError(f'{name} must be at most {maximum}')
-    return number
-
-
-def _prediction_runtime(data, period):
-    """hours_used is already ON-time; never apply the ON ratio to it again."""
-    ratio = None
-    if data.get('ac_on_ratio') is not None:
-        ratio = _prediction_number(data['ac_on_ratio'], 'ac_on_ratio', 0, 1)
-    elapsed = None
-    if data.get('elapsed_hours') is not None:
-        elapsed = _prediction_number(data['elapsed_hours'], 'elapsed_hours', 0)
-    if data.get('hours_used') is not None:
-        hours = _prediction_number(data['hours_used'], 'hours_used', 0)
-        if elapsed is not None and hours > elapsed:
-            raise ValueError('hours_used cannot exceed elapsed_hours for one AC')
-        if ratio == 0 and hours > 0:
-            raise ValueError('Positive hours_used contradicts ac_on_ratio=0')
-        return hours, ratio, 'hours_used'
-    if ratio == 0:
-        return 0.0, ratio, 'ac_on_ratio'
-    if ratio is None:
-        raise ValueError('Provide hours_used (actual ON-time), or ac_on_ratio and elapsed_hours')
-    if elapsed is None:
-        elapsed = {'daily': 24.0, 'weekly': 168.0}.get(period)
-    if elapsed is None:
-        raise ValueError('Monthly/yearly periods require hours_used or actual elapsed_hours')
-    return elapsed * ratio, ratio, 'elapsed_hours_times_ac_on_ratio'
-
-
-# ===== REST API ENDPOINTS (MACHINE LEARNING ONLY) =====
 
 class HealthResource(Resource):
-    """Health check for ML Backend."""
+    """Report actual model readiness without representing estimates as telemetry."""
     def get(self):
         return {
             'status': 'healthy',
             'service': 'EcoTrack Machine Learning Backend',
             'timestamp': datetime.now().isoformat(),
-            'version': '2.0.0',
-            'models_available': [key for key, filename in MODEL_FILES.items()
-                                 if os.path.exists(os.path.join(PROJECT_ROOT, filename))],
-            'energy_prediction_models': [],
-            'prediction_status': 'unavailable; original model output units and measurements need verification'
+            'version': '3.0.0',
+            **energy_predictor.health()
         }, 200
 
 
 class PredictionFeaturesResource(Resource):
-    """Introspect original artifacts without claiming they support energy estimates."""
+    """The exact inputs, reference scope and explicit modeled scenarios."""
     def get(self):
-        model_type = request.args.get('model', 'xgboost')
         try:
-            model = _load_model(model_type)
-            if model is None:
-                return {'error': f"Model '{model_type}' not found"}, 404
-            features = list(getattr(model, 'feature_names_in_', []))
-            return {'model': model_type, 'features': features,
-                    'n_features': int(getattr(model, 'n_features_in_', len(features))),
-                    'model_file': MODEL_FILES[model_type], 'output_unit': None,
-                    'prediction_status': 'unavailable', 'reason': UNVERIFIED_MODEL_REASON}, 200
+            return energy_predictor.features(
+                request.args.get('model', EnergyPredictor.MODEL_ID)), 200
+        except PredictionError as error:
+            return prediction_error_response(error)
         except Exception:
-            app.logger.exception('Cannot inspect original HVAC model')
-            return {'error': 'Model could not be loaded'}, 503
+            app.logger.exception('Extra Trees feature contract unavailable')
+            return {'error': 'Extra Trees feature contract unavailable',
+                    'prediction_status': 'unavailable'}, 503
 
 
 class PredictionMetricsResource(Resource):
-    """Do not substitute another model's metrics or unsupported benchmark constants."""
+    """Return the stored test evaluation against generated targets only."""
     def get(self):
-        model_type = request.args.get('model', 'xgboost')
-        filename = MODEL_FILES.get(model_type)
-        if not filename or not os.path.exists(os.path.join(PROJECT_ROOT, filename)):
-            return {'error': 'Model metrics not found'}, 404
-        return {'error': 'Verified evaluation metrics for this original HVAC artifact are unavailable',
-                'model': model_type, 'prediction_status': 'unavailable'}, 422
+        try:
+            return energy_predictor.metrics(
+                request.args.get('model', EnergyPredictor.MODEL_ID)), 200
+        except PredictionError as error:
+            return prediction_error_response(error)
+        except Exception:
+            app.logger.exception('Extra Trees metrics unavailable')
+            return {'error': 'Extra Trees metrics unavailable',
+                    'prediction_status': 'unavailable'}, 503
 
 
 class EnergyPredictionResource(Resource):
-    """Validate runtime, but refuse unverified model-to-energy conversions.
-
-    Zero ON-time has zero estimated operating energy without model inference.
-    Nonzero energy requires a documented target/output-unit schema and measured
-    model features; the selected original artifacts currently lack that contract.
-    """
+    """Estimate a fixed future hour; never write predictions into sensor history."""
     def post(self):
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return {'error': 'A JSON object is required'}, 400
-        model_type = data.get('model', 'xgboost')
-        if not isinstance(model_type, str) or model_type not in MODEL_FILES:
-            return {'error': 'Model not found'}, 404
-        period = data.get('period', 'daily')
-        if period not in ('daily', 'weekly', 'monthly', 'yearly'):
-            return {'error': 'period must be daily, weekly, monthly or yearly'}, 400
         try:
-            runtime_hours, ratio, runtime_source = _prediction_runtime(data, period)
-            pressure = None if data.get('avg_pressure') is None else _prediction_number(data['avg_pressure'], 'avg_pressure', 0)
-            temperature = None if data.get('avg_temp') is None else _prediction_number(data['avg_temp'], 'avg_temp')
-        except ValueError as error:
-            return {'error': str(error)}, 400
-        if runtime_hours == 0:
-            return {'model': model_type, 'period': period, 'ac_on_ratio': ratio,
-                    'hours_eval': 0.0, 'runtime_source': runtime_source,
-                    'avg_pressure': pressure, 'avg_temp': temperature,
-                    'kwh': 0.0, 'power_kw': 0.0, 'prediction_status': 'zero_runtime'}, 200
-        try:
-            model = _load_model(model_type)
-            if model is None:
-                return {'error': 'Model not found'}, 404
-            return {'error': UNVERIFIED_MODEL_REASON, 'model': model_type,
-                    'prediction_status': 'unavailable',
-                    'required_model_features': list(getattr(model, 'feature_names_in_', []))}, 422
+            return energy_predictor.predict(request.get_json(silent=True)), 200
+        except PredictionError as error:
+            return prediction_error_response(error)
         except Exception:
-            app.logger.exception('Original HVAC model could not be loaded')
-            return {'error': 'Model could not be loaded'}, 503
+            app.logger.exception('Extra Trees estimate failed')
+            return {'error': 'Extra Trees estimate unavailable',
+                    'prediction_status': 'unavailable'}, 503
+
+
+class RecordedEnergyPredictionResource(Resource):
+    """Use recorded control columns with the existing trained reference model."""
+    def post(self):
+        try:
+            return energy_predictor.predict_recorded(request.get_json(silent=True)), 200
+        except PredictionError as error:
+            return prediction_error_response(error)
+        except Exception:
+            app.logger.exception('Recorded-column Extra Trees estimate failed')
+            return {'error': 'Recorded-column estimate unavailable',
+                    'prediction_status': 'unavailable'}, 503
 
 
 # ===== SQLITE3 TELEMETRY SENSOR LOGS ENDPOINTS =====
@@ -255,11 +208,11 @@ def row_to_dict(row):
     """Convert a sqlite3.Row object to a dictionary with proper types."""
     if row is None:
         return None
-    d = dict(row)
+    d = {key:value for key,value in dict(row).items() if 'pressure' not in key.lower()}
     if d.get("control_snapshot"):
         d["control_snapshot"] = json.loads(d["control_snapshot"])
     # Ensure numerical fields are floats
-    for field in ('temperature', 'pressure', 'battery', 'rssi'):
+    for field in ('temperature', 'rotation_rpm', 'battery', 'rssi'):
         if field in d and d[field] is not None:
             try:
                 d[field] = float(d[field])
@@ -329,10 +282,15 @@ def serialize_control_snapshot(value):
 
 def normalize_telemetry_timestamp(value):
     # Store comparable UTC timestamps; malformed timestamps are not telemetry.
-    logged = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
-    if logged.tzinfo is None:
-        logged = logged.replace(tzinfo=timezone.utc)
-    return logged.astimezone(timezone.utc).isoformat()
+    try:
+        if not isinstance(value, str):
+            raise ValueError('Telemetry timestamp must be text')
+        logged = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if logged.tzinfo is None:
+            logged = logged.replace(tzinfo=timezone.utc)
+        return logged.astimezone(timezone.utc).isoformat()
+    except (ValueError, TypeError, OverflowError) as error:
+        raise ValueError('Telemetry timestamp must be a representable date and time') from error
 
 
 def telemetry_reset_at(conn):
@@ -361,10 +319,12 @@ def reset_local_telemetry():
             conn.close()
 
 
-def import_cloud_telemetry(records, checkpoint=None):
+def import_cloud_telemetry(records, checkpoint=None, *, verified_cloud=False, checkpoint_source='telemetry'):
     """Idempotent import of real cloud rows, preserving missing measurements and AC state."""
     conn = get_db_connection()
     inserted = 0
+    verified_records = []
+    conflicts = []
     try:
         with conn:
             conn.execute('BEGIN IMMEDIATE')
@@ -375,36 +335,88 @@ def import_cloud_telemetry(records, checkpoint=None):
                 created = normalize_telemetry_timestamp(item['created'])
                 if cutoff and created <= cutoff:
                     continue
+                rotation_quality = item.get('rotation_quality')
+                if rotation_quality not in (None,'ok','missing','fault'):
+                    raise ValueError('Invalid rotation_quality')
                 def measurement(field):
                     value = item.get(field)
                     if value is None:
                         return None
+                    if isinstance(value,bool): raise ValueError(f'Invalid cloud measurement: {field}')
                     value = float(value)
                     if not np.isfinite(value):
                         raise ValueError(f'Invalid cloud measurement: {field}')
+                    if field == 'rotation_rpm' and value < 0: raise ValueError('rotation_rpm must be nonnegative')
+                    if field == 'rotation_rpm' and rotation_quality in ('missing','fault'): return None
                     return value
                 cadence = measurement('interval_seconds')
                 if cadence is not None and cadence <= 0:
                     raise ValueError('Cloud interval_seconds must be positive')
                 node_id = item.get('node_id') or item.get('sensor_name')
-                cursor = conn.execute('''INSERT OR IGNORE INTO telemetry (
-                    id,node_id,sensor_name,room_name,floor_name,building_name,aircon_type,
-                    temperature,pressure,battery,rssi,status,created,updated,ac_on,
-                    interval_seconds,event_type,wake_time,sleep_time,aircon_id,control_snapshot,ac_state
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', (
+                columns = ('id','node_id','sensor_name','room_name','floor_name','building_name','aircon_type',
+                    'temperature','battery','rssi','status','created','updated','ac_on','interval_seconds',
+                    'event_type','wake_time','sleep_time','aircon_id','control_snapshot','ac_state',
+                    'rotation_rpm','rotation_quality','observed_at','boot_id','sequence')
+                values = (
                     item['id'], node_id, item.get('sensor_name') or node_id,
                     item.get('room_name') or 'Unassigned', item.get('floor_name') or 'Unassigned',
                     item.get('building_name') or 'Unassigned', item.get('aircon_type'),
-                    measurement('temperature'), measurement('pressure'), measurement('battery'),
+                    measurement('temperature'), measurement('battery'),
                     measurement('rssi'), item.get('status') or 'unknown', created, item.get('updated') or created,
                     normalize_logged_ac_state(item), cadence, item.get('event_type'),
                     item.get('wake_time'), item.get('sleep_time'), item.get('aircon_id'),
-                    serialize_control_snapshot(item.get('control_snapshot')), item.get('ac_state')))
+                    serialize_control_snapshot(item.get('control_snapshot')), item.get('ac_state'),
+                    measurement('rotation_rpm'), item.get('rotation_quality'),
+                    normalize_telemetry_timestamp(item['observed_at']) if item.get('observed_at') else None,item.get('boot_id'),item.get('sequence') )
+                if verified_cloud:
+                    previous = conn.execute('SELECT ' + ','.join(columns) + ' FROM telemetry WHERE id=?', (item['id'],)).fetchone()
+                    conflict = False
+                    if previous:
+                        for field, expected in zip(columns, values):
+                            actual = previous[field]
+                            if field == 'control_snapshot':
+                                actual = json.loads(actual) if actual else None
+                                expected = json.loads(expected) if expected else None
+                            if actual != expected:
+                                conflict = True
+                                break
+                    if conflict:
+                        conflicts.append(item['id'])
+                        continue
+                    payload = json.dumps(item, sort_keys=True, allow_nan=False, separators=(',', ':'))
+                    receipt = conn.execute('SELECT payload FROM telemetry_cloud_receipts WHERE id=?', (item['id'],)).fetchone()
+                    if receipt and json.loads(receipt['payload']) != item:
+                        conflicts.append(item['id'])
+                        continue
+                    conn.execute('INSERT INTO telemetry_cloud_receipts(id,payload) VALUES(?,?) '
+                        'ON CONFLICT(id) DO UPDATE SET cleaned_at=NULL', (item['id'], payload))
+                cursor = conn.execute('''INSERT OR IGNORE INTO telemetry (
+                    id,node_id,sensor_name,room_name,floor_name,building_name,aircon_type,
+                    temperature,battery,rssi,status,created,updated,ac_on,
+                    interval_seconds,event_type,wake_time,sleep_time,aircon_id,control_snapshot,ac_state,rotation_rpm,rotation_quality,observed_at,boot_id,sequence
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''', values)
                 inserted += cursor.rowcount
+                if verified_cloud and item.get('observed_at'):
+                    # Never elevate the existing untrusted local transfer/POST routes.
+                    # Retain only actual values fetched by the authenticated cloud reader.
+                    actual = {key:item.get(key) for key in ('id','node_id','observed_at','interval_seconds','temperature',
+                        'rotation_rpm','rotation_quality','boot_id','sequence','battery','rssi','status')}
+                    actual['control_snapshot'] = json.loads(values[19]) if values[19] else None
+                    actual['temperature'] = measurement('temperature')
+                    actual['rotation_rpm'] = measurement('rotation_rpm')
+                    actual['observed_at'] = normalize_telemetry_timestamp(item['observed_at'])
+                    conn.execute('''INSERT INTO telemetry_monitor_sources VALUES(?,?,?) ON CONFLICT(source_id)
+                        DO UPDATE SET node_id=excluded.node_id,payload=excluded.payload''',
+                        (item['id'],node_id,json.dumps(actual,allow_nan=False)))
+                    verified_records.append(actual)
             if checkpoint:
-                conn.execute('''INSERT INTO cloud_sync_state VALUES ('telemetry',?,?)
-                    ON CONFLICT(source) DO UPDATE SET cursor_created=excluded.cursor_created,cursor_id=excluded.cursor_id''', checkpoint)
-        return {'transferred': inserted, 'skipped': len(records) - inserted}
+                conn.execute('''INSERT INTO cloud_sync_state VALUES (?,?,?)
+                    ON CONFLICT(source) DO UPDATE SET cursor_created=excluded.cursor_created,cursor_id=excluded.cursor_id''',
+                    (checkpoint_source, *checkpoint))
+        # The monitoring copy is independently idempotent and keeps unknown power unknown.
+        if verified_cloud:
+            monitoring_service.bridge_cloud(verified_records)
+        return {'transferred': inserted, 'skipped': len(records) - inserted, 'conflicts': conflicts}
     finally:
         conn.close()
 
@@ -412,11 +424,64 @@ def import_cloud_telemetry(records, checkpoint=None):
 _telemetry_sync_lock = threading.Lock()
 _telemetry_sync_stop = threading.Event()
 _telemetry_sync_thread = None
-_telemetry_sync_status = {'running': False, 'last_success': None, 'error': None, 'transferred': 0}
+_telemetry_sync_status = {'running': False, 'last_success': None, 'error': None, 'transferred': 0,
+    'cleaned': 0, 'cleanup_pending': 0, 'cleanup_error': None, 'backlog_error': None, 'import_conflict': None}
+
+
+def cleanup_cloud_telemetry(url):
+    """Acknowledge only authenticated rows whose full source was durably archived."""
+    conn = get_db_connection()
+    try:
+        checkpoint = conn.execute("SELECT cursor_id FROM cloud_sync_state WHERE source='telemetry_cleanup'").fetchone()
+        after = checkpoint['cursor_id'] if checkpoint else ''
+        query = ("SELECT r.id,r.payload FROM telemetry_cloud_receipts r JOIN telemetry t ON t.id=r.id "
+                 "WHERE r.cleaned_at IS NULL AND r.id>? ORDER BY r.id LIMIT 100")
+        pending = conn.execute(query, (after,)).fetchall()
+        if not pending and after:
+            pending = conn.execute(query, ('',)).fetchall()
+        error, cleaned = None, 0
+        if pending:
+            try:
+                key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+                if not key:
+                    raise ValueError('Cloud cleanup requires the backend service-role credential; readings remain in Supabase.')
+                ids = {row['id'] for row in pending}
+                # Retry projection after any failure between the archive commit and cleanup.
+                placeholders = ','.join('?' for _ in ids)
+                sources = conn.execute('SELECT payload FROM telemetry_monitor_sources WHERE source_id IN (' + placeholders + ')', tuple(ids)).fetchall()
+                monitoring_service.bridge_cloud([json.loads(row['payload']) for row in sources])
+                response = requests.post(url + '/rest/v1/rpc/ecotrack_ack_telemetry',
+                    headers={'apikey': key, 'Authorization': 'Bearer ' + key},
+                    json={'p_records': [json.loads(row['payload']) for row in pending]}, timeout=(10, 30))
+                response.raise_for_status()
+                result = response.json()
+                groups = [result.get(field) for field in ('acknowledged_ids','deleted_ids','changed_ids')] if isinstance(result, dict) else []
+                if len(groups) != 3 or any(not isinstance(group, list) or any(not isinstance(value, str) for value in group) for group in groups):
+                    raise ValueError('Invalid cloud cleanup acknowledgement')
+                acknowledged, deleted, changed = map(set, groups)
+                if acknowledged | changed != ids or acknowledged & changed or not deleted <= acknowledged:
+                    raise ValueError('Cloud cleanup acknowledgement does not match the archived records')
+                with conn:
+                    conn.executemany('UPDATE telemetry_cloud_receipts SET cleaned_at=? WHERE id=?',
+                        [(datetime.now(timezone.utc).isoformat(), identifier) for identifier in acknowledged])
+                cleaned = len(deleted)
+                if changed:
+                    error = 'Cloud readings changed after import; their rows were retained.'
+            except (requests.RequestException, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                error = str(exc)
+            # Rotate failed/changed rows so other committed receipts can still be cleaned.
+            with conn:
+                conn.execute("INSERT INTO cloud_sync_state VALUES ('telemetry_cleanup','',?) "
+                    "ON CONFLICT(source) DO UPDATE SET cursor_id=excluded.cursor_id", (pending[-1]['id'],))
+        remaining = conn.execute('SELECT COUNT(*) FROM telemetry_cloud_receipts r JOIN telemetry t ON t.id=r.id '
+            'WHERE r.cleaned_at IS NULL').fetchone()[0]
+        return {'cleaned': cleaned, 'cleanup_pending': remaining, 'cleanup_error': error}
+    finally:
+        conn.close()
 
 
 def sync_cloud_telemetry_once():
-    """Copy one page using a durable (created,id) cursor; commit rows and cursor atomically."""
+    """Import new readings and sweep delayed/backlogged rows before acknowledged cleanup."""
     with _telemetry_sync_lock:
         url = os.getenv('SUPABASE_URL', '').rstrip('/')
         key = os.getenv('SUPABASE_SERVICE_ROLE_KEY') or os.getenv('SUPABASE_ANON_KEY') or os.getenv('SUPABASE_KEY')
@@ -424,28 +489,58 @@ def sync_cloud_telemetry_once():
             raise ValueError('Supabase telemetry sync credentials are not configured')
         conn = get_db_connection()
         try:
-            checkpoint = conn.execute("SELECT * FROM cloud_sync_state WHERE source='telemetry'").fetchone()
+            checkpoints = {row['source']: dict(row) for row in conn.execute('SELECT * FROM cloud_sync_state')}
             cutoff = telemetry_reset_at(conn)
         finally:
             conn.close()
-        params = {'select': '*', 'order': 'created.asc,id.asc', 'limit': '500'}
-        if cutoff:
-            params['created'] = f'gt.{cutoff}'
-        if checkpoint:
-            created = checkpoint['cursor_created']
-            record_id = checkpoint['cursor_id'].replace('\\', '\\\\').replace('"', '\\"')
-            params['or'] = f'(created.gt.{created},and(created.eq.{created},id.gt."{record_id}"))'
-        response = requests.get(f'{url}/rest/v1/telemetry', params=params,
-            headers={'apikey': key, 'Authorization': f'Bearer {key}'}, timeout=(10, 30))
-        response.raise_for_status()
-        records = response.json()
-        if not isinstance(records, list):
-            raise ValueError('Supabase telemetry response must be an array')
-        next_checkpoint = (records[-1]['created'], records[-1]['id']) if records else None
-        result = import_cloud_telemetry(records, next_checkpoint)
+        headers = {'apikey': key, 'Authorization': 'Bearer ' + key}
+        def read_page(source):
+            params = {'select': '*', 'order': 'created.asc,id.asc', 'limit': '500'}
+            if cutoff:
+                params['created'] = f'gt.{cutoff}'
+            checkpoint = checkpoints.get(source)
+            if checkpoint:
+                created = checkpoint['cursor_created']
+                record_id = checkpoint['cursor_id'].replace('\\', '\\\\').replace('"', '\\"')
+                params['or'] = f'(created.gt.{created},and(created.eq.{created},id.gt."{record_id}"))'
+            response = requests.get(url + '/rest/v1/telemetry', params=params, headers=headers, timeout=(10, 30))
+            response.raise_for_status()
+            records = response.json()
+            if not isinstance(records, list):
+                raise ValueError('Supabase telemetry response must be an array')
+            return records
+        records = read_page('telemetry')
+        checkpoint = (records[-1]['created'], records[-1]['id']) if records else None
+        result = import_cloud_telemetry(records, checkpoint, verified_cloud=True)
+        import_conflict = 'Cloud telemetry conflict with local history; cloud rows retained.' if result['conflicts'] else None
+        backlog_error, backlog_fetched = None, 0
+        if len(records) < 500:
+            try:
+                backlog = read_page('telemetry_backlog')
+                backlog_fetched = len(backlog)
+                # An old conflict must not prevent other delayed readings from being saved.
+                for row in backlog:
+                    try:
+                        saved = import_cloud_telemetry([row], verified_cloud=True)
+                        result['transferred'] += saved['transferred']
+                        if saved['conflicts']:
+                            backlog_error = 'Cloud telemetry conflict with local history; cloud rows retained.'
+                    except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                        backlog_error = str(exc)
+                with closing(get_db_connection()) as conn:
+                    if backlog:
+                        conn.execute("INSERT INTO cloud_sync_state VALUES ('telemetry_backlog',?,?) "
+                            "ON CONFLICT(source) DO UPDATE SET cursor_created=excluded.cursor_created,cursor_id=excluded.cursor_id",
+                            (normalize_telemetry_timestamp(backlog[-1]['created']), backlog[-1]['id']))
+                    else:
+                        conn.execute("DELETE FROM cloud_sync_state WHERE source='telemetry_backlog'")
+                    conn.commit()
+            except (requests.RequestException, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                backlog_error = str(exc)
+        cleanup = cleanup_cloud_telemetry(url)
         _telemetry_sync_status.update(last_success=datetime.now(timezone.utc).isoformat(), error=None,
-            transferred=_telemetry_sync_status['transferred'] + result['transferred'])
-        return {**result, 'fetched': len(records)}
+            transferred=_telemetry_sync_status['transferred'] + result['transferred'], backlog_error=backlog_error, import_conflict=import_conflict, **cleanup)
+        return {**result, 'fetched': len(records), 'backlog_fetched': backlog_fetched, 'backlog_error': backlog_error, 'import_conflict': import_conflict, **cleanup}
 
 
 def start_telemetry_sync():
@@ -462,14 +557,18 @@ def start_telemetry_sync():
             while not _telemetry_sync_stop.is_set():
                 try:
                     result = sync_cloud_telemetry_once()
+                    if failures:
+                        print('[Telemetry Sync] Cloud connection restored; synchronization resumed.')
                     failures = 0
-                    wait_seconds = 1 if result['fetched'] == 500 else 15
+                    wait_seconds = 1 if result['fetched'] == 500 or result.get('backlog_fetched') == 500 or (result.get('cleanup_pending') and not result.get('cleanup_error')) else 15
                 except (requests.RequestException, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
                     failures += 1
-                    _telemetry_sync_status['error'] = str(exc)
-                    wait_seconds = min(300, 15 * (2 ** min(failures - 1, 5)))
+                    connection_failure = isinstance(exc, (requests.ConnectionError, requests.Timeout))
+                    message = 'Cloud telemetry connection unavailable. Local history is preserved; synchronization will retry automatically.' if connection_failure else str(exc)
+                    _telemetry_sync_status['error'] = message
+                    wait_seconds = min(300, 2 ** min(failures, 9)) if connection_failure else min(300, 15 * (2 ** min(failures - 1, 5)))
                     if failures == 1:
-                        print(f'[Telemetry Sync] {exc}')
+                        print(f'[Telemetry Sync] {message} Retrying in {wait_seconds}s.')
                 _telemetry_sync_stop.wait(wait_seconds)
         finally:
             _telemetry_sync_status['running'] = False
@@ -481,6 +580,30 @@ def start_telemetry_sync():
 atexit.register(_telemetry_sync_stop.set)
 
 
+def count_cloud_pending():
+    url = os.getenv('SUPABASE_URL', '').rstrip('/')
+    key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+    if not url or not key:
+        raise ValueError('Cloud backlog unavailable')
+    response = requests.head(url + '/rest/v1/telemetry', params={'select': 'id'},
+        headers={'apikey': key, 'Authorization': 'Bearer ' + key, 'Prefer': 'count=exact', 'Range': '0-0'}, timeout=(5, 10))
+    response.raise_for_status()
+    return int(response.headers.get('Content-Range', '').rsplit('/', 1)[1])
+
+
+from backend.history_health import HistoryHealth
+history_health = HistoryHealth(SQLITE_DB_PATH, get_db_connection, lambda: _telemetry_sync_status, cloud_count=count_cloud_pending)
+app.config['HISTORY_HEALTH'] = history_health
+atexit.register(history_health.stop.set)
+
+
+class TelemetryHealthResource(Resource):
+    def get(self):
+        if not ip_address(request.remote_addr or '0.0.0.0').is_loopback:
+            return {'error': 'Read history health through the local desktop.'}, 403
+        return history_health.status(), 200
+
+
 class TelemetrySyncResource(Resource):
     def get(self):
         return dict(_telemetry_sync_status), 200
@@ -488,19 +611,29 @@ class TelemetrySyncResource(Resource):
 
 TELEMETRY_FIELDS = {
     'id', 'node_id', 'sensor_name', 'room_name', 'floor_name', 'building_name', 'aircon_type',
-    'temperature', 'pressure', 'battery', 'rssi', 'status', 'created', 'updated',
+    'temperature', 'rotation_rpm', 'rotation_quality', 'observed_at', 'battery', 'rssi', 'status', 'created', 'updated',
     'event_type', 'interval_seconds', 'wake_time', 'sleep_time', 'ac_on', 'aircon_id',
     'control_snapshot', 'ac_state'
 }
+
+
+class TelemetryIdentityConflict(ValueError):
+    pass
 
 
 def telemetry_measurement(item, field, alias=None):
     value = item.get(field, item.get(alias) if alias else None)
     if value is None:
         return None
-    value = float(value)
+    if isinstance(value, bool):
+        raise ValueError(f'{field} must be finite')
+    try:
+        value = float(value)
+    except OverflowError as error:
+        raise ValueError(f'{field} must be finite') from error
     if not np.isfinite(value):
         raise ValueError(f'{field} must be finite')
+    if field == 'rotation_rpm' and value < 0: raise ValueError('rotation_rpm must be nonnegative')
     return value
 
 
@@ -585,6 +718,13 @@ class TelemetryListResource(Resource):
             if page < 1 or per_page < 0 or column not in TELEMETRY_FIELDS:
                 raise ValueError('Invalid telemetry pagination or sort')
             filter_sql, filter_params = compile_telemetry_filter(request.args.get('filter'))
+            history = request.args.get('history') == '1'
+            cursor = request.args.get('cursor', '')
+            if cursor and not re.fullmatch(r'[0-9a-f]{32}:\d+', cursor):
+                raise ValueError('Invalid history cursor')
+            if history and (per_page != 0 or page != 1 or any(request.args.get(k) for k in
+                    ('filter', 'node_id', 'node', 'sensor_name', 'date', 'start_time', 'end_time'))):
+                raise ValueError('Incremental history requires an unfiltered complete snapshot')
         except (ValueError, TypeError) as error:
             return {'error': str(error)}, 400
         node_id = request.args.get('node_id', request.args.get('node', None))
@@ -634,6 +774,18 @@ class TelemetryListResource(Resource):
 
         conn = get_db_connection()
         try:
+            conn.execute('BEGIN')  # The rows and cursor must describe the same snapshot.
+            generation = conn.execute('SELECT token FROM telemetry_history_generation WHERE id=1').fetchone()[0]
+            history_count, last_rowid = conn.execute('SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM telemetry').fetchone()
+            history_cursor = f'{generation}:{last_rowid}'
+            full_history = True
+            if history and cursor:
+                token, after = cursor.split(':')
+                if token == generation and int(after) <= last_rowid:
+                    full_history = False
+                    # Insert before ORDER BY to keep the existing indexed sort contract.
+                    query = query.replace(' ORDER BY ', ' AND rowid > ? ORDER BY ', 1)
+                    params.append(int(after))
             total_items = conn.execute(count_query, count_params).fetchone()[0]
 
             if per_page > 0:
@@ -649,6 +801,10 @@ class TelemetryListResource(Resource):
             return {
                 "items": items,
                 "totalItems": total_items,
+                "history_total": history_count,
+                "history_cursor": history_cursor,
+                "history_revision": f'{history_cursor}:{history_count}',
+                "history_full": full_history,
                 "reset_at": telemetry_reset_at(conn),
                 "page": page,
                 "perPage": per_page,
@@ -681,9 +837,16 @@ class TelemetryListResource(Resource):
                 for item in items_to_insert:
                     if not isinstance(item, dict) or not item:
                         raise ValueError('Each telemetry record must be an object')
+                    for field in ('id', 'node_id', 'sensor_name', 'name', 'room_name', 'floor_name',
+                                  'building_name', 'aircon_type', 'status', 'aircon_id', 'ac_state',
+                                  'event_type', 'wake_time', 'sleep_time'):
+                        if item.get(field) is not None and not isinstance(item[field], str):
+                            raise ValueError(f'{field} must be a string')
+                    if item.get('id') is not None and not item['id'].strip():
+                        raise ValueError('id must be a nonempty string')
                     record_id = item.get('id') or f"telem_{uuid.uuid4().hex[:12]}"
                     node_id = item.get('node_id') or item.get('sensor_name')
-                    if not node_id:
+                    if not node_id or not node_id.strip():
                         raise ValueError('Telemetry must identify a node')
                     sensor_name = item.get('sensor_name') or item.get('name') or node_id
                     room_name = item.get('room_name') or 'Unassigned'
@@ -691,42 +854,50 @@ class TelemetryListResource(Resource):
                     building_name = item.get('building_name') or 'Unassigned'
                     aircon_type = item.get('aircon_type')
                     temperature = telemetry_measurement(item, 'temperature', 'temp')
-                    pressure = telemetry_measurement(item, 'pressure')
+                    rotation_rpm = telemetry_measurement(item, 'rotation_rpm')
+                    rotation_quality = item.get('rotation_quality')
+                    if rotation_quality not in (None, 'ok', 'missing', 'fault'): raise ValueError('Invalid rotation_quality')
+                    if rotation_quality in ('fault','missing'): rotation_rpm = None
+                    observed_at = normalize_telemetry_timestamp(item['observed_at']) if item.get('observed_at') is not None else None
                     battery = telemetry_measurement(item, 'battery')
                     rssi = telemetry_measurement(item, 'rssi')
                     status = item.get('status') or 'unknown'
-                    created = normalize_telemetry_timestamp(item.get('created') or now_iso)
+                    created = normalize_telemetry_timestamp(now_iso if item.get('created') is None else item['created'])
                     if cutoff and created <= cutoff:
                         raise ValueError('Telemetry timestamp is at or before the analytics reset')
-                    updated = normalize_telemetry_timestamp(item.get('updated') or now_iso)
+                    updated = normalize_telemetry_timestamp(now_iso if item.get('updated') is None else item['updated'])
                     ac_on = normalize_logged_ac_state(item)
+                    if isinstance(item.get('interval_seconds'), bool):
+                        raise ValueError('interval_seconds must be numeric')
                     try:
                         interval_seconds = float(item.get('interval_seconds'))
                         if not np.isfinite(interval_seconds) or interval_seconds <= 0:
                             interval_seconds = None
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         interval_seconds = None
 
                     existing = conn.execute('SELECT * FROM telemetry WHERE id=?', (record_id,)).fetchone()
                     if existing is not None:
+                        if existing['node_id'] != node_id:
+                            raise TelemetryIdentityConflict('Telemetry record id belongs to another node')
                         inserted_items.append(row_to_dict(existing))
                         continue
-                    # Management events keep their audit path; routine samples require AC ON.
-                    if item.get('event_type') != 'schedule_updated' and (analytics_recording_power(item) is not True
-                            or str(item.get('status') or '').lower() in ('off', 'offline', 'disconnected', 'sleeping', 'asleep')):
-                        skipped_items += 1
-                        continue
+                    # Preserve received OFF/unknown samples as evidence, just like cloud
+                    # imports. Only the runtime calculation decides which intervals are
+                    # confirmed ON; selected controls must never discard an OFF boundary.
 
                     conn.execute("""
                         INSERT OR IGNORE INTO telemetry (
                             id, node_id, sensor_name, room_name, floor_name, building_name,
-                            aircon_type, temperature, pressure, battery, rssi, status, created, updated,
-                            ac_on, interval_seconds, aircon_id, control_snapshot, ac_state
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            aircon_type, temperature, battery, rssi, status, created, updated,
+                            ac_on, interval_seconds, aircon_id, control_snapshot, ac_state,
+                            event_type, wake_time, sleep_time, rotation_rpm, rotation_quality, observed_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         record_id, node_id, sensor_name, room_name, floor_name, building_name,
-                        aircon_type, temperature, pressure, battery, rssi, status, created, updated,
-                        ac_on, interval_seconds, item.get("aircon_id"), serialize_control_snapshot(item.get("control_snapshot")), item.get("ac_state")
+                        aircon_type, temperature, battery, rssi, status, created, updated,
+                        ac_on, interval_seconds, item.get("aircon_id"), serialize_control_snapshot(item.get("control_snapshot")), item.get("ac_state"),
+                        item.get('event_type'), item.get('wake_time'), item.get('sleep_time'), rotation_rpm, rotation_quality, observed_at
                     ))
 
                     inserted_items.append({
@@ -738,7 +909,6 @@ class TelemetryListResource(Resource):
                         "building_name": building_name,
                         "aircon_type": aircon_type,
                         "temperature": temperature,
-                        "pressure": pressure,
                         "battery": battery,
                         "rssi": rssi,
                         "status": status,
@@ -755,6 +925,8 @@ class TelemetryListResource(Resource):
             if len(inserted_items) == 1 and not isinstance(payload, list):
                 return inserted_items[0], 201
             return {"items": inserted_items, "count": len(inserted_items), "skipped": skipped_items}, (201 if inserted_items else 200)
+        except TelemetryIdentityConflict as error:
+            return {'error': str(error)}, 409
         except (ValueError, TypeError) as e:
             return {'error': str(e)}, 400
         except Exception as e:
@@ -806,7 +978,9 @@ class TelemetryItemResource(Resource):
         if not values:
             return {'error': 'No telemetry fields supplied'}, 400
         try:
-            for field in ('temperature', 'pressure', 'battery', 'rssi', 'interval_seconds'):
+            if 'node_id' in values and (not isinstance(values['node_id'], str) or not values['node_id'].strip()):
+                raise ValueError('node_id must be a nonempty string')
+            for field in ('temperature', 'rotation_rpm', 'battery', 'rssi', 'interval_seconds'):
                 if field in values:
                     values[field] = telemetry_measurement(values, field)
             if values.get('interval_seconds') is not None and values['interval_seconds'] <= 0:
@@ -816,8 +990,16 @@ class TelemetryItemResource(Resource):
             if 'ac_on' in values:
                 values['ac_on'] = normalize_logged_ac_state(values)
             for field, value in values.items():
-                if field not in ('temperature', 'pressure', 'battery', 'rssi', 'interval_seconds', 'ac_on', 'control_snapshot') and value is not None and not isinstance(value, str):
+                if field not in ('temperature', 'rotation_rpm', 'battery', 'rssi', 'interval_seconds', 'ac_on', 'control_snapshot') and value is not None and not isinstance(value, str):
                     raise ValueError(f'{field} must be text or null')
+            if values.get('rotation_quality') not in (None,'ok','missing','fault'):
+                raise ValueError('Invalid rotation_quality')
+            if values.get('rotation_quality') in ('missing','fault'):
+                values['rotation_rpm'] = None
+            if 'created' in values:
+                values['created'] = normalize_telemetry_timestamp(values['created'])
+            if values.get('observed_at') is not None:
+                values['observed_at'] = normalize_telemetry_timestamp(values['observed_at'])
             values['updated'] = datetime.now(timezone.utc).isoformat()
         except (ValueError, TypeError) as error:
             return {'error': str(error)}, 400
@@ -871,10 +1053,10 @@ class HistoricalResource(Resource):
     def get(self):
         conn = get_db_connection()
         try:
-            rows = conn.execute("SELECT temperature, pressure, created FROM telemetry WHERE temperature IS NOT NULL AND pressure IS NOT NULL ORDER BY created ASC LIMIT 500").fetchall()
+            rows = conn.execute("SELECT temperature,rotation_rpm,created FROM telemetry WHERE temperature IS NOT NULL OR rotation_rpm IS NOT NULL ORDER BY created ASC LIMIT 500").fetchall()
             return {
-                "temperatures": [float(r['temperature']) for r in rows],
-                "pressures": [float(r['pressure']) for r in rows],
+                "temperatures": [float(r['temperature']) if r['temperature'] is not None else None for r in rows],
+                "rotations": [float(r['rotation_rpm']) if r['rotation_rpm'] is not None else None for r in rows],
                 "timestamps": [r['created'] for r in rows]
             }, 200
         finally:
@@ -915,7 +1097,7 @@ def forward_schedule_interval(job_id, node_id, interval_seconds, supplied_ip=Non
                                      timeout=(2, 4), allow_redirects=False)
             response.raise_for_status()
             acknowledgement = response.json()
-            if acknowledgement.get('success') is not True or acknowledgement.get('interval_ms') != interval_seconds * 1000:
+            if not isinstance(acknowledgement, dict) or acknowledgement.get('success') is not True or acknowledgement.get('interval_ms') != interval_seconds * 1000:
                 raise ValueError('Controller did not acknowledge the requested interval')
             status = 'sent'
     except (requests.RequestException, ValueError) as exc:
@@ -936,10 +1118,11 @@ class SetSleepScheduleResource(Resource):
     """
     def post(self):
         data = request.get_json(force=True, silent=True) or request.form.to_dict() or {}
+        if not isinstance(data, dict):
+            return {'error': 'Schedule payload must be an object'}, 400
         node_id = data.get('node_id') or data.get('node')
-        sleep_seconds = data.get('sleep_seconds') or data.get('sleep_duration') or 900
-        wake_time = data.get('wake_time') or '06:00'
-        sleep_time = data.get('sleep_time') or '22:00'
+        wake_time = data.get('wake_time', '06:00')
+        sleep_time = data.get('sleep_time', '22:00')
         if not node_id:
             return {"error": "node_id is required"}, 400
         try:
@@ -950,6 +1133,9 @@ class SetSleepScheduleResource(Resource):
             if not np.isfinite(interval) or not interval.is_integer() or not 1 <= interval <= 4294967:
                 raise ValueError('sleep_seconds must be a whole number between 1 and 4294967')
             sleep_seconds = int(interval)
+            for field in ('ip', 'ip_address'):
+                if data.get(field) is not None and not isinstance(data[field], str):
+                    raise ValueError(f'{field} must be an IP address string')
             device_ip = data.get('ip') or data.get('ip_address')
             if device_ip:
                 device_ip = str(ip_address(device_ip))
@@ -958,7 +1144,7 @@ class SetSleepScheduleResource(Resource):
             if not all(isinstance(clock, str) and re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', clock)
                        for clock in (wake_time, sleep_time)):
                 raise ValueError('wake_time and sleep_time must use HH:MM')
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, OverflowError) as exc:
             return {'error': str(exc)}, 400
 
         now = datetime.now(timezone.utc).isoformat()
@@ -967,6 +1153,17 @@ class SetSleepScheduleResource(Resource):
         snapshot = data.get('node_snapshot', {})
         if not isinstance(snapshot, dict):
             return {'error': 'node_snapshot must be an object'}, 400
+        try:
+            if snapshot.get('node_id') is not None and snapshot['node_id'] != node_id:
+                raise ValueError('node_snapshot must identify the selected node')
+            for field in ('sensor_name', 'room_name', 'floor_name', 'building_name', 'aircon_type'):
+                if snapshot.get(field) is not None and not isinstance(snapshot[field], str):
+                    raise ValueError(f'node_snapshot {field} must be a string')
+            for field in ('temperature', 'battery', 'rssi'):
+                if field in snapshot:
+                    snapshot[field] = telemetry_measurement(snapshot, field)
+        except (ValueError, TypeError) as exc:
+            return {'error': str(exc)}, 400
         conn = get_db_connection()
         try:
             latest = conn.execute('SELECT * FROM telemetry WHERE (node_id=? OR sensor_name=?) AND status != ? ORDER BY created DESC LIMIT 1',
@@ -975,13 +1172,13 @@ class SetSleepScheduleResource(Resource):
             with conn:
                 conn.execute('''INSERT INTO telemetry (
                     id, node_id, sensor_name, room_name, floor_name, building_name, aircon_type,
-                    temperature, pressure, battery, rssi, status, created, updated,
+                    temperature, battery, rssi, status, created, updated,
                     event_type, interval_seconds, wake_time, sleep_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
                     baseline_id, baseline.get('node_id') or node_id, baseline.get('sensor_name') or node_id,
                     baseline.get('room_name') or 'Unassigned', baseline.get('floor_name') or 'Unassigned',
                     baseline.get('building_name') or 'Unassigned', baseline.get('aircon_type'),
-                    baseline.get('temperature'), baseline.get('pressure'), baseline.get('battery'), baseline.get('rssi'),
+                    baseline.get('temperature'), baseline.get('battery'), baseline.get('rssi'),
                     'schedule', now, now, 'schedule_updated', sleep_seconds, wake_time, sleep_time))
                 conn.execute('INSERT INTO schedule_dispatches (id, node_id, ip, interval_seconds, status, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
                              (job_id, node_id, device_ip, sleep_seconds, 'queued', now, now))
@@ -1142,12 +1339,14 @@ class BleScanResource(Resource):
 # Register Endpoints
 api.add_resource(HealthResource, '/api/health')
 api.add_resource(EnergyPredictionResource, '/api/predict-energy')
+api.add_resource(RecordedEnergyPredictionResource, '/api/predict-recorded-energy')
 api.add_resource(PredictionFeaturesResource, '/api/prediction-features')
 api.add_resource(PredictionMetricsResource, '/api/prediction-metrics')
 api.add_resource(TelemetryListResource, '/api/telemetry')
 api.add_resource(TelemetryItemResource, '/api/telemetry/<string:item_id>')
 api.add_resource(TelemetryTransferResource, '/api/telemetry/transfer')
 api.add_resource(TelemetrySyncResource, '/api/telemetry/sync')
+api.add_resource(TelemetryHealthResource, '/api/telemetry/health')
 api.add_resource(HistoricalResource, '/api/historical')
 api.add_resource(SetSleepScheduleResource, '/api/set-sleep')
 api.add_resource(WifiScanResource, '/api/wifi/scan')
@@ -1161,10 +1360,12 @@ if __name__ == '__main__':
 
     print(f"[*] EcoTrack Microservice starting on port {port}")
     print(f"[*] SQLite3 Database : {SQLITE_DB_PATH}")
-    print(f"[*] ML models        : {', '.join(MODEL_FILES.keys())}")
+    print(f"[*] ML model         : {EnergyPredictor.MODEL_ID} (research estimates)")
     print(f"[*] Telemetry API    : http://localhost:{port}/api/telemetry")
     print(f"[*] Prediction API   : http://localhost:{port}/api/predict-energy")
 
     if not debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
         start_telemetry_sync()
+        monitoring_service.start_sync()
+        history_health.start()
     app.run(host='0.0.0.0', port=port, debug=debug)

@@ -1,5 +1,5 @@
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'reports/notification-composer-removal');
+const root=path.resolve(__dirname,'..'),out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root,'reports/notification-composer-removal');
 app.setPath('userData',path.join(root,'scratch/notification-removal-electron'));app.disableHardwareAcceleration();
 app.on('window-all-closed',()=>{});
 app.whenReady().then(async()=>{
@@ -12,6 +12,8 @@ app.whenReady().then(async()=>{
  const errors=[];win.webContents.on('console-message',(_e,level,msg)=>{if(level>=3&&!String(msg).includes('Content Security Policy')){errors.push(msg);console.error('Renderer: '+msg);}});
  win.webContents.session.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_d,cb)=>cb({cancel:true}));
  await win.loadFile(fixture);
+ await win.webContents.executeJavaScript(fs.readFileSync(path.join(root,'public/js/installation-notifications.js'),'utf8'));
+ await win.webContents.executeJavaScript(fs.readFileSync(path.join(root,'public/js/global-notifications.js'),'utf8'));
  await win.webContents.executeJavaScript(`
  window.__records=[];window.__calls=[];window.__intervals=[];window.__alerts=[];
  window.setInterval=(fn,ms)=>{__intervals.push({fn,ms});return __intervals.length;};

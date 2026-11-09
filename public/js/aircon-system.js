@@ -227,6 +227,29 @@ root.EcoTrackAirconState=exports;
   }
 
   const AirconEvents = new EventEmitter();
+  let sharedIrCodes = [];
+  let irCodeStorageReady = false;
+  let irCodeStorageError = null;
+  let irCodeWriteRevision = 0;
+
+  async function readSharedIrCodes(sb) {
+    const rows = [], seen = new Set();
+    let after = null, total = null;
+    for (;;) {
+      let query = sb.from('ecotrack_ir_codes').select('*', { count: 'exact' }).order('id').limit(250);
+      if (after !== null) query = query.gt('id', after);
+      const response = await query;
+      if (response.error) return response;
+      if (!Array.isArray(response.data)) throw new Error('Unexpected IR code response.');
+      if (after === null && Number.isInteger(response.count)) total = response.count;
+      for (const row of response.data) {
+        if (!row.id || seen.has(row.id)) throw new Error('IR code pagination returned a repeated identity.');
+        seen.add(row.id); rows.push(row);
+      }
+      if (!response.data.length || (total !== null ? rows.length >= total : response.data.length < 250)) return { data: rows, error: null };
+      after = response.data.at(-1).id;
+    }
+  }
 
   // Listen for broadcast messages from other windows/tabs
   try {
@@ -235,6 +258,7 @@ root.EcoTrackAirconState=exports;
       bc.onmessage = (msg) => {
         if (msg.data && msg.data.event && msg.data.sender === 'aircon_system') {
           if (msg.data.event === 'hardware:updated' && applyHardwareUpdate(msg.data.data?.hardware, false)) return;
+          if (msg.data.event === 'ir:updated') scheduleDatabaseSync();
           if (AirconEvents.events[msg.data.event]) {
             AirconEvents.events[msg.data.event].forEach(l => l(msg.data.data));
           }
@@ -365,6 +389,114 @@ root.EcoTrackAirconState=exports;
 
   // ===== CENTRAL LOGGING SERVICE =====
   class CentralLogService {
+    static getCommandLogs(limit = 100) {
+      return this.getLogs(500).filter(entry => entry.audit_kind === 'ac_command' ||
+        ['CONTROL', 'IR'].includes(entry.module) && /^COMMAND_(QUEUED|SUCCESS|TRANSMITTED|FAILED|REJECTED)$/.test(entry.event || ''))
+        .map(entry => entry.audit_kind === 'ac_command' ? entry : {
+          ...entry, result: ['FAILED', 'OFFLINE'].includes(entry.result) ? 'FAILED' : 'UNKNOWN',
+          delivery_status: ['FAILED', 'OFFLINE'].includes(entry.result) ? 'failed' : 'unconfirmed',
+          details: (entry.details || '') + ' · Historical entry; matching device receipt unavailable.'
+        }).slice(0, limit);
+    }
+
+    static getCommandStats() {
+      const rows = this.getCommandLogs(500);
+      return { total: rows.length,
+        transmitted: rows.filter(row => row.delivery_status === 'transmitted' && row.receipt_verified === true).length,
+        pending: rows.filter(row => ['queued', 'claimed'].includes(row.delivery_status)).length,
+        failed: rows.filter(row => ['failed', 'expired', 'superseded'].includes(row.delivery_status)).length,
+        unconfirmed: rows.filter(row => !['queued', 'claimed', 'transmitted', 'failed', 'expired', 'superseded'].includes(row.delivery_status)).length };
+    }
+
+    static clearCommandLogs() {
+      const ids = new Set(this.getCommandLogs(500).map(row => row.id));
+      try { localStorage.setItem('ecoTrack_system_logs', JSON.stringify(this.getLogs(500).filter(row => !ids.has(row.id)))); }
+      catch (_) { return; }
+      AirconEvents.emit('log:cleared');
+    }
+
+    static recordCommand(queued, device, airconId, feature, state) {
+      const commandId = queued.command_id || queued.id;
+      if (!commandId) return null;
+      const existing = this.getCommandLogs(500).find(entry => entry.command_id === commandId);
+      if (existing) return existing;
+      return this.log({ device_id: device.device_id, node_id: device.node_id, module: 'CONTROL',
+        event: 'COMMAND_QUEUED', result: 'PENDING',
+        details: `${feature} requested for ${device.name}: ${JSON.stringify(state)} · Awaiting device acknowledgement.`,
+        command_id: commandId, aircon_id: airconId,
+        cloud_node_id: queued.node_id || device.controller_node_id || device.node_id,
+        expires_at: queued.expires_at || null, delivery_status: 'queued' });
+    }
+
+    static reconcileCommand(command) {
+      const logs = this.getLogs(500), index = logs.findIndex(entry => entry.audit_kind === 'ac_command' && entry.command_id === command?.id);
+      if (index < 0) return false; // Clearing the audit during a read must not recreate it.
+      const entry = logs[index];
+      if (command.node_id !== entry.cloud_node_id || command.kind !== 'ac_intent' || command.payload?.aircon_id !== entry.aircon_id) return false;
+      if (entry.receipt_verified || ['failed', 'expired', 'superseded'].includes(entry.delivery_status)) return false;
+      const receipt = command.result;
+      const verified = command.status === 'completed' && receipt?.success === true &&
+        receipt.command_id === entry.command_id && receipt.delivery_status === 'transmitted';
+      const status = verified ? 'transmitted' : ['failed', 'expired', 'superseded', 'queued', 'claimed'].includes(command.status) ? command.status : 'unconfirmed';
+      const result = verified ? 'SUCCESS' : ['failed', 'expired', 'superseded'].includes(status) ? 'FAILED' :
+        ['queued', 'claimed'].includes(status) ? 'PENDING' : 'UNKNOWN';
+      const message = verified ? 'Controller acknowledged IR transmission. AC response remains unconfirmed.' :
+        status === 'claimed' ? 'Controller fetched the command; awaiting transmission acknowledgement.' :
+        status === 'queued' ? 'Awaiting device acknowledgement.' :
+        status === 'unconfirmed' ? String(receipt?.error || 'A matching IR transmission receipt is unavailable. AC response remains unconfirmed.') :
+        String(receipt?.error || `Command ${status}; no confirmed IR transmission.`);
+      const next = { ...entry, delivery_status: status, result, receipt_verified: verified,
+        event: verified ? 'IR_TRANSMITTED' : result === 'FAILED' ? 'COMMAND_' + status.toUpperCase() :
+          status === 'claimed' ? 'COMMAND_CLAIMED' : result === 'UNKNOWN' ? 'RECEIPT_UNCONFIRMED' : 'COMMAND_QUEUED',
+        request_details: entry.request_details || entry.details,
+        details: (entry.request_details || entry.details).replace(/ · Awaiting device acknowledgement\.$/, '') + ' · ' + message,
+        acknowledged_at: command.acknowledged_at || null };
+      if (JSON.stringify(next) === JSON.stringify(entry)) return false;
+      logs[index] = next;
+      try { localStorage.setItem('ecoTrack_system_logs', JSON.stringify(logs)); } catch (_) { return false; }
+      AirconEvents.emit('log:new', next);
+      return true;
+    }
+
+    static async reconcileCommands(client, aircons = [], isCurrent = () => true) {
+      if (this._receiptRead || !client?.from) return;
+      const pending = this.getCommandLogs(500).filter(row => row.audit_kind === 'ac_command' && !row.receipt_verified &&
+        !['failed', 'expired', 'superseded'].includes(row.delivery_status));
+      if (!pending.length) return;
+      this._receiptRead = true;
+      try {
+        for (let offset = 0; offset < pending.length; offset += 50) {
+          const batch = pending.slice(offset, offset + 50);
+          let query = client.from('ecotrack_device_commands')
+            .select('id,node_id,kind,payload,status,result,acknowledged_at').in('id', batch.map(row => row.command_id));
+          const controller = typeof AbortController === 'function' ? new AbortController() : null;
+          if (controller && typeof query.abortSignal === 'function') query = query.abortSignal(controller.signal);
+          let timer, response;
+          try {
+            response = await Promise.race([query, new Promise((_, reject) => {
+              timer = setTimeout(() => { controller?.abort(); reject(new Error('Command receipt read timed out.')); }, 10000);
+            })]);
+          } finally { clearTimeout(timer); }
+          const { data, error } = response;
+          if (!isCurrent()) return;
+          if (error || !Array.isArray(data)) continue;
+          const returned = new Set(data.map(row => row.id));
+          for (const command of data) this.reconcileCommand(command);
+          // The queue deliberately prunes terminal rows. A status summary is useful,
+          // but is not promoted to a verified device receipt.
+          for (const row of batch.filter(entry => !returned.has(entry.command_id))) {
+            const ac = aircons.find(item => item.id === row.aircon_id && item.command_id === row.command_id &&
+              [item.node_id, item.controller_node_id].includes(row.cloud_node_id));
+            if (!ac) continue;
+            this.reconcileCommand({ id: row.command_id, node_id: row.cloud_node_id, kind: 'ac_intent',
+              payload: { aircon_id: row.aircon_id }, status: ['failed', 'expired', 'superseded'].includes(ac.command_status) ? ac.command_status : 'unconfirmed',
+              result: { error: ac.command_status === 'transmitted' ? 'Cloud reports IR transmitted; detailed receipt unavailable. AC response unconfirmed.' : 'Matching device receipt unavailable.' } });
+          }
+        }
+      } catch (_) { /* Preserve the last known outcome when the cloud read fails. */ }
+      finally { this._receiptRead = false; }
+    }
+
     static getLogs(limit = 100) {
       try {
         const raw = localStorage.getItem('ecoTrack_system_logs');
@@ -393,7 +525,7 @@ root.EcoTrackAirconState=exports;
      * @param {'SUCCESS' | 'FAILED' | 'PENDING' | 'WARNING' | 'INFO' | 'OFFLINE'} entry.result
      * @param {string} [entry.details]
      */
-    static log({ device_id, node_id, module, event, result, details }) {
+    static log({ device_id, node_id, module, event, result, details, command_id, aircon_id, cloud_node_id, expires_at, delivery_status }) {
       const entry = {
         id: 'log_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
         timestamp: new Date().toISOString(),
@@ -404,6 +536,8 @@ root.EcoTrackAirconState=exports;
         result: result || 'INFO',
         details: details || ''
       };
+      if (command_id) Object.assign(entry, { audit_kind: 'ac_command', command_id, aircon_id, cloud_node_id,
+        expires_at, delivery_status, receipt_verified: false });
 
       try {
         const raw = localStorage.getItem('ecoTrack_system_logs');
@@ -497,7 +631,7 @@ root.EcoTrackAirconState=exports;
       status: hardware.connection_status === 'sleeping' ? 'Sleeping' : online ? 'Connected' : 'Offline',
       capabilities: hardware.capabilities || {}, firmware: hardware.firmware_version,
       ir_tx: hardware.capabilities?.ir_transmitter === true, ir_rx: hardware.capabilities?.ir_receiver === true,
-      hardware: hardware.capabilities?.ir_transmitter ? 'ESP32-S3 IR controller' : 'ESP32-S3 IR receiver',
+      hardware: hardware.capabilities?.ir_transmitter ? 'IR controller' : 'IR receiver',
       controls: hardware.capabilities?.ir_transmitter ? ['IR Control', 'IR Learning'] : ['IR Learning'],
       ip_address: hardware.ip_address, wifi_ssid: hardware.wifi_ssid, rssi: hardware.rssi });
     const changed = [];
@@ -563,12 +697,15 @@ root.EcoTrackAirconState=exports;
     }, 150);
   }
   function resolveRegisteredAirconNode(aircon, aircons, nodes) {
+    const identities = node => [node.id, node.db_id, node.node_id, node.name].filter(Boolean);
     const links = [aircon.node_id, aircon.controller_node_id].filter(Boolean);
-    const matches = nodes.filter(node => links.includes(node.id) || links.includes(node.name));
+    const matches = nodes.filter(node => identities(node).some(id => links.includes(id)));
     if (matches.length !== 1) return null;
-    const node = matches[0];
-    const owners = aircons.filter(owner => [owner.node_id, owner.controller_node_id]
-      .some(link => link && (link === node.id || link === node.name)));
+    const node = matches[0], ids = identities(node);
+    if (aircon.controller_node_id && !ids.includes(aircon.controller_node_id)) return null;
+    const owners = aircons.filter(owner =>
+      (!owner.controller_node_id || ids.includes(owner.controller_node_id)) &&
+      [owner.node_id, owner.controller_node_id].some(link => link && ids.includes(link)));
     return owners.length === 1 ? node : null;
   }
 
@@ -584,6 +721,7 @@ root.EcoTrackAirconState=exports;
     try {
       isDatabaseSyncing = true;
       const authVersion = databaseAuthVersion;
+      const irRevision = irCodeWriteRevision;
       const readRevision = hardwareRevision;
       await window.ecotrackAuthReady;
       if (sb.auth?.getSession) {
@@ -591,10 +729,11 @@ root.EcoTrackAirconState=exports;
         if (error) throw error;
         if (!data?.session || authVersion !== databaseAuthVersion) return;
       }
-      const [nodesRes, [roomsRes, floorsRes, bldRes], airconsRes] = await Promise.all([
+      const [nodesRes, [roomsRes, floorsRes, bldRes], airconsRes, codesRes] = await Promise.all([
         sb.from('nodes').select('*').order('name'),
         readReferenceData(sb, refreshReferences),
-        sb.from('aircons').select('*')
+        sb.from('aircons').select('*'),
+        readSharedIrCodes(sb).catch(error => ({ data: null, error }))
       ]);
       if (authVersion !== databaseAuthVersion) return;
       if (nodesRes.error || airconsRes.error) throw nodesRes.error || airconsRes.error;
@@ -639,26 +778,24 @@ root.EcoTrackAirconState=exports;
       // Map real Supabase nodes into AC Controller Devices
       const pendingControllers = new Set(window.EcoTrackHardwareCloud?.pendingRegistrations?.() || []);
       const realNodes = sbNodes.filter(n => !pendingControllers.has(n.id) || sbAircons.some(ac => ac.controller_node_id === n.id || ac.node_id === n.id)).map((n, idx) => {
-        let rInfo = roomMap[n.room_id];
-        if (!rInfo) {
-          rInfo = { name: 'Unassigned', floor: 'Unassigned', building: 'Unassigned' };
-        }
-
         const hardware = hardwareByNode.get(n.id);
         const isOnline = hardware?.connection_status === 'online';
         const numPart = (n.name || n.id || String(idx + 1)).replace(/\D/g, '') || String(idx + 1);
         const matchedAcForNode = sbAircons.find(a => 
+          a.id === n.monitor_aircon_id ||
           a.node_id === n.name || a.node_id === n.id || 
           a.controller_node_id === n.name || a.controller_node_id === n.id ||
           (a.asset_tag && (n.name === a.asset_tag || n.id === a.asset_tag || n.aircon_id === a.asset_tag))
         );
+        const roomId = roomMap[n.room_id] ? n.room_id : matchedAcForNode?.room_id || n.room_id;
+        const rInfo = roomMap[roomId] || { name: 'Unassigned', floor: 'Unassigned', building: 'Unassigned' };
         const resolvedBrand = matchedAcForNode?.brand || n.brand || null;
 
         return {
           node_id: hardware?.device_id || n.name || n.id,
           name: n.name,
           status: hardware?.connection_status === 'sleeping' ? 'Sleeping' : isOnline ? 'Connected' : 'Offline',
-          hardware: hardware?.capabilities?.ir_transmitter ? 'ESP32-S3 IR controller' : 'ESP32-S3 IR receiver',
+          hardware: hardware?.capabilities?.ir_transmitter ? 'IR controller' : 'IR receiver',
           firmware: hardware?.firmware_version || null,
           capabilities: hardware?.capabilities || {},
           cloud_state: hardware || null,
@@ -677,15 +814,20 @@ root.EcoTrackAirconState=exports;
           rssi: hardware?.rssi ?? null,
           temp: null,
           pressure: null,
-          room_id: n.room_id,
+          rotation_rpm: typeof n.rotation_rpm === 'number' && Number.isFinite(n.rotation_rpm) && n.rotation_rpm >= 0 ? n.rotation_rpm : null,
+          rotation_quality: n.rotation_quality || null,
+          last_measurement_at: n.last_measurement_at || null,
+          interval_val: n.interval_val,
+          interval_unit: n.interval_unit,
+          room_id: roomId || null,
           room_name: rInfo.name,
-          floor_id: sbRooms.find(room => room.id === n.room_id)?.floor_id || null,
-          building_id: sbFloors.find(floor => floor.id === sbRooms.find(room => room.id === n.room_id)?.floor_id)?.building_id || null,
+          floor_id: sbRooms.find(room => room.id === roomId)?.floor_id || null,
+          building_id: sbFloors.find(floor => floor.id === sbRooms.find(room => room.id === roomId)?.floor_id)?.building_id || null,
           floor: rInfo.floor,
           building: rInfo.building,
           location: `${rInfo.name} (${rInfo.building} • ${rInfo.floor})`,
           aircon_type: n.aircon_type || matchedAcForNode?.aircon_type || 'Split Type (Inverter)',
-          db_id: n.id,
+          db_id: n.id,device_mode:n.device_mode || 'controller',monitor_aircon_id:n.monitor_aircon_id,monitoring_id:n.monitoring_id,sensor_config:n.sensor_config,
           last_seen: hardware?.last_seen || null
         };
       });
@@ -761,7 +903,7 @@ root.EcoTrackAirconState=exports;
           brand: ac.brand || 'Unspecified',
           model: ac.model || ac.aircon_type || existingLocal?.model || 'Split Type (Inverter)',
           aircon_type: ac.aircon_type || ac.model || existingLocal?.aircon_type || 'Split Type (Inverter)',
-          location: (existingLocal?.room_id === rId && existingLocal?.location) || `${cleanRoom} (${rInfo.building || 'Main Campus'} • ${rInfo.floor || '1st Floor'})`,
+          location: `${cleanRoom} (${rInfo.building || 'Main Campus'} • ${rInfo.floor || '1st Floor'})`,
           building: rInfo.building || '',
           floor: rInfo.floor || '',
           room: cleanRoom,
@@ -792,8 +934,21 @@ root.EcoTrackAirconState=exports;
       localStorage.setItem('ecoTrack_nodes', JSON.stringify(realNodes));
       localStorage.setItem('ecoTrack_aircons', JSON.stringify(finalAircons));
       localStorage.removeItem('ecoTrack_aircons_cache');
+      if (irRevision === irCodeWriteRevision) {
+        const previousCodes = JSON.stringify(sharedIrCodes);
+        const previousError = irCodeStorageError?.message;
+        irCodeStorageReady = !codesRes.error;
+        irCodeStorageError = codesRes.error ? new Error('Shared IR codes are unavailable. Ask your administrator to enable IR code sharing.') : null;
+        const visibleAircons = new Map(sbAircons.map(ac => [ac.id, ac.asset_tag || ac.id]));
+        sharedIrCodes = (codesRes.data || []).filter(row => visibleAircons.has(row.aircon_id))
+          .map(row => ({ ...row, device_id: visibleAircons.get(row.aircon_id) }));
+        if (previousCodes !== JSON.stringify(sharedIrCodes) || previousError !== irCodeStorageError?.message)
+          AirconEvents.emit('ir:updated', { action: 'sync' }, false);
+      }
       registryReady = true;
       lastDatabaseSnapshotAt = Date.now();
+
+      void CentralLogService.reconcileCommands(sb, sbAircons, () => authVersion === databaseAuthVersion);
 
       AirconEvents.emit('node:updated', realNodes);
       AirconEvents.emit('aircon:updated', finalAircons);
@@ -819,6 +974,8 @@ root.EcoTrackAirconState=exports;
       sb.auth?.onAuthStateChange?.(() => {
         if (databaseRealtimeClient !== sb) return;
         databaseAuthVersion += 1;
+        sharedIrCodes = []; irCodeStorageReady = false; irCodeStorageError = null; irCodeWriteRevision += 1;
+        AirconEvents.emit('ir:updated', { action: 'session' }, false);
         registryReady = false; hardwareOverlay.clear(); hardwareEventVersions.clear(); registeredNodeRows.clear(); lastHardwareEventAt = 0;
         invalidateReferenceData();
         scheduleDatabaseSync(true);
@@ -827,6 +984,7 @@ root.EcoTrackAirconState=exports;
         sb.channel('realtime_aircon_nodes')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'nodes' }, receiveNodeEvent)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'aircons' }, () => scheduleDatabaseSync())
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'ecotrack_ir_codes' }, () => scheduleDatabaseSync())
           .on('postgres_changes', { event: '*', schema: 'public', table: 'ecotrack_device_state' }, receiveHardwareEvent)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms' }, () => scheduleDatabaseSync(true))
           .on('postgres_changes', { event: '*', schema: 'public', table: 'floors' }, () => scheduleDatabaseSync(true))
@@ -930,7 +1088,7 @@ root.EcoTrackAirconState=exports;
         const linked=AirconProfileManager.getAll().filter(ac=>ac.controller_node_id===databaseId || ac.node_id===current.node_id);
         const changes={name:updatedData.name ?? current.name,room_id:updatedData.room_id!==undefined?updatedData.room_id:current.room_id ?? null,
           brand:updatedData.brand!==undefined?updatedData.brand:current.brand ?? null,aircon_type:updatedData.aircon_type ?? current.aircon_type,
-          protocol_name:updatedData.protocol_name ?? current.protocol_name ?? 'UNKNOWN',aircon_name:updatedData.aircon_name};
+          protocol_name:updatedData.protocol_name ?? linked[0]?.protocol_name ?? linked[0]?.protocol ?? current.protocol_name ?? 'UNKNOWN',aircon_name:updatedData.aircon_name};
         const response=await sb.rpc('ecotrack_admin_edit_controller',{p_node_id:databaseId,p_changes:changes});
         if(response.error && !(response.error.code==='PGRST202' && linked.every(ac=>!updatedData.aircon_name || ac.name===updatedData.aircon_name)))
           throw new Error(response.error.code==='PGRST202'?'Install supabase_aircon_names_migration.sql to save a custom AC name.':response.error.message);
@@ -1047,10 +1205,13 @@ root.EcoTrackAirconState=exports;
         .or(`node_id.eq.${id},controller_node_id.eq.${id},node_id.eq.${lookup.data.name}`);
       if (linked.error) throw linked.error;
       const linkedAircons = (linked.data || []).filter(ac => [id, lookup.data.name].includes(ac.node_id) || ac.controller_node_id === id);
+      if (linkedAircons.length > 0 && !options.unassignLinked && !options.force)
+        throw new Error('This controller is assigned to an AC profile. Unassign it in Aircon Control configuration before removing the controller.');
+      // Adopt old local mirrors before an auto-created AC or its node is removed.
+      if (window.electron?.invoke) {
+        try { await window.electron.invoke('monitoring-sync-registry'); } catch (_) {}
+      }
       if (linkedAircons.length > 0) {
-        if (!options.unassignLinked && !options.force) {
-          throw new Error('This controller is assigned to an AC profile. Unassign it in Aircon Control configuration before removing the controller.');
-        }
         for (const ac of linkedAircons) {
           const isAuto = isAutoGeneratedTag(ac.asset_tag, target.node_id) || isAutoGeneratedTag(ac.asset_tag, id);
           if (isAuto || options.deleteAutoGenerated) {
@@ -1064,6 +1225,12 @@ root.EcoTrackAirconState=exports;
       if (removed.error) throw removed.error;
       const confirmation = await sb.from('nodes').select('id').eq('id', id).maybeSingle();
       if (confirmation.error || confirmation.data) throw new Error(confirmation.error?.message || 'Supabase did not confirm controller removal.');
+      if (window.electron?.invoke) {
+        try {
+          const mirror = await window.electron.invoke('monitoring-sync-registry');
+          if (!mirror?.success) window.EcoToast?.show('Device removed. Refresh local monitoring when the backend reconnects.', 'warning');
+        } catch (_) { window.EcoToast?.show('Device removed. Refresh local monitoring when the backend reconnects.', 'warning'); }
+      }
       const devices = this.getDevices().filter(node => node.db_id !== id && node.node_id !== target.node_id && node.node_id !== node_id);
       localStorage.setItem('ecoTrack_nodes', JSON.stringify(devices));
 
@@ -1103,7 +1270,7 @@ root.EcoTrackAirconState=exports;
 
     static isDeviceOnline(device_node_id) {
       const dev = this.getDevice(device_node_id);
-      return dev ? (dev.status.toLowerCase() === 'connected' || dev.status.toLowerCase() === 'online') : false;
+      return ['connected', 'online'].includes(String(dev?.status || '').toLowerCase());
     }
 
     static isNodeOnline(node_id) { return this.isDeviceOnline(node_id); }
@@ -1235,7 +1402,11 @@ root.EcoTrackAirconState=exports;
 
       if (deviceData.registration_assignment) {
         if (!sb?.rpc || !deviceData.cloud_registered) throw new Error('Supabase registration is required.');
-        let query=sb.rpc('ecotrack_finish_controller_registration', {
+        const role=deviceData.registration_assignment.device_mode;
+        if (role === 'controller' && this.getNode(deviceData.node_id)?.monitoring_id && window.electron?.invoke) {
+          try { await window.electron.invoke('monitoring-sync-registry'); } catch (_) {}
+        }
+        let query=sb.rpc(role ? 'ecotrack_finish_ac_device_registration' : 'ecotrack_finish_controller_registration', {
           p_node_id:deviceData.db_id,p_device_id:deviceData.node_id,p_setup:deviceData.registration_assignment
         }),timer;
         if(typeof AbortController==='function' && typeof query.abortSignal==='function') {
@@ -1245,20 +1416,27 @@ root.EcoTrackAirconState=exports;
         const result=response.data, ac=result?.aircon;
         if (response.error) throw new Error(response.error.message || 'Registration could not be saved.');
         if (result?.success !== true || result.connected !== true || result.node?.id !== deviceData.db_id ||
-            ac?.node_id !== deviceData.db_id || ac?.controller_node_id !== deviceData.db_id ||
+            (role==='monitoring' ? result.node.device_mode!=='monitoring' || result.node.monitor_aircon_id!==ac?.id : ac?.node_id !== deviceData.db_id || ac?.controller_node_id !== deviceData.db_id) ||
             result.cloud_state?.device_id !== deviceData.node_id)
           throw new Error('The controller and AC relationship was not confirmed.');
+        if(role && result.node.device_mode!==role)throw new Error('The requested AC device type was not confirmed.');
         const requestedAcName=deviceData.registration_assignment.aircon_name;
         if(requestedAcName && ac.name!==requestedAcName)throw new Error('Install supabase_aircon_names_migration.sql before saving a custom AC name.');
-        Object.assign(mergedDevice, {name:result.node.name,brand:result.node.brand,aircon_type:result.node.aircon_type,
+        Object.assign(mergedDevice, {device_mode:result.node.device_mode || 'controller',monitor_aircon_id:result.node.monitor_aircon_id,monitoring_id:result.node.monitoring_id,sensor_config:result.node.sensor_config,name:result.node.name,brand:result.node.brand,aircon_type:result.node.aircon_type,
           room_id:result.node.room_id,admin_verified_at:result.node.admin_verified_at || null,
           deployment_saved_at:result.node.deployment_saved_at || null,aircon_id:ac.id,cloud_state:result.cloud_state});
         delete mergedDevice.registration_assignment;
+        if(role && window.electron?.invoke) {
+          try {
+            const mirror=await window.electron.invoke('monitoring-sync-registry');
+            if(!mirror?.success) window.EcoToast?.show('Device registered. Local monitoring registry needs a refresh.','warning');
+          } catch (_) { window.EcoToast?.show('Device registered. Local monitoring registry needs a refresh.','warning'); }
+        }
         const aircons=AirconProfileManager.getAll();
         const index=aircons.findIndex(item=>item.aircon_id===ac.id || item.device_id===ac.asset_tag);
         const saved={...(index>=0?aircons[index]:{}),aircon_id:ac.id,device_id:ac.asset_tag,name:ac.name || ac.asset_tag,
-          brand:ac.brand,model:ac.model,aircon_type:ac.aircon_type,room_id:ac.room_id,node_id:deviceData.node_id,
-          controller_node_id:deviceData.db_id,protocol_name:ac.protocol_name||ac.protocol,
+          brand:ac.brand,model:ac.model,aircon_type:ac.aircon_type,room_id:ac.room_id,node_id:role==='monitoring' ? ac.node_id : deviceData.node_id,
+          controller_node_id:ac.controller_node_id,protocol_name:ac.protocol_name||ac.protocol,
           reported_state:ac.reported_state,reported_at:ac.reported_at,
           state:index>=0?aircons[index].state:{power:null,temperature:null,mode:null,fan:null}};
         if(index>=0)aircons[index]=saved;else aircons.push(saved);
@@ -1386,6 +1564,19 @@ root.EcoTrackAirconState=exports;
       } catch (_) {
         return DEFAULT_AIRCONS;
       }
+    }
+
+    static getControllable() {
+      const aircons = this.getAll(), nodes = NodeService.getDevices();
+      return aircons.filter(aircon => {
+        const controller = resolveRegisteredAirconNode(aircon, aircons, nodes);
+        return controller && controller.device_mode !== 'monitoring';
+      });
+    }
+
+    static getControllableById(device_id) {
+      const profile = this.getById(device_id);
+      return profile && this.getControllable().some(aircon => aircon.device_id === profile.device_id) ? profile : null;
     }
 
     static getById(device_id) {
@@ -1630,6 +1821,32 @@ const AcCapabilityRegistry = (() => {
     static get BRAND_PROTOCOL_LIMITS() { return Object.fromEntries(Object.keys(AcCapabilityRegistry.data.protocols).map(p=>[p.toLowerCase(),this.getCapabilities(p)])); }
     static resolveProtocolName(value) { return AcCapabilityRegistry.protocol(value); }
     static getCapabilities(value,mode) { return AcCapabilityRegistry.capabilities(value,mode); }
+    // App controls use whole-degree targets; protocol/received-state validation stays exact.
+    static getControlTemperatureRange(value,mode) {
+      const caps=this.getCapabilities(value,mode);
+      if(!caps.can_transmit || !caps.temperature_controllable ||
+          !Number.isFinite(caps.temperature_min) || !Number.isFinite(caps.temperature_max))return null;
+      const values=[];
+      for(let temp=Math.ceil(caps.temperature_min);temp<=Math.floor(caps.temperature_max);temp++) {
+        if(AcCapabilityRegistry.validateTemperature(value,temp,mode).valid)values.push(temp);
+      }
+      return values.length ? {min:values[0],max:values[values.length-1],step:1,values} : null;
+    }
+    static nextControlTemperature(value,current,direction) {
+      if(!['number','string'].includes(typeof current) || (typeof current==='string'&&!current.trim()) ||
+          !Number.isFinite(Number(current)) || ![1,-1].includes(direction))return null;
+      const values=this.getControlTemperatureRange(value)?.values || [];
+      return direction===1 ? values.find(temp=>temp>Number(current)) ?? null
+        : [...values].reverse().find(temp=>temp<Number(current)) ?? null;
+    }
+    static validateControlTemperature(value,temp,mode) {
+      return typeof temp==='number' && Number.isInteger(temp) &&
+        Boolean(this.getControlTemperatureRange(value,mode)?.values.includes(temp));
+    }
+    static formatTemperature(temp,suffix='') {
+      return ['number','string'].includes(typeof temp) && !(typeof temp==='string'&&!temp.trim()) && Number.isFinite(Number(temp))
+        ? String(Number(temp))+suffix : '—';
+    }
     static isSupported(value,feature,selected=null) {
       const caps=this.getCapabilities(value);
       if(!caps.can_transmit)return false;
@@ -1670,16 +1887,9 @@ const AcCapabilityRegistry = (() => {
       const protocol = String(data.raw_type || data.protocol || '').trim().toUpperCase();
       if (!protocol || (!data.raw_data && !(Number(data.raw_count) >= 3)))
         return {success:false,message:'No valid IR frame was received. Retry while pressing the physical remote.'};
-      const families = [
-        [/^DAIKIN/, 'Daikin'], [/^MIDEA/, 'Midea'], [/^GREE$/, 'Gree'],
-        [/^CARRIER_AC/, 'Carrier'], [/^PANASONIC_AC/, 'Panasonic'], [/^SAMSUNG_AC$/, 'Samsung'],
-        [/^MITSUBISHI/, 'Mitsubishi'], [/^HAIER/, 'Haier'], [/^HITACHI/, 'Hitachi'],
-        [/^TOSHIBA_AC$/, 'Toshiba'], [/^FUJITSU_AC$/, 'Fujitsu'], [/^LG(?:2)?$/, 'LG'],
-        [/^SHARP_AC$/, 'Sharp'], [/^TCL(?:112|96)AC$/, 'TCL'], [/^WHIRLPOOL_AC$/, 'Whirlpool']
-      ];
-      const brand = families.find(([pattern]) => pattern.test(protocol))?.[1] || null;
-      return {...data,success:true,brand,protocol,ambiguous:!brand,
-        message:brand ? 'Recognized ' + brand + ' IR protocol.' : 'IR protocol ' + protocol + ' was captured. Choose the manufacturer manually; this protocol can be shared by multiple brands.'};
+      // A shared IR protocol identifies the encoding, not the unit's maker or custom name.
+      return {...data,success:true,brand:null,protocol,ambiguous:true,
+        message:'IR protocol ' + protocol + ' captured. The custom aircon name and manufacturer stay unchanged; enter them separately.'};
     }
     static async detectRemoteBrand(nodeId, options = {}) {
       try {
@@ -1698,66 +1908,77 @@ const AcCapabilityRegistry = (() => {
     }
 
     static getCommandsForDevice(device_id) {
+      const device = AirconProfileManager.getById(device_id);
+      const commands = sharedIrCodes.filter(row => row.aircon_id === device?.aircon_id || row.device_id === device_id);
       try {
         const raw = localStorage.getItem('ecoTrack_ir_commands');
-        const commands = raw ? JSON.parse(raw) : DEFAULT_IR_COMMANDS;
-        return commands.filter(c => c.device_id === device_id);
+        const legacy = raw ? JSON.parse(raw) : DEFAULT_IR_COMMANDS;
+        return [...commands, ...legacy.filter(c => c.device_id === device_id && !commands.some(row => row.command_type === c.command_type))
+          .map(row => ({ ...row, local_only: true }))];
       } catch (_) {
-        return DEFAULT_IR_COMMANDS.filter(c => c.device_id === device_id);
+        return commands;
       }
     }
 
-    static saveCommand(cmd) {
-      try {
-        const raw = localStorage.getItem('ecoTrack_ir_commands');
-        const commands = raw ? JSON.parse(raw) : [...DEFAULT_IR_COMMANDS];
-        const newCmd = {
-          id: cmd.id || 'cmd_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-          device_id: cmd.device_id,
-          command_type: cmd.command_type,
-          protocol: cmd.protocol || 'UNKNOWN',
-          raw_data: cmd.raw_data || '',
-          decoded_data: cmd.decoded_data || '',
-          created_at: new Date().toISOString()
-        };
-        const idx = commands.findIndex(c => c.device_id === newCmd.device_id && c.command_type === newCmd.command_type);
-        if (idx >= 0) commands[idx] = newCmd;
-        else commands.push(newCmd);
+    static getStorageStatus() { return { ready: irCodeStorageReady, error: irCodeStorageError?.message || null }; }
 
-        localStorage.setItem('ecoTrack_ir_commands', JSON.stringify(commands));
-        AirconEvents.emit('ir:command_saved', newCmd);
-        AirconEvents.emit('ir:updated', { device_id: newCmd.device_id, action: 'save', command: newCmd });
-        return newCmd;
-      } catch (err) {
-        console.error('Failed to save IR command:', err);
-        return null;
-      }
+    static normalizeCapture(input) {
+      const protocol = String(input?.protocol || input?.raw_type || '').trim().toUpperCase();
+      const raw = typeof input?.raw_data === 'string' ? input.raw_data.replace(/\s/g, '') : '';
+      if (!/^[A-Z][A-Z0-9_]{1,48}$/.test(protocol) || raw.length > 32768 || !/^\d+(,\d+){2,4095}$/.test(raw))
+        throw new Error('Supply actual captured IR timings and an exact protocol.');
+      const timings = raw.split(',');
+      if (timings.some(value => value.length > 7 || Number(value) < 1 || Number(value) > 1000000)) throw new Error('Invalid IR timing duration.');
+      const metadata = {};
+      for (const field of ['raw_type','sequence','boot_count','hex','frame_kind','state','ac_capabilities','remote_model','captured_at_ms','captured_at_epoch_ms','received_at'])
+        if (input[field] !== undefined) metadata[field] = input[field];
+      const capture = { ...metadata, protocol, raw_data: raw, raw_count: timings.length };
+      if (JSON.stringify(capture).length > 65536) throw new Error('IR capture is too large.');
+      return capture;
     }
 
-    static deleteCommand(idOrDeviceId, commandType = null) {
-      try {
-        const raw = localStorage.getItem('ecoTrack_ir_commands');
-        let commands = raw ? JSON.parse(raw) : [...DEFAULT_IR_COMMANDS];
-        let deletedCmd = null;
+    static async saveCommand(cmd) {
+      const device = AirconProfileManager.getById(cmd?.device_id || cmd?.aircon_id);
+      const sb = window.supabaseClient || window.sb;
+      if (!device?.aircon_id || !sb?.rpc) throw new Error('Select a registered AC and sign in before saving an IR code.');
+      const commandType = String(cmd.command_type || '').trim().toUpperCase();
+      if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(commandType)) throw new Error('Enter a valid IR command name.');
+      const capture = this.normalizeCapture({ ...(cmd.capture || {}), protocol: cmd.protocol || cmd.capture?.protocol,
+        raw_data: cmd.raw_data || cmd.capture?.raw_data });
+      const authVersion = databaseAuthVersion;
+      const response = await sb.rpc('ecotrack_save_ir_code', { p_aircon_id: device.aircon_id,
+        p_command_type: commandType, p_capture: capture, p_source: 'desktop' });
+      if (response.error) throw new Error(response.error.message);
+      const row = response.data;
+      if (!row?.id || row.aircon_id !== device.aircon_id || row.command_type !== commandType ||
+          row.protocol !== capture.protocol || row.raw_data !== capture.raw_data) throw new Error('The saved IR code was not confirmed.');
+      if (authVersion !== databaseAuthVersion) throw new Error('Your session changed while saving the IR code. Sign in again and refresh.');
+      const saved = { ...row, device_id: device.device_id };
+      irCodeWriteRevision += 1;
+      sharedIrCodes = [...sharedIrCodes.filter(item => item.id !== saved.id && !(item.aircon_id === saved.aircon_id && item.command_type === saved.command_type)), saved];
+      irCodeStorageReady = true; irCodeStorageError = null;
+      AirconEvents.emit('ir:command_saved', saved);
+      AirconEvents.emit('ir:updated', { device_id: device.device_id, action: 'save', command: saved });
+      return saved;
+    }
 
-        if (commandType) {
-          deletedCmd = commands.find(c => c.device_id === idOrDeviceId && c.command_type === commandType);
-          commands = commands.filter(c => !(c.device_id === idOrDeviceId && c.command_type === commandType));
-        } else {
-          deletedCmd = commands.find(c => c.id === idOrDeviceId);
-          commands = commands.filter(c => c.id !== idOrDeviceId);
-        }
-
-        localStorage.setItem('ecoTrack_ir_commands', JSON.stringify(commands));
-        if (deletedCmd) {
-          AirconEvents.emit('ir:command_deleted', deletedCmd);
-          AirconEvents.emit('ir:updated', { device_id: deletedCmd.device_id, action: 'delete', command: deletedCmd });
-        }
-        return true;
-      } catch (err) {
-        console.error('Failed to delete IR command:', err);
-        return false;
-      }
+    static async deleteCommand(idOrDeviceId, commandType = null) {
+      const device = commandType ? AirconProfileManager.getById(idOrDeviceId) : null;
+      const target = sharedIrCodes.find(row => commandType ? row.aircon_id === device?.aircon_id && row.command_type === commandType : row.id === idOrDeviceId);
+      if (!target) return false;
+      const sb = window.supabaseClient || window.sb;
+      if (!sb?.rpc) throw new Error('Sign in before deleting an IR code.');
+      const authVersion = databaseAuthVersion;
+      const response = await sb.rpc('ecotrack_delete_ir_code', { p_aircon_id: target.aircon_id, p_command_type: target.command_type });
+      if (response.error) throw new Error(response.error.message);
+      if (response.data?.aircon_id !== target.aircon_id || response.data?.deleted !== true || response.data?.id !== target.id)
+        throw new Error('The IR code deletion was not confirmed. Refresh before retrying.');
+      if (authVersion !== databaseAuthVersion) throw new Error('Your session changed while deleting the IR code. Sign in again and refresh.');
+      irCodeWriteRevision += 1;
+      sharedIrCodes = sharedIrCodes.filter(row => row.id !== target.id);
+      AirconEvents.emit('ir:command_deleted', target);
+      AirconEvents.emit('ir:updated', { device_id: target.device_id, action: 'delete', command: target });
+      return true;
     }
 
     static getCustomFunctions(device_id) {
@@ -1787,16 +2008,16 @@ const AcCapabilityRegistry = (() => {
       }
     }
 
-    static deleteFunction(device_id, funcName) {
+    static async deleteFunction(device_id, funcName) {
       try {
         let funcs = this.getCustomFunctions(device_id);
         const wasCustom = funcs.includes(funcName);
+        // Keep the local function intact if the shared-code deletion is denied.
+        await this.deleteCommand(device_id, funcName);
         if (wasCustom) {
           funcs = funcs.filter(f => f !== funcName);
           localStorage.setItem(`ecoTrack_custom_funcs_${device_id}`, JSON.stringify(funcs));
         }
-        // Also remove any recorded IR signal for this function
-        this.deleteCommand(device_id, funcName);
         AirconEvents.emit('ir:function_deleted', { device_id, function_name: funcName, wasCustom });
         AirconEvents.emit('ir:updated', { device_id, action: 'delete_function', function_name: funcName });
         return true;
@@ -1921,7 +2142,7 @@ const AcCapabilityRegistry = (() => {
 
       // 3. Check Assigned AC Controller Device Status
       const node = NodeService.getNode(device.node_id);
-      if (!node) {
+      if (!['connected', 'online'].includes(String(node?.status || '').toLowerCase())) {
         const errorMsg = `Command not sent: Assigned hardware node (${device.node_id}) is currently OFFLINE.`;
         CentralLogService.log({
           device_id,
@@ -2075,12 +2296,13 @@ const AcCapabilityRegistry = (() => {
         details: `Requesting cloud command for ${device.node_id} via ${protocolName}: ${JSON.stringify(intentPayload.state)} (Req: ${requestId})`
       });
 
-      let savedCommand;
+      let savedCommand, commandAirconId;
       try {
         const sb = window.supabaseClient || window.sb;
         if (!window.EcoTrackHardwareCloud || !sb) throw new Error('Supabase hardware transport is unavailable.');
         const record = await sb.from('aircons').select('id').eq('asset_tag', device.device_id).maybeSingle();
         if (record.error || !record.data?.id) throw new Error(record.error?.message || 'Registered aircon not found.');
+        commandAirconId = record.data.id;
         savedCommand = await window.EcoTrackHardwareCloud.control(device.node_id, { ...intentPayload, aircon_id: record.data.id });
       } catch (error) {
         return { success: false, code: error.code || 'CLOUD_COMMAND_FAILED', message: error.message, intent: intentPayload };
@@ -2098,14 +2320,7 @@ const AcCapabilityRegistry = (() => {
       const updatedState = AirconProfileManager.updateState(device_id, stateUpdates, device.control_snapshot);
       device.state = updatedState;
 
-      CentralLogService.log({
-        device_id,
-        node_id: device.node_id,
-        module: 'CONTROL',
-        event: delivered ? 'COMMAND_SUCCESS' : 'COMMAND_QUEUED',
-        result: delivered ? 'SUCCESS' : 'PENDING',
-        details: `${command} ${delivered ? 'transmitted' : 'queued'} for ${device.name} [Intent: ${protocolName}]`
-      });
+      CentralLogService.recordCommand(savedCommand, device, commandAirconId, command, intentPayload.state);
 
       // Fire synchronization events across all buses (preserving EcoDataBus contract)
       AirconEvents.emit('aircon:state_changed', device);

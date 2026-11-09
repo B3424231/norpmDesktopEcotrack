@@ -12,7 +12,7 @@ function harness(wake='',sleep='',value='5',unit='Seconds'){
  const button={textContent:'Apply',disabled:false,dataset:{}};
  const context=vm.createContext({console,document:{getElementById:id=>fields[id],querySelector:selector=>({focus(){focused.push(selector);}})},savedRooms:{},scheduleDrafts:new Map(),scheduleDeliveries:new Map(),localStorage:{setItem(){}},CustomEvent:class{constructor(type,options){this.type=type;this.detail=options.detail;}},
  window:{EcoToast:{error:message=>errors.push(message),success:message=>successes.push(message)},EcoTrackHardwareCloud:{request:async(...args)=>{calls.push(args);return {id:'command-'+calls.length,node_id:'db-node',status:'queued'};}},dispatchEvent(){}}});
- vm.runInContext(helpers+apply,context);
+ vm.runInContext(source.match(/^const schedulerControllerMode =[^\r\n]+;/m)[0]+helpers+apply,context);
  return {context,calls,errors,successes,focused,fields,button,apply:()=>context.applyNodeSchedule('test',button)};
 }
 async function main(){

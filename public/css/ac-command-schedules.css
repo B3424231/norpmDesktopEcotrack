@@ -1,0 +1,33 @@
+.acs-tabs{display:flex;gap:1rem;border-bottom:1px solid #64748b55;margin-bottom:1rem}.acs-tabs button{padding:.65rem .5rem;color:#64748b;font-weight:700;border-bottom:3px solid transparent}.acs-tabs button[aria-selected=true]{color:#059669;border-color:#10b981}.acs-panel[hidden],[data-settings][hidden]{display:none!important}.acs-panel{flex:1;min-height:0;overflow:auto}.acs-toolbar,.acs-dialog-head,.acs-pagination{display:flex;align-items:center;justify-content:space-between;gap:1rem}.acs-toolbar label,.acs-dialog form>label{display:block;font-weight:700;margin:.8rem 0 .35rem}.acs-primary{background:#10b981!important;color:#062b20!important;font-weight:700;border:0!important}.acs-panel button,.acs-dialog button,.acs-dialog select,.acs-dialog input,.acs-panel select{border:1px solid #94a3b866;border-radius:.5rem;padding:.55rem .75rem;background:transparent;color:inherit}.acs-panel button:disabled{opacity:.5}.acs-health,.acs-note,.acs-device span{color:#64748b;font-size:.85rem;margin:.75rem 0}.acs-table-wrap{overflow:auto}.acs-table{width:100%;border-collapse:collapse;text-align:left;min-width:620px}.acs-table th{background:#e2e8f0;color:#475569;text-transform:uppercase;font-size:.7rem}.dark .acs-table th{background:#1e293b;color:#cbd5e1}.acs-table td,.acs-table th{padding:1rem;border-bottom:1px solid #94a3b833}.acs-table small{color:#64748b}.acs-menu{position:relative}.acs-menu summary{cursor:pointer}.acs-menu button{display:block}.acs-automation{display:flex;gap:1rem;flex-wrap:wrap;padding:1rem 0}.acs-activity{border-top:1px solid #94a3b833;padding:1rem 0}.acs-activity summary{cursor:pointer}.acs-pagination{border-top:1px solid #94a3b833;padding:1rem 0;font-size:.8rem}.acs-error{color:#dc2626}.acs-overlay{position:fixed;inset:0;z-index:9999;background:#020617b8;display:grid;place-items:center;padding:1rem}.acs-dialog{width:min(700px,100%);max-height:95vh;overflow:auto;background:#fff;color:#0f172a;border:2px solid #10b981;border-radius:1rem;padding:1.5rem;box-shadow:0 12px 60px #0005}.dark .acs-dialog{background:#0c1529;color:#f1f5f9}.acs-dialog h2{font-size:1.5rem;font-weight:700}.acs-dialog-head button{font-size:1.5rem;border:0}.acs-device{border:1px solid #94a3b866;border-radius:.6rem;padding:.8rem;margin-top:1rem}.acs-days,.acs-actions,.acs-fields{display:grid;gap:.5rem}.acs-days{grid-template-columns:repeat(7,1fr)}.acs-days button[aria-pressed=true]{background:#10b98133;border-color:#10b981;color:#059669}.acs-actions,.acs-fields{grid-template-columns:repeat(3,1fr)}.acs-actions label{border:1px solid #94a3b866;border-radius:.5rem;text-align:center;padding:.65rem;cursor:pointer}.acs-actions label:has(input:checked){background:#10b98133;border-color:#10b981}.acs-actions input{position:absolute;opacity:0}.acs-fields{margin:1rem 0}.acs-fields label{font-weight:700}.acs-fields select,.acs-dialog input[type=time]{display:block;width:100%;margin-top:.35rem}.acs-dialog details{border:1px solid #94a3b866;border-radius:.5rem;padding:.75rem}.acs-dialog summary{cursor:pointer}.acs-preview{background:#10b9811a;border-radius:.5rem;padding:1rem;margin-top:1rem}.acs-dialog footer{border-top:1px solid #94a3b866;padding-top:1rem;display:flex;justify-content:flex-end;gap:.5rem}.acs-sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}@media(max-width:600px){.acs-dialog{padding:1rem}.acs-days{gap:.2rem}.acs-days button{padding:.45rem .1rem;font-size:.75rem}.acs-fields{grid-template-columns:1fr}.acs-toolbar{align-items:end}.acs-toolbar select{max-width:170px}}
+
+/* Fill the Command schedules card without changing Device hours. */
+#acs-commands { display:flex; flex-direction:column; min-width:0; }
+#acs-commands > * { flex-shrink:0; }
+#acs-commands .acs-toolbar { align-items:flex-end; flex-wrap:wrap; gap:1rem; padding-top:.25rem; }
+#acs-commands .acs-device-field { flex:1; min-width:min(100%,17.5rem); max-width:30rem; }
+#acs-commands .acs-device-field label { margin:0 0 .5rem; font-size:.875rem; color:var(--eco-secondary,#475569); }
+#acs-commands .acs-device-field > :is(select:not(.eco-native-select),.eco-select-trigger) { width:100%; min-width:0; min-height:44px; box-sizing:border-box; }
+#acs-commands .acs-device-field .eco-select-trigger:disabled { opacity:1; color:var(--eco-muted,#64748b)!important; border-color:var(--eco-border,#e2e8f0)!important; cursor:not-allowed; }
+#acs-commands .acs-primary { flex-shrink:0; min-height:44px; padding:.65rem 1rem; background:var(--eco-action,#047857)!important; color:var(--eco-on-action,#fff)!important; cursor:pointer; }
+#acs-commands .acs-primary:disabled { opacity:1; background:var(--eco-raised,#f1f5f9)!important; color:var(--eco-muted,#64748b)!important; border:1px solid var(--eco-border,#e2e8f0)!important; cursor:not-allowed; }
+#acs-commands .acs-primary:not(:disabled):hover { background:var(--eco-action-hover,#065f46)!important; }
+#acs-commands .acs-health { margin:.5rem 0 1rem; color:var(--eco-muted,#64748b); }
+#acs-commands .acs-table-wrap { flex:1 0 15rem; min-height:15rem; min-width:0; overflow:auto; border:1px solid var(--eco-border,#e2e8f0); border-radius:.75rem; }
+#acs-commands .acs-table-wrap:has(.acs-empty) .acs-table { height:100%; }
+#acs-commands .acs-table thead { position:sticky; top:0; z-index:1; }
+#acs-commands .acs-table th { height:3rem; }
+#acs-commands .acs-table .acs-empty { height:100%; padding:2rem 1.5rem; text-align:center; vertical-align:middle; white-space:normal; border:0; }
+#acs-commands .acs-empty strong { display:block; font-size:1rem; }
+#acs-commands .acs-empty p { margin:.5rem 0 .75rem; color:var(--eco-muted,#64748b); font-size:.875rem; }
+#acs-commands .acs-empty a { color:var(--eco-accent,#047857); font-size:.875rem; }
+#acs-commands .acs-automation:empty,#acs-commands > .acs-error:empty { display:none; }
+#acs-commands .acs-activity { margin-top:1rem; padding:1rem 0; font-size:.875rem; }
+#acs-commands .acs-pagination { flex-wrap:wrap; padding:1rem 0 0; color:var(--eco-secondary,#475569); }
+#acs-commands .acs-pagination > span:last-child { display:flex; align-items:center; gap:.5rem; }
+@media (max-width:600px) {
+  #acs-commands .acs-toolbar { flex-direction:column; align-items:stretch; gap:.75rem; }
+  #acs-commands .acs-device-field { flex:none; min-width:0; max-width:none; }
+  #acs-commands .acs-device-field select { max-width:none; }
+  #acs-commands .acs-table .acs-empty { text-align:left; }
+  #acs-commands .acs-empty > div { max-width:calc(100vw - 7rem); }
+}

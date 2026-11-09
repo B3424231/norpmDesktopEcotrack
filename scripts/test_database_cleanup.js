@@ -22,6 +22,12 @@ async function testAdapter() {
         : options.method === 'DELETE' ? { success: true }
         : { items: records, totalItems: records.length, page: 1, perPage: 1, totalPages: 1 } };
     } });
+  window.electron = {invoke: async (channel, input) => {
+    assert.equal(channel, 'telemetry-admin-request');
+    const response = await context.fetch('http://localhost:5000' + input.path, {method:input.method,body:JSON.stringify(input.data)});
+    const data = await response.json();
+    return {success:response.ok,data,error:response.ok ? undefined : data.error};
+  }};
   vm.runInContext(source('supabase-client.js'), context);
   const telemetry = window.pb.collection('telemetry');
   const updated = await telemetry.update('reading/1', { room_name: 'Lab' });
@@ -50,7 +56,7 @@ async function testAdapter() {
 function engine() {
   const localStorage = storage(), events = [], queries = [];
   const window = { localStorage, addEventListener() {}, dispatchEvent(event) { events.push(event); } };
-  const context = vm.createContext({ window, localStorage, console: quiet, setTimeout() {},
+  const context = vm.createContext({ window, document:{addEventListener(){}}, localStorage, console: quiet, setTimeout() {},
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options?.detail; } } });
   vm.runInContext(source('aircon-system.js'), context);
   let state = { nodes: [], aircons: [], rooms: [], floors: [], buildings: [] }, error = null, session = { user: { id: 'test' } };
@@ -93,29 +99,34 @@ async function testRegistryReconciliation() {
     { device_id: 'ORPHAN', node_id: 'missing', name: 'Orphan profile' }
   ]));
   partial.rows({ nodes: [{ id: 'db-1', name: 'node-1', status: 'online' }, { id: 'db-2', name: 'node-2', status: 'online' }],
-    aircons: [{ id: 'asset-1', asset_tag: 'AC-1', node_id: 'db-1', brand: 'Midea', protocol_name: 'midea_ir' }] });
+    aircons: [{ id: 'asset-1', asset_tag: 'AC-1', name:'Custom AC Name', node_id: 'db-1', brand: 'Midea', protocol_name: 'midea_ir' }] });
   await partial.system.syncWithDatabase();
   const profiles = partial.system.AirconProfileManager.getAll();
   assert.equal(profiles.find(ac => ac.device_id === 'AC-1').name, 'Custom AC Name');
   assert(!profiles.some(ac => ['DELETED', 'ORPHAN'].includes(ac.device_id)));
   assert.equal(partial.system.NodeService.getNodes().length, 2);
+  partial.rows({aircons:[{id:'asset-1',asset_tag:'AC-1',name:'Renamed in registry',node_id:'db-1',brand:'Midea',protocol_name:'midea_ir'}]});
+  await partial.system.syncWithDatabase();
+  assert.equal(partial.system.AirconProfileManager.getAll().find(ac=>ac.device_id==='AC-1').name,'Renamed in registry','A successful registry refresh uses the persisted AC name');
 }
 async function testTelemetryRegistryFailures() {
-  const code = source('telemetry-new.js');
-  const begin = code.indexOf('async function loadAvailableNodesFromDB(');
-  const end = code.indexOf('function populateAvailableNodes(', begin);
-  let response = { error: { message: 'Offline' }, data: null }, renders = 0;
-  const context = vm.createContext({ window: {}, sb: {}, console: quiet,
-    activeNodesData: [{ id: 'cached' }], readStartupNodes: async () => response,
-    populateAvailableNodes() { renders++; } });
+  const code = source('sensor-workspace.js');
+  const begin = code.indexOf('  function refreshLocations(');
+  const end = code.indexOf('  function sensorIcon(', begin);
+  assert(begin >= 0 && end > begin, 'Current sensor registry refresh exists');
+  let response = { success: false, error: 'Offline' }, renders = 0, registryDevices = [{ id: 'cached' }];
+  const context = vm.createContext({ window: {electron:{invoke:async channel=>{assert.equal(channel,'scheduler-fetch-data');return response;}}}, console: quiet,setTimeout,clearTimeout,
+    page:'telemetry',registryTask:null,locationRegistry:{buildings:[{id:'b'}],floors:[{id:'f'}],rooms:[{id:'r'}]},
+    readRegistryDevices(data) { registryDevices=data.nodes; },renderLocations(){renders++;},renderFleet(){renders++;} });
   vm.runInContext(code.slice(begin, end), context);
-  await context.loadAvailableNodesFromDB();
-  assert.equal(context.activeNodesData.length, 1, 'Failed telemetry registry reads preserve controls');
+  await context.refreshLocations();
+  assert.equal(registryDevices.length, 1, 'Failed sensor registry reads preserve existing device metadata');
   assert.equal(renders, 0);
-  response = { data: [] };
-  await context.loadAvailableNodesFromDB();
-  assert.equal(context.activeNodesData.length, 0);
-  assert.equal(renders, 1);
+  assert.equal(context.locationRegistry.rooms.length,1);
+  response = { success:true,nodes:[],buildings:[],floors:[],rooms:[] };
+  await context.refreshLocations();
+  assert.equal(registryDevices.length, 0, 'An explicit successful empty registry clears stale devices');
+  assert.equal(context.locationRegistry.rooms.length,0);assert.equal(renders,2);
 }
 
 async function main() {

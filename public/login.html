@@ -2,10 +2,29 @@
 <html lang="en" class="dark">
 
 <head>
+    <script>
+      try {
+        const startup = new URLSearchParams(location.search);
+        if (startup.get('resume') === '1' && startup.get('timeout') !== 'true' && !localStorage.getItem('ecoTrack_require_login')) {
+          document.documentElement.classList.add('restoring-session');
+        }
+      } catch (_) {}
+    </script>
+    <style>
+      #sessionStartupLoader { display: none; position: fixed; inset: 0; z-index: 2147483647; background: #03140e; color: #d1fae5; align-items: center; justify-content: center; flex-direction: column; gap: 16px; }
+      html.restoring-session body { visibility: hidden; }
+      html.restoring-session #sessionStartupLoader { display: flex; visibility: visible; }
+      .session-startup-spinner { width: 36px; height: 36px; border: 3px solid #134e4a; border-top-color: #34d399; border-radius: 50%; animation: session-startup-spin 0.8s linear infinite; }
+      @keyframes session-startup-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) { .session-startup-spinner { animation: none; } }
+    </style>
+  <script src="./js/device-labels.js?v=1"></script>
+  <script src="./js/app-mode.js?v=8"></script>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./css/password-recovery.css?v=1">
     <title>EcoTrack - Universal Aircon Controller</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="./vendor/tailwindcss.js"></script>
     <script>
         // EcoTrack Login Page: Permanently locked to the dusk cinematic aesthetic shown in reference
         document.documentElement.classList.add('dark');
@@ -43,7 +62,7 @@
           }
         }
     </script>
-    <link rel="stylesheet" href="styles.css?v=40">
+    <link rel="stylesheet" href="styles.css?v=70">
 
     <!-- Supabase Client & Dual Database Router -->
     <script src="./js/supabase.umd.js"></script>
@@ -201,6 +220,10 @@
 </head>
 
 <body class="login-page selection:bg-emerald-500 selection:text-white relative bg-transparent" style="background-color: transparent !important;">
+    <div id="sessionStartupLoader" role="status" aria-live="polite">
+      <span class="session-startup-spinner" aria-hidden="true"></span>
+      <p>Restoring your session...</p>
+    </div>
 
     <!-- MAIN SPLIT SCREEN WRAPPER -->
     <div class="min-h-screen w-full relative flex flex-col justify-between bg-transparent">
@@ -241,7 +264,7 @@
                 <div class="lg:col-span-6 xl:col-span-7 flex flex-col justify-center text-left max-w-2xl">
                     
                     <!-- Main Headline (single line for first phrase) -->
-                    <h1 class="text-3xl sm:text-4xl lg:text-[2.65rem] font-extrabold tracking-tight text-white leading-[1.18] mb-3 sm:mb-4">
+                    <h1 class="eco-primary-text text-3xl sm:text-4xl lg:text-[2.65rem] font-extrabold tracking-tight text-white leading-[1.18] mb-3 sm:mb-4">
                         <span class="whitespace-nowrap">Universal Aircon Control</span><br>
                         <span class="bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 bg-clip-text text-transparent whitespace-nowrap">
                             for a Greener Future.
@@ -250,7 +273,7 @@
 
                     <!-- Paragraph Description -->
                     <p class="text-xs sm:text-sm lg:text-base text-slate-300 font-normal leading-relaxed mb-5 sm:mb-6 max-w-lg">
-                        Control and manage your multi-brand air conditioning fleet with capability-driven universal IR remote commands, scheduled automations, and AC Controller Devices.
+                        Manage AC settings, schedules and controllers in one place.
                     </p>
 
                     <!-- Feature Bullets (3 items) -->
@@ -326,7 +349,7 @@
 
                         <!-- Card Welcome Title & Subtitle -->
                         <div class="text-center mb-4">
-                            <h2 id="card-main-title" class="text-xl sm:text-2xl font-bold text-white mb-1">
+                            <h2 id="card-main-title" class="eco-primary-text text-xl sm:text-2xl font-bold text-white mb-1">
                                 Welcome back!
                             </h2>
                             <p id="form-subtitle" class="text-xs text-slate-400">
@@ -340,10 +363,10 @@
                         <!-- 1. LOGIN FORM -->
                         <form id="login-form" autocomplete="on">
                             
-                            <!-- Username or Email Field with Mail Icon -->
+                            <!-- Email-only administrator sign-in -->
                             <div class="mb-3.5">
-                                <label for="username" class="block text-xs font-semibold text-slate-300 mb-1.5">
-                                    Username or Email
+                                <label for="email" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                    Email Address
                                 </label>
                                 <div class="relative flex items-center">
                                     <div class="absolute left-3.5 pointer-events-none text-teal-400">
@@ -351,7 +374,7 @@
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                                         </svg>
                                     </div>
-                                    <input type="text" id="username" name="username" placeholder="Gmail, username, or phone number" required autocomplete="username"
+                                    <input type="email" id="email" name="email" placeholder="name@example.com" required autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" maxlength="254"
                                         class="auth-input-field w-full rounded-xl pl-10 pr-4 py-2.5 text-xs sm:text-sm font-medium placeholder-slate-400">
                                 </div>
                             </div>
@@ -403,9 +426,9 @@
 
                             <!-- Bottom Link to Registration -->
                             <div class="mt-3.5 text-center text-xs text-slate-300">
-                                First time here? 
+                                New to EcoTrack?
                                 <a href="#" id="show-register-btn" class="font-bold text-teal-400 hover:text-cyan-300 transition-colors ml-1">
-                                    Register your account
+                                    Register as an Administrator
                                 </a>
                             </div>
                         </form>
@@ -424,7 +447,7 @@
                                             <circle cx="12" cy="7" r="4"></circle>
                                         </svg>
                                     </div>
-                                    <input type="text" id="reg-username" name="username" placeholder="e.g. admin2" required autocomplete="username" minlength="3"
+                                    <input type="text" id="reg-username" name="username" placeholder="e.g. admin2" required autocomplete="username" minlength="3" maxlength="120"
                                         class="auth-input-field w-full rounded-xl pl-10 pr-4 py-2 text-xs sm:text-sm font-medium placeholder-slate-400">
                                 </div>
                             </div>
@@ -439,7 +462,7 @@
                                             <path stroke-linecap="round" stroke-linejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
                                         </svg>
                                     </div>
-                                    <input type="email" id="reg-email" name="email" placeholder="admin@ecotrack.local" required autocomplete="email"
+                                    <input type="email" id="reg-email" name="email" placeholder="name@example.com" required autocomplete="email" maxlength="254"
                                         class="auth-input-field w-full rounded-xl pl-10 pr-4 py-2 text-xs sm:text-sm font-medium placeholder-slate-400">
                                 </div>
                             </div>
@@ -455,7 +478,7 @@
                                             <path d="M7 11V7a5 5 0 0110 0v4"></path>
                                         </svg>
                                     </div>
-                                    <input type="password" id="reg-password" name="password" placeholder="••••••••" required minlength="8" autocomplete="new-password"
+                                    <input type="password" id="reg-password" name="password" placeholder="••••••••" required minlength="8" maxlength="1024" autocomplete="new-password"
                                         class="auth-input-field w-full rounded-xl pl-10 pr-10 py-2 text-xs sm:text-sm font-medium placeholder-slate-400">
                                     <button type="button" class="password-toggle-btn absolute right-2.5 p-1.5 text-slate-400 hover:text-teal-300 transition-colors border-0 bg-transparent cursor-pointer" aria-label="Toggle password visibility">
                                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -477,7 +500,7 @@
                                             <path d="M7 11V7a5 5 0 0110 0v4"></path>
                                         </svg>
                                     </div>
-                                    <input type="password" id="reg-password-confirm" name="passwordConfirm" placeholder="••••••••" required minlength="8" autocomplete="new-password"
+                                    <input type="password" id="reg-password-confirm" name="passwordConfirm" placeholder="••••••••" required minlength="8" maxlength="1024" autocomplete="new-password"
                                         class="auth-input-field w-full rounded-xl pl-10 pr-10 py-2 text-xs sm:text-sm font-medium placeholder-slate-400">
                                     <button type="button" class="password-toggle-btn absolute right-2.5 p-1.5 text-slate-400 hover:text-teal-300 transition-colors border-0 bg-transparent cursor-pointer" aria-label="Toggle password visibility">
                                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -490,7 +513,7 @@
 
                             <!-- Register Gradient Pill Button -->
                             <button type="submit" class="submit-btn btn-gradient-submit w-full rounded-full py-2.5 sm:py-3 text-white font-extrabold text-xs sm:text-sm tracking-wider uppercase flex items-center justify-center gap-2 border-0 cursor-pointer">
-                                <span>REGISTER ACCOUNT</span>
+                                <span>REGISTER AS AN ADMINISTRATOR</span>
                                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
                                     <path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
                                 </svg>
@@ -529,33 +552,64 @@
     </div>
 
     <!-- FORGOT PASSWORD MODAL -->
-    <div id="forgot-modal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div class="auth-glass-card rounded-2xl p-6 sm:p-8 max-w-md w-full border border-teal-500/40">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-xl font-bold text-white flex items-center gap-2">
-                    <svg class="w-6 h-6 text-teal-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                    Password Recovery
-                </h3>
-                <button type="button" id="close-forgot-modal" class="text-slate-400 hover:text-white text-xl bg-transparent border-0 cursor-pointer">&times;</button>
-            </div>
-            <p class="text-sm text-slate-300 leading-relaxed mb-6">
-                To reset an administrator credential, please contact your primary system administrator or run the master account recovery protocol on your local Supabase database instance.
-            </p>
-            <div class="bg-teal-950/40 border border-teal-500/20 rounded-xl p-3.5 mb-6 text-xs text-teal-200">
-                Default local administrator access: <br>
-                <code class="font-mono text-cyan-300">admin / admin</code> or <code class="font-mono text-cyan-300">admin@ecotrack.local</code>
-            </div>
-            <button type="button" id="dismiss-forgot-modal" class="w-full py-2.5 rounded-xl btn-gradient-submit text-white font-bold text-sm cursor-pointer border-0">
-                Got It
-            </button>
+    <dialog id="forgot-modal" class="recovery-dialog" aria-labelledby="recovery-title" aria-describedby="recovery-description">
+        <div class="recovery-heading">
+            <span class="recovery-heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7l8-4Z"/><path d="m8 12 3 3 5-6"/></svg></span>
+            <div><h2 id="recovery-title">Password Recovery</h2><p id="recovery-description">Recover your administrator account using your email.</p></div>
+            <button type="button" id="close-forgot-modal" class="recovery-close" aria-label="Close password recovery">&times;</button>
         </div>
-    </div>
+        <ol class="recovery-progress" aria-label="Password recovery steps">
+            <li data-recovery-progress="1" aria-current="step"><span>1</span>Email</li>
+            <li data-recovery-progress="2"><span>2</span>Verify code</li>
+            <li data-recovery-progress="3"><span>3</span>New password</li>
+        </ol>
+        <div id="recovery-alert" class="recovery-alert" role="alert" hidden></div>
+        <p id="recovery-status" class="recovery-status" role="status" aria-live="polite"></p>
+        <section data-recovery-step="email">
+            <h3>Enter your account email</h3>
+            <p class="recovery-help">We’ll send a recovery code to the email address linked to your administrator account.</p>
+            <form id="recovery-email-form">
+                <label for="recovery-email">Email address</label>
+                <input id="recovery-email" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="none" spellcheck="false" placeholder="name@example.com" maxlength="254" required>
+                <button id="recovery-send-code" class="recovery-primary" type="submit">Send recovery code</button>
+            </form>
+            <p class="recovery-footnote">Use the same email you use to sign in.</p>
+        </section>
+        <section data-recovery-step="code" hidden>
+            <h3>Check your email</h3>
+            <p class="recovery-help">If the account exists, a code has been sent to <strong data-recovery-email></strong>. Check your inbox and spam folder.</p>
+            <form id="recovery-code-form">
+                <label for="recovery-code">Recovery code</label>
+                <input id="recovery-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Enter the emailed code" minlength="6" maxlength="10" pattern="[0-9]{6,10}" required>
+                <button id="recovery-verify-code" class="recovery-primary" type="submit">Verify code</button>
+            </form>
+            <div class="recovery-secondary-actions"><button id="recovery-resend-code" type="button">Resend code</button><button id="recovery-change-email" type="button">Use another email</button></div>
+        </section>
+        <section data-recovery-step="password" hidden>
+            <h3>Set a new password</h3>
+            <p class="recovery-help">Email verified: <strong data-recovery-email></strong></p>
+            <form id="recovery-password-form">
+                <label for="recovery-password">New password</label>
+                <div class="recovery-password-field"><input id="recovery-password" name="newPassword" type="password" autocomplete="new-password" placeholder="At least 8 characters" minlength="8" maxlength="128" required><button type="button" class="password-toggle-btn" aria-label="Show new password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+                <label for="recovery-confirm-password">Confirm new password</label>
+                <div class="recovery-password-field"><input id="recovery-confirm-password" name="confirmPassword" type="password" autocomplete="new-password" placeholder="Enter the new password again" minlength="8" maxlength="128" required><button type="button" class="password-toggle-btn" aria-label="Show confirmation password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+                <p class="recovery-password-hint">Use at least 8 characters. Passwords are case-sensitive.</p>
+                <button id="recovery-save-password" class="recovery-primary" type="submit">Update password</button>
+            </form>
+        </section>
+        <section data-recovery-step="success" class="recovery-success" hidden>
+            <span class="recovery-success-icon" aria-hidden="true">✓</span>
+            <h3>Password updated</h3>
+            <p class="recovery-help">Your administrator password has been updated. Sign in with your email and new password.</p>
+            <button id="recovery-back-login" class="recovery-primary" type="button">Back to sign in</button>
+        </section>
+    </dialog>
 
     <!-- PRIVACY / TERMS INFO MODAL -->
     <div id="info-modal" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
         <div class="auth-glass-card rounded-2xl p-6 sm:p-8 max-w-lg w-full border border-teal-500/40">
             <div class="flex items-center justify-between mb-4">
-                <h3 id="info-modal-title" class="text-xl font-bold text-white">EcoTrack Policy</h3>
+                <h3 id="info-modal-title" class="eco-primary-text text-xl font-bold text-white">EcoTrack Policy</h3>
                 <button type="button" id="close-info-modal" class="text-slate-400 hover:text-white text-xl bg-transparent border-0 cursor-pointer">&times;</button>
             </div>
             <div id="info-modal-body" class="text-sm text-slate-300 leading-relaxed mb-6 space-y-3 max-h-72 overflow-y-auto pr-2">
@@ -567,6 +621,8 @@
         </div>
     </div>
 
-    <script src="js/login.js"></script>
+    <script src="js/admin-registration.js?v=2"></script>
+    <script src="js/password-recovery.js?v=1"></script>
+    <script src="js/login.js?v=8"></script>
 </body>
 </html>

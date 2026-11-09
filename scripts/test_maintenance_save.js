@@ -34,7 +34,7 @@ async function testMainSave() {
   ]) {
     const env = mainSave({ data: null, error });
     const result = await env.save(input);
-    assert.equal(result.success, false); assert.equal(result.error, error.message); assert.equal(result.code, error.code);
+    assert.equal(result.success, false); assert.match(result.error,error.code==='40001'?/This report changed on another device/:new RegExp(error.message)); assert.equal(result.code, error.code);
     assert.equal(env.calls.length, 1);
   }
   const success = mainSave({ data: { report: { id: 'report' }, parent: { id: 'parent' } }, error: null });
@@ -125,13 +125,15 @@ function fetchEnvironment() {
   const storage = new Map();
   const context = vm.createContext({ console: { warn() {} }, Date, Promise, AbortController, setTimeout, clearTimeout,
     getSb: () => client, document: { getElementById: () => null }, window: { dispatchEvent() {} }, Event: class {}, CustomEvent: class {},
-    localStorage: { setItem: (key, value) => storage.set(key, value) }, _reportsCache: [{ id: 'deleted-report' }],
+    localStorage: { setItem: (key, value) => storage.set(key, value),removeItem:key=>storage.delete(key) }, _reportsCache: [{ id: 'deleted-report' }],
+    _nodesAirconCache:[],_maintenanceInventoryReady:false,
     reportWriteRevision: 0, confirmedReportWrites: new Map(), reportVersions: new Map(),
     normalizeReport: row => ({ ...row }), syncReportsWithLinkedRepairs: rows => rows, deduplicateReports: rows => rows,
     getReportsLocal: () => context._reportsCache, refreshPageReportsView() {},
     currentDetailId: null, activeChecklistReportId: null, activeRepairReportId: null
   });
   vm.runInContext(section(renderer, '  function mergeReportsSafely(', '  let _isRefreshingReportsView'), context);
+  vm.runInContext(section(renderer, '  function clearMaintenanceInventory(', '  function formatBatteryDisplay('), context);
   vm.runInContext(section(renderer, '  let reportsFetchPromise', '  function isReportUnverified'), context);
   return { context, storage, respond: value => { response = value; }, signIn: value => { signedIn = value; }, queries: () => queries };
 }

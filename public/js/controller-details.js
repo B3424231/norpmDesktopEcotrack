@@ -1,6 +1,7 @@
 (function(root){
   'use strict';
   function battery(node){
+    if(root.EcoTrackBattery)return root.EcoTrackBattery.read(node);
     const candidates=[node?.cloud_state?.battery_percent,node?.cloud_state?.capabilities?.battery_percent,node?.battery_percent,
       node?.battery_unit==='percent'||node?.battery_unit==='%'?node?.battery:null];
     const value=candidates.find(v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=100);
@@ -15,9 +16,10 @@
   }
   function render(node){
     const reading=battery(node),batteryEl=document.getElementById('viewBattery');
-    batteryEl.textContent=reading.percent+'%';
+    batteryEl.textContent=reading.reported?reading.percent+'%':'Not reported';
     batteryEl.title=reading.reported?'Battery percentage reported by this controller':'No battery reading reported by this controller';
     batteryEl.dataset.reported=String(reading.reported);
+    if(root.EcoTrackBattery)root.EcoTrackBattery.render(batteryEl,node);
     const saved=timestamp(node.deployment_saved_at||node.admin_verified_at),verified=timestamp(node.admin_verified_at);
     for(const [id,text] of [['viewDeploymentDate',saved?.date],['viewDeploymentTime',saved?.time]]){
       const el=document.getElementById(id);el.textContent=text||'Not recorded';

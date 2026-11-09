@@ -26,6 +26,7 @@ function element() {
       contains: name => classes.has(name)
     },
     setAttribute(key, value) { this.attributes[key] = value; },
+    removeAttribute(key) { delete this.attributes[key]; },
     addEventListener(name, handler) { handlers.set(name, handler); },
     click: () => handlers.get('click')?.()
   };
@@ -51,6 +52,8 @@ function ipHarness() {
 }
 const info = (overrides = {}) => ({ device_id: 'esp32s3-001122334455', wifi_status: 'connected', ip_address: '192.168.1.66', ...overrides });
 const profileSource = fs.readFileSync('public/js/profile.js', 'utf8').split("document.addEventListener('DOMContentLoaded'")[0];
+const sharedSource = fs.readFileSync('public/js/shared.js', 'utf8');
+const timeoutResolverSource = sharedSource.slice(sharedSource.indexOf('function getSessionTimeoutSetting('), sharedSource.indexOf('function getSessionTimeoutMs('));
 function profileHarness({ allowed = true, fail = false, cached = false, role = 'Administrator' } = {}) {
   const elements = new Map(), calls = [];
   const get = id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); };
@@ -67,7 +70,7 @@ function profileHarness({ allowed = true, fail = false, cached = false, role = '
     window, console, document: { getElementById: get },
     localStorage: { getItem: name => name === 'ecoTrack_profile_user' ? JSON.stringify({ role: 'admin' }) : null }
   });
-  vm.runInContext(profileSource, context);
+  vm.runInContext(timeoutResolverSource + profileSource, context);
   return { context, get, calls };
 }
 async function main() {
@@ -86,7 +89,7 @@ async function main() {
   assert.equal(app.get('nodeFormIp').value, '192.168.1.66');
   assert.equal(app.get('step3IpBadge').textContent, '192.168.1.66');
   assert.equal(app.get('deviceIpFeedback').dataset.state, 'success');
-  assert.match(app.get('deviceIpFeedback').textContent, /ESP32 replied/);
+  assert.match(app.get('deviceIpFeedback').textContent, /device replied/);
   assert.equal(app.get('autoAssignIpBtn').disabled, false);
   assert.equal(app.get('autoAssignIpBtn').attributes['aria-busy'], 'false');
   assert.equal(app.get('autoAssignIpIcon').classList.contains('is-reading'), false);
@@ -176,7 +179,7 @@ async function main() {
   assert.equal(profile.get('profile-permissions').textContent, 'Access unverified');
   checks.push('An unavailable permission check does not falsely claim access');
 
-  const out = path.resolve('reports/device-setup-ui');
+  const out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.resolve('reports/device-setup-ui');
   fs.mkdirSync(out, { recursive: true });
   fs.writeFileSync(path.join(out, 'feedback-tests.json'), JSON.stringify({ passed: checks.length, checks, live_hardware_tested: false, live_supabase_permissions_tested: false }, null, 2));
   console.log('Device setup and profile feedback: ' + checks.length + ' checks passed.');

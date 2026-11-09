@@ -5,12 +5,12 @@ const API_BASE = 'http://localhost:5000/api';
 // ===== SHARED STATE =====
 const appState = {
   currentTemp: 0,
-  currentPressure: 0,
+  currentRotation: null,
   batteryVoltage: 3.8,
   batteryUsable: true,
   rssi: 0,
   isConnected: false,
-  historicalData: { temps: [], pressures: [], timestamps: [] },
+  historicalData: { temps: [], rotations: [], timestamps: [] },
   isSleeping: true,
   lastUpdate: Date.now(),
   logMessages: [],
@@ -165,10 +165,25 @@ async function checkBackendConnection() {
 let _sessionTimeoutTimer = null;
 let _sessionWarningTimer = null;
 
+function getSessionTimeoutSetting(user = null) {
+  if (!user) {
+    try { user = JSON.parse(localStorage.getItem('ecoTrack_profile_user') || '{}'); }
+    catch (_) { user = {}; }
+  }
+  // A local choice takes priority over profile data fetched later. Zero explicitly disables it.
+  for (const value of [localStorage.getItem('ecoTrack_session_timeout'), user?.session_timeout]) {
+    if (value === null || value === undefined) continue;
+    const setting = String(value).trim().toLowerCase();
+    if (setting === 'never' || setting === '0') return 'Never';
+    const minutes = /^(15|30|60)(?: minutes)?$/.exec(setting);
+    if (minutes) return minutes[1] + ' minutes';
+  }
+  return '30 minutes';
+}
+
 function getSessionTimeoutMs() {
-  const user = JSON.parse(localStorage.getItem('ecoTrack_profile_user') || '{}');
-  const timeoutSetting = localStorage.getItem('ecoTrack_session_timeout') || user.session_timeout || '30 minutes';
-  
+  const timeoutSetting = getSessionTimeoutSetting();
+
   if (timeoutSetting === '15 minutes') return 15 * 60 * 1000;
   if (timeoutSetting === '30 minutes') return 30 * 60 * 1000;
   if (timeoutSetting === '60 minutes') return 60 * 60 * 1000;
@@ -177,6 +192,11 @@ function getSessionTimeoutMs() {
 }
 
 function resetSessionTimeoutTimer() {
+  if (_sessionTimeoutTimer !== null) clearTimeout(_sessionTimeoutTimer);
+  if (_sessionWarningTimer !== null) clearTimeout(_sessionWarningTimer);
+  _sessionTimeoutTimer = null;
+  _sessionWarningTimer = null;
+
   // Do not run timeout on login page
   const path = window.location.pathname.toLowerCase();
   if (path.endsWith('login.html') || path.endsWith('/login')) {
@@ -184,14 +204,7 @@ function resetSessionTimeoutTimer() {
   }
 
   const timeoutMs = getSessionTimeoutMs();
-  if (timeoutMs === 0) {
-    if (_sessionTimeoutTimer) clearTimeout(_sessionTimeoutTimer);
-    if (_sessionWarningTimer) clearTimeout(_sessionWarningTimer);
-    return;
-  }
-
-  if (_sessionTimeoutTimer) clearTimeout(_sessionTimeoutTimer);
-  if (_sessionWarningTimer) clearTimeout(_sessionWarningTimer);
+  if (timeoutMs === 0) return;
 
   // Warning 1 minute before timeout
   const warningMs = Math.max(10000, timeoutMs - 60000);
@@ -204,6 +217,7 @@ function resetSessionTimeoutTimer() {
   _sessionTimeoutTimer = setTimeout(() => {
     console.warn('[EcoTrack] Session timed out due to inactivity.');
     try {
+      localStorage.setItem('ecoTrack_require_login', 'timeout');
       sessionStorage.clear();
     } catch (e) {}
     window.location.href = 'login.html?timeout=true';
@@ -214,6 +228,9 @@ function initSessionTimeoutWatcher() {
   const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
   events.forEach(event => {
     window.addEventListener(event, resetSessionTimeoutTimer, { passive: true });
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'ecoTrack_session_timeout' || event.key === 'ecoTrack_profile_user') resetSessionTimeoutTimer();
   });
   resetSessionTimeoutTimer();
 }
@@ -246,7 +263,7 @@ function getStoredViolationAuditHistory() {
     if (!Array.isArray(parsed)) return [];
     // Sanitize: filter out wake, sleep, schedule, interval, and battery notifications
     return parsed.filter(item => {
-      if (!item) return false;
+      if (!item || item.type === 'controller_installation') return false;
       const text = String(item.content || item.message || '').toLowerCase();
       if (
         text.includes('wake') ||
@@ -268,7 +285,7 @@ function getStoredViolationAuditHistory() {
 }
 
 function saveViolationToAuditHistory(notif) {
-  if (!notif) return;
+  if (!notif || notif.type === 'controller_installation') return;
   try {
     const history = getStoredViolationAuditHistory();
     const rawContent = String(notif.rawContent || notif.content || notif.message || '')

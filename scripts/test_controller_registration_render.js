@@ -1,5 +1,5 @@
 const {app,BrowserWindow}=require('electron'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'reports/registration-modal');
+const root=path.resolve(__dirname,'..'),out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root,'reports/registration-modal');
 app.setPath('userData',path.join(root,'scratch/registration-modal-electron'));app.disableHardwareAcceleration();
 app.on('window-all-closed',()=>{});
 const read=file=>fs.readFileSync(path.join(root,file),'utf8');
@@ -26,13 +26,13 @@ async function main(){
    result(){let data=(f.tables[table]||[]).filter(row=>filters.every(([k,v])=>row[k]===v));if(op==='insert'){const row={id:'fixture-created-'+table,...payload};(f.tables[table]||=[]).push(row);data=[row];}if(op==='update')data.forEach(row=>Object.assign(row,payload));return {data,error:null};},
    async maybeSingle(){const r=q.result();return {...r,data:r.data[0]||null}},async single(){return q.maybeSingle()},then(yes,no){return Promise.resolve(q.result()).then(yes,no)}};return q;
   },async rpc(name,args){
-   if(name==='ecotrack_finish_controller_registration'){
+   if(['ecotrack_finish_controller_registration','ecotrack_finish_ac_device_registration'].includes(name)){
     f.finishCount++;if(f.slowFinish)await new Promise(resolve=>f.resolveFinish=resolve);
     if(f.finishError)return {data:null,error:{message:f.finishError}};
     const setup=args.p_setup;let ac=setup.assignment_mode==='existing'?f.tables.aircons.find(row=>row.id===setup.aircon_id):f.tables.aircons.find(row=>row.asset_tag===setup.asset_tag);
     if(!ac){ac={id:'created-ac',asset_tag:setup.asset_tag};f.tables.aircons.push(ac);}
     Object.assign(ac,{name:setup.aircon_name||ac.name||ac.asset_tag,brand:setup.brand||ac.brand||'Unspecified',model:setup.aircon_type,aircon_type:setup.aircon_type,room_id:setup.room_id,node_id:args.p_node_id,controller_node_id:args.p_node_id,protocol_name:setup.protocol_name});
-    f.node={id:args.p_node_id,name:setup.controller_name,room_id:setup.room_id,brand:ac.brand,aircon_type:ac.aircon_type};
+    f.node={id:args.p_node_id,device_mode:setup.device_mode,name:setup.controller_name,room_id:setup.room_id,brand:ac.brand,aircon_type:ac.aircon_type};
     f.tables.nodes=[f.node];f.mode='reuse';f.tables.ecotrack_device_state=[{node_id:f.node.id,device_id:f.device.device_id,last_seen:new Date().toISOString()}];
     return {data:{success:true,connected:true,node:f.node,aircon:ac,cloud_state:{node_id:f.node.id,device_id:f.device.device_id,last_seen:new Date().toISOString()}},error:null};
    }return {data:[],error:null};
@@ -49,7 +49,7 @@ async function main(){
  };
  true;
  `);
- for(const file of ['public/js/aircon-state.js','public/js/aircon-system.js','public/js/controller-locations.js','public/js/controller-registration.js'])
+ for(const file of ['public/js/device-labels.js','public/js/aircon-state.js','public/js/aircon-system.js','public/js/controller-locations.js','public/js/controller-registration.js'])
   await win.webContents.executeJavaScript(read(file)+'\ntrue;');
  await win.webContents.executeJavaScript(script+"\ndocument.dispatchEvent(new Event('DOMContentLoaded'));true;");
  const checks=await win.webContents.executeJavaScript(`(async()=>{
@@ -60,7 +60,7 @@ async function main(){
  if(!open)throw Error('Missing add button');
  open.click();await wait();
  check(!get('nodeModal').classList.contains('hidden')&&!get('nodeStep3').classList.contains('hidden'),'Configured Bluetooth and Wi-Fi skip directly to Controller Info');
- check(get('registrationCloudTitle').textContent==='Registration Required','Fresh cloud registration is accurately labelled');
+ check(get('registrationCloudTitle').textContent==='Finish device setup'&&get('reconnectRegistrationBtn').classList.contains('hidden')&&get('registrationCloudMessage').textContent.includes('Save & Verify Device'),'Fresh setup explains how to finish without requesting a Bluetooth reconnect');
  check(get('saveNodeBtn').disabled,'Save requires explicit AC assignment');
  check(!Array.from(get('nodeFormAircon').options).some(option=>option.value==='taken'),'AC profiles assigned to another controller are excluded');
  get('saveNodeBtn').form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait();
@@ -95,7 +95,7 @@ async function main(){
  f.finishError='Fixture backend rejected assignment';
  get('saveNodeBtn').click();await wait();
  check(!get('nodeModal').classList.contains('hidden')&&get('registrationAcName').value==='Office AC'&&f.completeCount===0,'Backend failure keeps form open and never claims success');
- check(f.provisionCount===1&&f.finishCount===1,'First registration refreshes credentials only once');
+ check(f.provisionCount===1&&f.finishCount===1,'A verified reconnect reuses existing cloud credentials '+JSON.stringify({provision:f.provisionCount,finish:f.finishCount,message:get('registrationCloudMessage').textContent,toasts:f.toasts}));
  f.finishError=null;f.slowFinish=true;get('saveNodeBtn').click();await wait();
  check(get('saveNodeBtn').disabled,'Save remains busy while backend confirmation is pending');
  get('nodeForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));await wait();
@@ -107,13 +107,13 @@ async function main(){
  check(!JSON.stringify(localStorage).includes('fixture-password'),'Wi-Fi password never enters local storage');
  f.slowFinish=false;open.click();await wait();
  check(get('nodeFormName').value==='Office controller'&&get('nodeFormAircon').value==='created-ac','Reopening restores the registered controller and its existing AC');
- check(get('registrationCloudTitle').textContent==='Connected'&&get('registrationCredentialsWrap').hidden&&get('registrationWifiPassword').value==='','Verified registration does not ask for a Wi-Fi password');
+ check(get('registrationCloudTitle').textContent==='Device connection verified'&&get('registrationCredentialsWrap').hidden&&get('registrationWifiPassword').value==='','Verified registration does not ask for a Wi-Fi password');
  check(document.querySelector('[name="registrationAssignment"]:checked').value==='existing','Previously assigned AC is explicitly selected');
  f.mode='refresh';get('reconnectRegistrationBtn').click();await wait();
  check(!get('registrationCredentialsWrap').hidden&&get('nodeFormAircon').value==='created-ac','Credential recovery preserves the current AC assignment and requests only the needed password');
  f.mode='reuse';
- f.mode='waiting';get('reconnectRegistrationBtn').click();await wait();get('saveNodeBtn').click();await wait();
- check(get('registrationCloudMessage').textContent.includes('not reporting')&&f.provisionCount===1,'Offline device cannot save or rotate valid credentials');
+ const savesBeforeOffline=f.finishCount;f.mode='waiting';get('reconnectRegistrationBtn').click();await wait();get('saveNodeBtn').click();await wait();
+ check(get('registrationCloudMessage').textContent.includes('Waiting for the controller')&&f.provisionCount===1&&f.finishCount===savesBeforeOffline,'Offline device cannot save or rotate valid credentials');
  f.mode='reuse';get('reconnectRegistrationBtn').click();await wait();
  check([...get('nodeFormAircon').options].some(o=>o.value==='__custom_name__'&&o.textContent.includes('Add custom Air conditioner name')),'Available AC choices offer an admin custom-name action');
  const beforeCount=f.tables.aircons.length,controllerName=get('nodeFormName').value;

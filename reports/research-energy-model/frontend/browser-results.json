@@ -1,0 +1,174 @@
+{
+  "passed": 7,
+  "results": [
+    {
+      "page": "predictions",
+      "width": 1460,
+      "theme": "light",
+      "metrics": {
+        "r2": "0.9550",
+        "mae": "0.0831",
+        "scenario": "",
+        "counts": "18,496 estimated rows",
+        "retired": false,
+        "overflow": false
+      },
+      "forecast": "1.380 kWh",
+      "unsupported_combination_rejected": true
+    },
+    {
+      "page": "predictions",
+      "width": 1460,
+      "theme": "dark",
+      "metrics": {
+        "r2": "0.9550",
+        "mae": "0.0831",
+        "scenario": "",
+        "counts": "18,496 estimated rows",
+        "retired": false,
+        "overflow": false
+      },
+      "forecast": "1.380 kWh",
+      "unsupported_combination_rejected": true
+    },
+    {
+      "page": "predictions",
+      "width": 390,
+      "theme": "light",
+      "metrics": {
+        "r2": "0.9550",
+        "mae": "0.0831",
+        "scenario": "",
+        "counts": "18,496 estimated rows",
+        "retired": false,
+        "overflow": false
+      },
+      "forecast": "1.380 kWh",
+      "unsupported_combination_rejected": true
+    },
+    {
+      "page": "predictions",
+      "width": 390,
+      "theme": "dark",
+      "metrics": {
+        "r2": "0.9550",
+        "mae": "0.0831",
+        "scenario": "",
+        "counts": "18,496 estimated rows",
+        "retired": false,
+        "overflow": false
+      },
+      "forecast": "1.380 kWh",
+      "unsupported_combination_rejected": true
+    },
+    {
+      "page": "logs",
+      "width": 1460,
+      "theme": "light",
+      "result": {
+        "kwh": 1.3795920488949236,
+        "status": "Estimated from recorded controls and runtime.",
+        "label": "ESTIMATED ENERGY",
+        "estimatedHours": 1
+      },
+      "missing_flag_rejected": true
+    },
+    {
+      "page": "logs",
+      "width": 390,
+      "theme": "dark",
+      "result": {
+        "kwh": 1.3795920488949238,
+        "status": "Estimated from recorded controls and runtime.",
+        "label": "ESTIMATED ENERGY",
+        "estimatedHours": 1
+      },
+      "missing_flag_rejected": true
+    }
+  ],
+  "offline_notice": true,
+  "requests": [
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-metrics?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-metrics?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-metrics?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-metrics?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/prediction-features?model=random_forest",
+      "method": "GET"
+    },
+    {
+      "url": "http://127.0.0.1:65031/api/predict-energy",
+      "method": "POST"
+    }
+  ],
+  "live_hardware_tested": false,
+  "live_cloud_writes": false
+}

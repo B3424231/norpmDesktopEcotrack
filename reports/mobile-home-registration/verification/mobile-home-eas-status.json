@@ -1,0 +1,48 @@
+{
+  "id": "60237599-4f05-4c1f-8bad-a30fdf2b9860",
+  "status": "FINISHED",
+  "platform": "ANDROID",
+  "artifacts": {
+    "buildUrl": "https://expo.dev/artifacts/eas/WJ9RLUZvY6_INL5UGovMlKzRzNbZ3eOcTYHNyVyBDbM.apk",
+    "applicationArchiveUrl": "https://expo.dev/artifacts/eas/WJ9RLUZvY6_INL5UGovMlKzRzNbZ3eOcTYHNyVyBDbM.apk"
+  },
+  "fingerprint": {
+    "id": "01a12a83-3424-7bce-a135-7f6d307c46f4",
+    "hash": "b01fee6f9c5c8abb57a8814184dbe4ef3451cc55"
+  },
+  "initiatingActor": {
+    "id": "b0235b6e-2b12-42cb-aee6-bc27a1630599",
+    "displayName": "rey12345"
+  },
+  "logFiles": [
+    "https://storage.googleapis.com/eas-workflows-production/logs/dc3394b9-32fa-4c3f-829e-2abf1c6ddbc1/60237599-4f05-4c1f-8bad-a30fdf2b9860/2026-10-11T10%3A30%3A08Z-9e4861de-3890-400c-a397-fcda5132c3eb.txt?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=www-production%40exponentjs.iam.gserviceaccount.com%2F20261011%2Fauto%2Fstorage%2Fgoog4_request&X-Goog-Date=20261011T104330Z&X-Goog-Expires=900&X-Goog-SignedHeaders=host&X-Goog-Signature=a2eb1402a20771fc9d7da1dd1d6b3d2be136db2180364ff203e9692c1f1231d2cea054ad762b1471636c0619cde58cc5bc920f01d87228e8ac62abba0e4ffcfef1bc4767c639691884716086a6bbc5ee36dc8597d9ece2f7c1e278f92d5e41ee18751b6e9d57436a6579d2e5d6e2ddf4374783b79d3d89746b68b392cac5f16ffba12026e1c7ef4e4fb716010be51d42639709ca5019f0c5ed2b1d33067288fda0b7c285546091043bab6c7b2d085c6e4ae85f3d08c550a32e6e97424c685214502bff3d4a87b3f20860c5bceda2a5972f094496587ab4665e760a604fc816b0e4d5b37b9ea368714a331e8a94e27d4241c307e76e26ba008a04ef5b3a3ce8b5"
+  ],
+  "app": {
+    "id": "dc3394b9-32fa-4c3f-829e-2abf1c6ddbc1",
+    "name": "ecotrackapp",
+    "slug": "ecotrackapp",
+    "ownerAccount": {
+      "id": "146fe59e-851f-4556-ac05-762c22fc72b0",
+      "name": "rey12345"
+    }
+  },
+  "distribution": "INTERNAL",
+  "buildProfile": "preview",
+  "appIdentifier": "com.ecotrack.app",
+  "sdkVersion": "57.0.0",
+  "appVersion": "1.0.0",
+  "appBuildVersion": "1",
+  "gitCommitHash": "6dc5d9d39bd7799b6d69527e6a29810df269ddf9",
+  "gitCommitMessage": "feat: synchronize mobile maintenance & repair workflows with desktop dashboard, secure private credentials",
+  "priority": "NORMAL",
+  "createdAt": "2026-10-11T10:30:04.027Z",
+  "updatedAt": "2026-10-11T10:43:14.343Z",
+  "completedAt": "2026-10-11T10:43:14.180Z",
+  "expirationDate": "2026-10-25T10:30:04.057Z",
+  "isForIosSimulator": false,
+  "metrics": {
+    "buildWaitTime": 4202,
+    "buildQueueTime": 4655,
+    "buildDuration": 781296
+  }
+}

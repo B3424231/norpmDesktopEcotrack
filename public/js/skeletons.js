@@ -6,12 +6,58 @@
 (function (window) {
   'use strict';
 
-  function getEl(target) {
+  const tracked = new WeakSet();
+  const deadlines = new WeakMap();
+  function getEl(target, track = true) {
     if (!target) return null;
-    return typeof target === 'string' ? document.getElementById(target) : target;
+    const el = typeof target === 'string' ? document.getElementById(target) : target;
+    if (!el || !track) return el;
+    // Initial placeholders only: refreshes retain the most recently rendered content.
+    if (el.dataset.ecoLoaded === 'true' && !el.querySelector('.eco-skeleton')) return null;
+    el.setAttribute('aria-busy', 'true');
+    if (!deadlines.has(el)) {
+      const timer = setTimeout(() => {
+        deadlines.delete(el);
+        if (el.isConnected && el.querySelector('.eco-skeleton'))
+          EcoTrackSkeletons.renderLoadingError(el, new Error('Data is taking too long to load. Check your connection and retry.'));
+      }, 20000);
+      deadlines.set(el, timer);
+    }
+    if (typeof MutationObserver === 'function' && !tracked.has(el)) {
+      tracked.add(el);
+      new MutationObserver(() => {
+        if (!el.querySelector('.eco-skeleton')) {
+          clearTimeout(deadlines.get(el)); deadlines.delete(el);
+          el.dataset.ecoLoaded = 'true';
+          el.setAttribute('aria-busy', 'false');
+        }
+      }).observe(el, { childList: true, subtree: true });
+    }
+    return el;
   }
 
   const EcoTrackSkeletons = {
+    renderLoadingError(containerOrId, error, retry = () => window.location.reload()) {
+      const el = getEl(containerOrId, false);
+      if (!el) return;
+      el.setAttribute('aria-busy', 'false');
+      if (el.dataset.ecoLoaded === 'true' && !el.querySelector('.eco-skeleton')) {
+        window.EcoToast?.warning('Unable to refresh. Previously loaded data is still shown.');
+        return;
+      }
+      const content = document.createElement('div');
+      content.className = 'p-4 text-sm text-rose-500'; content.setAttribute('role', 'alert');
+      const message = document.createElement('p');
+      message.textContent = error?.message || 'Unable to load data. Please retry.';
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'mt-2 font-semibold underline'; button.textContent = 'Retry loading';
+      button.addEventListener('click', retry); content.append(message, button);
+      if (el.tagName === 'TBODY') {
+        const row = document.createElement('tr'), cell = document.createElement('td');
+        cell.colSpan = el.querySelector('tr')?.children.length || 1;
+        cell.append(content); row.append(cell); el.replaceChildren(row);
+      } else el.replaceChildren(content);
+    },
     /**
      * Render realistic table row skeletons
      */
@@ -378,14 +424,15 @@
      *   - renderContent: Function(container, data)
      *   - renderError: Function(container, error) [optional]
      */
-    bind({ key, container, renderSkeleton, renderContent, renderError }) {
-      const el = getEl(container);
+    bind({ key, container, renderSkeleton, renderContent, renderError, retry }) {
+      const el = getEl(container, false);
       if (!el) return () => {};
 
       const dataBus = window.EcoDataBus;
 
       // 1. Initial State: Check if data is already cached
-      if (dataBus && dataBus.getCached(key)) {
+      let hasContent = dataBus && dataBus.getCached(key) !== null;
+      if (hasContent) {
         const cached = dataBus.getCached(key);
         el.classList.add('eco-content-fade-in');
         renderContent(el, cached);
@@ -399,31 +446,40 @@
       // 2. Subscribe to query lifecycle events
       const unsub = dataBus.onQuery(key, {
         onStart: ({ isBackground }) => {
+          el.setAttribute('aria-busy', 'true');
           // Only show skeleton if not doing a silent background revalidation
-          if (!isBackground) {
+          if (!isBackground && !hasContent) {
             renderSkeleton(el);
           }
         },
         onSuccess: ({ data }) => {
+          hasContent = true;
+          el.setAttribute('aria-busy', 'false');
           el.classList.remove('eco-content-fade-in');
           // Force reflow for smooth fade-in
           void el.offsetWidth;
           el.classList.add('eco-content-fade-in');
           renderContent(el, data);
         },
+        onCancel: () => el.setAttribute('aria-busy', 'false'),
         onError: ({ error }) => {
+          el.setAttribute('aria-busy', 'false');
+          if (hasContent) {
+            window.EcoToast?.warning('Refresh failed. Showing previously loaded data; retry to update.');
+            return;
+          }
           if (renderError) {
             renderError(el, error);
           } else {
-            el.innerHTML = `
-              <div class="p-6 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-center space-y-2">
-                <div class="text-xs font-bold text-rose-400">Failed to load data for ${key}</div>
-                <p class="text-[11px] text-gray-400">${error ? (error.message || error) : 'Network or server error.'}</p>
-                <button type="button" class="mt-2 px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs font-bold border-0 cursor-pointer transition-colors" onclick="window.EcoDataBus && window.EcoDataBus.query('${key}', () => location.reload(), { forceRefresh: true })">
-                  Retry Loading
-                </button>
-              </div>
-            `;
+            const message = document.createElement('p');
+            message.className = 'p-4 text-sm text-rose-500';
+            message.setAttribute('role', 'alert');
+            message.textContent = `Unable to load ${key}. ${error?.message || 'Please retry.'}`;
+            const button = document.createElement('button');
+            button.type = 'button'; button.className = 'px-4 py-2 text-sm text-emerald-600';
+            button.textContent = 'Retry loading';
+            button.addEventListener('click', () => retry ? retry() : window.location.reload());
+            el.replaceChildren(message, button);
           }
         }
       });

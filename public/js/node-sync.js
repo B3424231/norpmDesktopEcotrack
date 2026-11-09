@@ -17,12 +17,27 @@
     return null;
   }
 
-  const measurement = value => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+  const measurement = value => !['number', 'string'].includes(typeof value) || String(value).trim() === '' || !Number.isFinite(Number(value)) ? null : Number(value);
+  function measuredRotation(packet) {
+    const raw = packet.rotation_rpm;
+    const value = ['number', 'string'].includes(typeof raw) && String(raw).trim() !== '' ? measurement(raw) : null;
+    const invalidQuality = packet.rotation_quality != null && packet.rotation_quality !== 'ok';
+    return invalidQuality || value === null || value < 0 ? null : value;
+  }
 
   // In-memory cache for node metadata and save rate-limiting
   const _nodeMetadataCache = {};
   const _lastTelemetrySaveTime = {};
   const _telemetrySavesInFlight = new Set();
+
+  const locationName = value => typeof value === 'string' &&
+    !/^(?:unassigned|unknown|unavailable|null|undefined|[-—])$/i.test(value.trim()) ? value.trim() : '';
+  const completeLocation = loc => loc && ['roomName', 'floorName', 'buildingName'].every(key => locationName(loc[key]));
+  function fillLocation(loc, fallback) {
+    if (!fallback || (loc.roomName && loc.roomName !== locationName(fallback.roomName)) ||
+        (loc.floorName && loc.floorName !== locationName(fallback.floorName))) return loc;
+    return Object.fromEntries(['roomName', 'floorName', 'buildingName'].map(key => [key, loc[key] || locationName(fallback[key])]));
+  }
 
   /**
    * Save a single control log telemetry reading into SQLite with the node's
@@ -43,27 +58,37 @@
     const sb = getSupabase();
 
     try {
-      let loc = packet.room_name ? {
-        roomName: packet.room_name,
-        floorName: packet.floor_name || 'Unassigned',
-        buildingName: packet.building_name || 'Unassigned'
-      } : null;
+      const controller = global.EcoTrackAirconSystem?.NodeService?.getNode(packet.pb_id || packet.id);
+      const roomId = Object.prototype.hasOwnProperty.call(packet, 'room_id') ? packet.room_id : controller?.room_id;
+      const cacheKey = JSON.stringify([packet.pb_id || controller?.db_id || packet.id, roomId || null]);
+      let loc = {
+        roomName: locationName(packet.room_name),
+        floorName: locationName(packet.floor_name) || locationName(packet.floor),
+        buildingName: locationName(packet.building_name) || locationName(packet.building)
+      };
+      if (controller && (!Object.prototype.hasOwnProperty.call(packet, 'room_id') || packet.room_id === controller.room_id)) {
+        loc = fillLocation(loc, { roomName: controller.room_name,
+          floorName: locationName(controller.floor_name) || locationName(controller.floor),
+          buildingName: locationName(controller.building_name) || locationName(controller.building) });
+      }
       let airconType = packet.aircon_type || null;
 
       // Check in-memory cache first to avoid repetitive queries
-      if (_nodeMetadataCache[nodeName]) {
-        const cached = _nodeMetadataCache[nodeName];
-        if (!loc) loc = cached.loc;
+      if (_nodeMetadataCache[cacheKey]) {
+        const cached = _nodeMetadataCache[cacheKey];
+        loc = fillLocation(loc, cached.loc);
         if (!airconType) airconType = cached.airconType;
       }
 
-      if (sb && (!loc || !airconType)) {
+      if (sb && (!completeLocation(loc) || !airconType)) {
         try {
-          const { data: nodeData } = await sb.from('nodes').select('*').eq('name', nodeName).maybeSingle();
+          const databaseId = packet.pb_id || controller?.db_id;
+          const { data: nodeData } = await sb.from('nodes').select('*').eq(databaseId ? 'id' : 'name', databaseId || nodeName).maybeSingle();
           if (nodeData) {
-            airconType = nodeData.aircon_type || null;
-            if (nodeData.room_id) {
-              const { data: room } = await sb.from('rooms').select('*').eq('id', nodeData.room_id).maybeSingle();
+            if (!airconType) airconType = nodeData.aircon_type || null;
+            const assignedRoom = Object.prototype.hasOwnProperty.call(packet, 'room_id') ? packet.room_id : nodeData.room_id;
+            if (assignedRoom) {
+              const { data: room } = await sb.from('rooms').select('*').eq('id', assignedRoom).maybeSingle();
               if (room) {
                 let floorName = 'Unassigned';
                 let buildingName = 'Unassigned';
@@ -77,26 +102,25 @@
                     }
                   }
                 }
-                loc = { roomName: room.name, floorName, buildingName };
+                loc = fillLocation(loc, { roomName: room.name, floorName, buildingName });
               }
             }
           }
         } catch (_) {}
       }
 
-      if (!loc) {
-        loc = { roomName: 'Unassigned', floorName: 'Unassigned', buildingName: 'Unassigned' };
-      }
-
-      _nodeMetadataCache[nodeName] = { loc, airconType };
+      // Retry incomplete metadata next time rather than caching a placeholder forever.
+      if (completeLocation(loc)) _nodeMetadataCache[cacheKey] = { loc, airconType };
+      loc = Object.fromEntries(['roomName', 'floorName', 'buildingName'].map(key => [key, loc[key] || 'Unassigned']));
 
       const reportedAcState = packet.ac_on ?? packet.acOn ?? packet.power_state ?? packet.powerState ?? packet.ac_state ?? packet.acState;
-      const intervalVal = Number(packet.intervalVal ?? packet.interval_val);
+      const intervalVal = measurement(packet.intervalVal ?? packet.interval_val);
       const intervalUnit = String(packet.intervalUnit ?? packet.interval_unit ?? '').toLowerCase();
       const secondsMultiplier = intervalUnit.startsWith('sec') ? 1 : intervalUnit.startsWith('min') ? 60 : (intervalUnit.startsWith('hour') || intervalUnit.startsWith('hr')) ? 3600 : 0;
-      const intervalSeconds = Number(packet.interval_seconds ?? packet.intervalSeconds ?? (intervalVal * secondsMultiplier));
+      const intervalSeconds = measurement(packet.interval_seconds ?? packet.intervalSeconds ?? (intervalVal * secondsMultiplier));
 
-      const reported = String(reportedAcState ?? '').toLowerCase().replace(/[_-]/g, ' ');
+      const reported = ['string', 'number', 'boolean'].includes(typeof reportedAcState)
+        ? String(reportedAcState).toLowerCase().replace(/[_-]/g, ' ') : '';
       const resolvedAcOn = reportedAcState === true || reportedAcState === 1 || ['on','true','1','active cooling','cooling','fan only','running'].includes(reported) ? true
         : reportedAcState === false || reportedAcState === 0 || ['off','false','0','standby','idle','stopped'].includes(reported) ? false : null;
 
@@ -105,8 +129,8 @@
       const aircon = matches.length === 1 ? matches[0] : null;
       const hasPacketSnapshot = Object.prototype.hasOwnProperty.call(packet, 'control_snapshot');
       let controlSnapshot = hasPacketSnapshot ? packet.control_snapshot : aircon?.control_snapshot;
-      const selectedPower = window.EcoTrackAirconState?.displaySettings?.(controlSnapshot)?.power;
-      if ((selectedPower ?? resolvedAcOn) !== true) return null;
+      // A received measurement is valid even when the AC is OFF or its power is
+      // unknown. Selected settings must never suppress physical OFF evidence.
       // Capture selected settings at ingestion, without treating them as a command or feedback.
       // A null snapshot on an unbound profile cannot supply historical state.
       if (!hasPacketSnapshot && aircon?.aircon_id && controlSnapshot &&
@@ -122,6 +146,7 @@
         control_snapshot: controlSnapshot ? JSON.parse(JSON.stringify(controlSnapshot)) : null,
         ac_state: packet.ac_state ?? packet.acState ?? null,
         ...(packet.telemetry_id ? { id: packet.telemetry_id } : {}),
+        ...(packet.observed_at != null ? { observed_at: packet.observed_at } : {}),
         ...(resolvedAcOn !== null ? { ac_on: resolvedAcOn } : {}),
         ...(Number.isFinite(intervalSeconds) && intervalSeconds > 0 ? { interval_seconds: intervalSeconds } : {}),
         ...(packet.wake_time ? { wake_time: packet.wake_time } : {}),
@@ -133,6 +158,8 @@
         building_name: loc.buildingName,
         aircon_type: airconType,
         temperature: measurement(packet.temp ?? packet.temperature),
+        rotation_rpm: measuredRotation(packet),
+        rotation_quality: packet.rotation_quality ?? (measuredRotation(packet) === null ? 'missing' : 'ok'),
         battery: measurement(packet.battery),
         rssi: measurement(packet.rssi),
         status: packet.status || 'online',
@@ -142,14 +169,10 @@
       // 1. Direct save into local SQLite3 database (backend/telemetry.db on port 5000)
       let record = null;
       try {
-        const backendUrl = global.ECOTRACK_CONFIG?.backendUrl || global.electron?.env?.BACKEND_URL || 'http://localhost:5000';
-        const res = await fetch(`${backendUrl}/api/telemetry`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(telemPayload)
-        });
-        if (!res.ok) throw new Error(`Telemetry write failed (HTTP ${res.status})`);
-        record = await res.json();
+        if (!global.electron?.invoke) throw new Error('Open the desktop app and sign in to save local telemetry.');
+        const res = await global.electron.invoke('telemetry-admin-request', {method: 'POST', path: '/api/telemetry', data: telemPayload});
+        if (!res?.success) throw new Error(res?.error || 'Telemetry write was not authorized.');
+        record = res.data;
         if (!record?.id) throw new Error('Telemetry API did not confirm a saved row');
         _lastTelemetrySaveTime[nodeName] = Date.now();
         if (typeof window !== 'undefined') {
@@ -181,13 +204,25 @@
   }
 
   // ===== BACKGROUND TELEMETRY CADENCE SERVICE =====
-  // Runs continuous telemetry logging based on each node's interval setting
-  // when the user is on Daily Logs, Scheduler, or other pages where telemetry.html is not active.
+  // Reconcile pending cloud command receipts on pages without the telemetry view.
+  // Cached node values are never turned into new measurements by this timer.
   let _bgCadenceTimer = null;
-  const _nodeLastSendTime = {};
-  const _nodeInitialSendAt = {};
   let _assignedNodesCache = null;
   let _assignedNodesCacheTime = 0;
+
+  function readCloudWithDeadline(query) {
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error('Cloud status read timed out'));
+        controller.abort();
+      }, 15000);
+    });
+    const read = Promise.resolve().then(() => typeof query.abortSignal === 'function'
+      ? query.abortSignal(controller.signal) : query);
+    return Promise.race([read, timeout]).finally(() => clearTimeout(timer));
+  }
 
   async function getAssignedNodesWithSchedule() {
     const now = Date.now();
@@ -197,7 +232,7 @@
     const sb = getSupabase();
     if (!sb) return [];
     try {
-      const { data: nodes, error } = await sb.from('nodes').select('*').not('room_id', 'is', null);
+      const { data: nodes, error } = await readCloudWithDeadline(sb.from('nodes').select('*').not('room_id', 'is', null));
       if (!error && Array.isArray(nodes)) {
         _assignedNodesCache = nodes;
         _assignedNodesCacheTime = now;
@@ -220,6 +255,7 @@
   }
 
   const _commandReceiptChecks = new Map();
+  const _commandReceiptInFlight = new Set();
   async function reconcilePendingCommandReceipt(node, now = Date.now()) {
     if (typeof window === 'undefined') return;
     const system = window.EcoTrackAirconSystem, sb = getSupabase();
@@ -227,12 +263,14 @@
     if (matches.length !== 1 || !sb?.from) return;
     const ac = matches[0], snapshot = ac.control_snapshot;
     if (!ac.aircon_id || !snapshot?.command_id || snapshot.command_status !== 'queued') return;
+    if (_commandReceiptInFlight.has(ac.aircon_id)) return;
     const previous = _commandReceiptChecks.get(ac.aircon_id);
     if (previous?.command_id === snapshot.command_id && now - previous.checkedAt < 5000) return;
     _commandReceiptChecks.set(ac.aircon_id, { command_id: snapshot.command_id, checkedAt: now });
+    _commandReceiptInFlight.add(ac.aircon_id);
     try {
-      const { data: command, error } = await sb.from('ecotrack_device_commands').select('id,node_id,kind,payload,status,result')
-        .eq('id', snapshot.command_id).maybeSingle();
+      const { data: command, error } = await readCloudWithDeadline(sb.from('ecotrack_device_commands').select('id,node_id,kind,payload,status,result')
+        .eq('id', snapshot.command_id).maybeSingle());
       if (error || command?.id !== snapshot.command_id || command.node_id !== node.id || command.kind !== 'ac_intent' || command.payload?.aircon_id !== ac.aircon_id) return;
       const current = system.AirconProfileManager.getAll().find(profile => profile.aircon_id === ac.aircon_id);
       if (current?.control_snapshot?.command_id !== snapshot.command_id || current.control_snapshot.command_status !== 'queued') return;
@@ -241,75 +279,24 @@
         ['failed','expired'].includes(command.status) ? 'failed' : null;
       if (status) system.AirconProfileManager.updateState(ac.device_id, {}, { ...current.control_snapshot, command_status: status });
     } catch (_) { /* Preserve queued status until an authenticated cloud receipt is available. */ }
+    finally { _commandReceiptInFlight.delete(ac.aircon_id); }
   }
 
+  let _backgroundReadPending = false;
   async function stepBackgroundTelemetryCadence() {
-    const assignedNodes = await getAssignedNodesWithSchedule();
-    if (!assignedNodes.length) return;
-
-    // The cloud receiver writes its actual reports. Browser timers must not mint new sensor history from cached node snapshots.
-    if (typeof window !== 'undefined' && window.EcoTrackHardwareCloud) {
-      for (const node of assignedNodes) void reconcilePendingCommandReceipt(node);
-      return;
-    }
-
-    const now = Date.now();
-
-    for (const [index, node] of assignedNodes.entries()) {
-      if (!isNodeWithinOperatingWindow(node, now)) continue;
-      void reconcilePendingCommandReceipt(node, now);
-      const val = parseInt(node.interval_val) || 15;
-      const unit = (node.interval_unit || 'Minutes').toLowerCase();
-      let intervalMs = 15 * 60 * 1000;
-
-      if (unit.startsWith('second') || unit.startsWith('sec')) {
-        intervalMs = Math.max(1000, val * 1000);
-      } else if (unit.startsWith('minute') || unit.startsWith('min')) {
-        intervalMs = Math.max(1000, val * 60 * 1000);
-      } else if (unit.startsWith('hour') || unit.startsWith('hr')) {
-        intervalMs = Math.max(1000, val * 3600 * 1000);
-      }
-
-      const nodeKey = node.name || node.id;
-      if (_nodeInitialSendAt[nodeKey] === undefined) {
-        _nodeInitialSendAt[nodeKey] = now + (index * 250) % intervalMs;
-      }
-      const lastSend = _nodeLastSendTime[nodeKey];
-      const isDue = lastSend === undefined ? now >= _nodeInitialSendAt[nodeKey] : now - lastSend >= intervalMs;
-      if (isDue) {
-        _nodeLastSendTime[nodeKey] = now;
-
-        // Log the last reported node readings at the configured cadence.
-        const actualPacket = {
-          id: node.name || node.id,
-          name: node.name || node.id,
-          pb_id: node.id,
-          telemetry_id: `telem_cadence_${node.id}_${Math.floor(now / intervalMs)}`,
-          temp: measurement(node.temp),
-          battery: measurement(node.battery),
-          rssi: measurement(node.rssi),
-          status: node.status || 'offline',
-          ac_on: node.ac_on ?? node.acOn ?? node.power_state,
-          intervalVal: val,
-          intervalUnit: node.interval_unit || 'Minutes',
-          wake_time: node.wake_time, sleep_time: node.sleep_time,
-          room_id: node.room_id || null
-        };
-        if (typeof window !== 'undefined' && typeof window.evaluateRulesForTelemetry === 'function') {
-          try {
-            Promise.resolve(window.evaluateRulesForTelemetry(actualPacket)).catch(() => {});
-          } catch (_) {}
-        }
-        saveNodeTelemetryToSqlite(actualPacket).catch(() => {});
-      }
-    }
+    if (_backgroundReadPending) return;
+    _backgroundReadPending = true;
+    try {
+      const assignedNodes = await getAssignedNodesWithSchedule();
+      await Promise.all(assignedNodes.map(node => reconcilePendingCommandReceipt(node)));
+    } finally { _backgroundReadPending = false; }
   }
 
   function startBackgroundTelemetryCadence() {
     if (_bgCadenceTimer) return;
-    // Quarter-second checks preserve startup offsets so saves stay within one debounce window.
+    // Only reconcile delivery receipts; new telemetry comes from actual received reports.
     stepBackgroundTelemetryCadence();
-    _bgCadenceTimer = setInterval(stepBackgroundTelemetryCadence, 250);
+    _bgCadenceTimer = setInterval(stepBackgroundTelemetryCadence, 5000);
   }
 
   if (typeof window !== 'undefined') {

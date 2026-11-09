@@ -57,10 +57,13 @@ function renderer(client, ipc) {
   const notices = [];
   const context = vm.createContext({ _reportsCache: reports, getReports: () => context._reportsCache, getSb: () => client,
     window: { electron: ipc ? { invoke: ipc } : null, dispatchEvent() {} },
+    reportWriteRevision: 0, reportVersions: new Map(), confirmedReportWrites: new Map(),
+    normalizeReport: report => report, syncReportsWithLinkedRepairs: rows => rows, deduplicateReports: rows => rows,
     localStorage: { setItem() {} }, Event: class {}, CustomEvent: class {}, console,
     refreshPageReportsView() {}, broadcastMaintenanceChange() {}, showToast: (...args) => notices.push(args)
   });
-  vm.runInContext(section('public/js/maintenance-modal.js', '  async function deleteReports(', '  // Delete Single Report'), context);
+  vm.runInContext(section('public/js/maintenance-modal.js', '  function mergeReportsSafely(', '  let _isRefreshingReportsView') +
+    section('public/js/maintenance-modal.js', '  async function deleteReports(', '  // Delete Single Report'), context);
   return { context, notices };
 }
 
@@ -73,6 +76,8 @@ async function testRendererFallbacks() {
     assert.equal(context._reportsCache.length, 1);
     assert.equal(context._reportsCache[0].id, 'other');
     assert.equal(context._reportsCache[0].linked_repair_id, null);
+    const stale = context.mergeReportsSafely([{ id: 'MR-1' }, { id: 'child' }, { id: 'other' }], [], 0);
+    assert.equal(JSON.stringify(stale.map(row => row.id)), '["other"]', 'An in-flight read must not restore deleted reports');
   }
   const empty = database({ direct: { data: [], error: null } });
   const failed = renderer(empty);
@@ -80,31 +85,39 @@ async function testRendererFallbacks() {
   assert.equal(failed.context._reportsCache.length, 3, 'Failed deletion preserves local reports');
   assert.equal(failed.notices.at(-1)[0], 'Deletion Failed');
   assert.equal(await failed.context.deleteReports([null, undefined, ' ']), false);
+  const ipcEmpty = renderer(empty, async () => ({ success: false, error: 'No maintenance reports were deleted. Refresh and check the selected reports.' }));
+  assert.equal(await ipcEmpty.context.deleteReports('MR-1'), false, 'An empty IPC result must not remove a real report locally');
+  assert.equal(ipcEmpty.context._reportsCache.length, 3);
   const partial = renderer(database({ rpc: { data: [{ id: 'child' }], error: null } }));
   assert.equal(await partial.context.deleteReports('MR-1'), false);
   assert.equal(partial.context._reportsCache.length, 2, 'Remove only rows actually confirmed by the database');
 }
 
 async function testModalSelection() {
-  let result = false, received, rendered = 0;
-  const selected = new Set(['MR-1']);
-  const context = vm.createContext({ pendingDeleteReportIds: [' MR-1 ', undefined], selectedReportIds: selected, isReportSelectMode: true,
-    document: { getElementById: () => ({ classList: { add() {} }, style: {} }) },
+  let result = [], received, rendered = 0;
+  const selected = new Set(['MR-1', 2]);
+  const context = vm.createContext({
+    selectedReportIds: selected, isReportSelectMode: true,
     renderPageReports: () => { rendered++; },
-    window: { EcoTrackMaintenance: { deleteReports: async ids => {
-      received = ids; assert.equal(context.pendingDeleteReportIds.length, 0, 'Modal may clear pending IDs after taking a copy'); return result;
+    window: { EcoTrackMaintenance: { promptDeleteReports: async (ids, { bulk }) => {
+      received = { ids, bulk }; return result;
     } } }
   });
-  vm.runInContext(section('public/staff.html', '      function closeDeleteReportModal()', '      // Bulk action listeners'), context);
-  await context.confirmDeleteReportAction();
-  assert.equal(JSON.stringify(received), '["MR-1"]');
-  assert.equal(selected.size, 1, 'Keep selection when deletion fails');
+  vm.runInContext(section('public/staff.html', '      async function deleteReportPrompt(', '      // Bulk action listeners'), context);
+  await context.deleteReportPrompt('MR-1');
+  assert.equal(JSON.stringify(received), '{"ids":["MR-1"],"bulk":false}');
+  assert.equal(selected.size, 2, 'Keep selection if the user cancels without deleting any reports');
   assert.equal(rendered, 0);
-  result = true; context.pendingDeleteReportIds = ['MR-1'];
-  await context.confirmDeleteReportAction();
+  result = ['MR-1'];
+  await context.deleteSelectedReportsPrompt();
+  assert.equal(JSON.stringify(received), '{"ids":["MR-1",2],"bulk":true}');
+  assert.deepEqual([...selected], [2], 'Only clear selection for confirmed deletions');
+  assert.equal(context.isReportSelectMode, true);
+  result = ['2'];
+  await context.deleteSelectedReportsPrompt();
   assert.equal(selected.size, 0);
   assert.equal(context.isReportSelectMode, false);
-  assert.equal(rendered, 1);
+  assert.equal(rendered, 2);
 }
 
 async function main() {

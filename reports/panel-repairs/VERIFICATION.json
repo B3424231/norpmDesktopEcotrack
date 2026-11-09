@@ -1,0 +1,38 @@
+{
+  "main_regression": {
+    "passed": 200,
+    "failed": 0,
+    "skipped": 0
+  },
+  "fetching": {
+    "passed": 16
+  },
+  "python_api": {
+    "history": 4,
+    "cleanup": 7,
+    "cloud_sync": 10,
+    "schedule": 5,
+    "prediction": 15
+  },
+  "browser": {
+    "panel": 22,
+    "prediction": 7,
+    "photo": 3
+  },
+  "history_reader": 2,
+  "no_mock_integrity": 34,
+  "scenario_suites": {
+    "runtime": "PASS",
+    "dashboard_workflows": "PASS",
+    "logs_stability": "PASS",
+    "telemetry_cadence": "PASS"
+  },
+  "mobile_typecheck": "PASS",
+  "new_photo_helper_lint": "PASS",
+  "web_android_export": "PASS",
+  "native_electron": "PASS",
+  "physical_phone_and_ac": "NOT RUN \u2014 skipped at user request",
+  "production_cloud_writes": false,
+  "verifiedAt": "2026-10-12T17:25:17.875863+00:00",
+  "physical_testing_scope_updated_on": "2026-10-13"
+}

@@ -5,6 +5,36 @@
 // ===================================================================
 
 (function() {
+  // File pages have an opaque Origin:null, just like sandboxed web pages.
+  // Keep credentials in the main process and preserve the existing fetch/Response API.
+  if (window.electron?.invoke && typeof window.fetch === 'function') {
+    const networkFetch = window.fetch.bind(window);
+    window.fetch = async (input, options = {}) => {
+      const source = typeof Request !== 'undefined' && input instanceof Request ? input : null;
+      const url = new URL(source ? source.url : String(input), window.location?.href);
+      const method = String(options.method || source?.method || 'GET').toUpperCase();
+      const readOnly = method === 'GET' || method === 'POST' && ['/api/predict-energy', '/api/predict-recorded-energy'].includes(url.pathname);
+      if (!readOnly || !['http:', 'https:'].includes(url.protocol) || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.startsWith('/api/'))
+        return networkFetch(input, options);
+      const signal = options.signal || source?.signal;
+      if (signal?.aborted) throw signal.reason || new DOMException('Request aborted', 'AbortError');
+      const body = options.body ?? (source && method === 'POST' ? await source.clone().text() : undefined);
+      const request = Promise.resolve().then(() => window.electron.invoke('local-api-read', {method, path:url.pathname + url.search,
+        ...(body == null || body === '' ? {} : {data:JSON.parse(body)})})).catch(error => {
+          if (/No handler registered for ['"]local-api-read['"]/.test(error?.message || ''))
+            throw new Error('Restart EcoTrack desktop to load the local service connection. A page reload is not enough.');
+          throw error;
+        });
+      const result = await new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason || new DOMException('Request aborted', 'AbortError'));
+        signal?.addEventListener('abort', abort, {once:true});
+        if (signal?.aborted) abort();
+        Promise.resolve(request).then(value => {signal?.removeEventListener('abort',abort);resolve(value);}, error => {signal?.removeEventListener('abort',abort);reject(error);});
+      });
+      if (!result?.success) throw new Error(result?.error || 'Local read failed.');
+      return new Response([204,205,304].includes(result.status) ? null : result.body, {status:result.status,headers:{'Content-Type':result.contentType}});
+    };
+  }
   // 1. CONFIGURATION
   const DEFAULT_SUPABASE_URL = 'https://ynopdmfhngooknybyahq.supabase.co';
   const DEFAULT_ANON_KEY = 'sb_publishable_HNxLHBeGMPsdoEvVtUusWw_CJ-qlHQ-';
@@ -194,6 +224,15 @@
       this.baseUrl = window.ECOTRACK_CONFIG.backendUrl || DEFAULT_BACKEND_URL;
     }
     async request(path, options) {
+      if (options?.method && options.method !== 'GET') {
+        if (!window.electron?.invoke) throw new Error('Open the desktop app and sign in before changing history.');
+        const result = await window.electron.invoke('telemetry-admin-request', {
+          method: options.method, path: '/api/telemetry' + path,
+          ...(options.body === undefined ? {} : {data: JSON.parse(options.body)})
+        });
+        if (!result?.success) throw new Error(result?.error || 'Telemetry update was not authorized.');
+        return result.data;
+      }
       const response = await fetch(`${this.baseUrl}/api/telemetry${path}`, options);
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `Telemetry request failed (HTTP ${response.status})`);

@@ -1,0 +1,36 @@
+flowchart LR
+  Admin["Admin - desktop"]
+  Staff["Staff - mobile"]
+  Device["ESP32-S3 - RPM, IR and reported battery"]
+  P0("0. EcoTrack")
+  Admin -->|"Credentials"| P0
+  Admin -->|"Device details"| P0
+  Admin -->|"Monitor query"| P0
+  Admin -->|"AC controls"| P0
+  Admin -->|"Rules / inbox data"| P0
+  Admin -->|"Work / review"| P0
+  Admin -->|"Report / cost query"| P0
+  Admin -->|"Presets / hours"| P0
+  P0 -->|"Login result"| Admin
+  P0 -->|"Device list"| Admin
+  P0 -->|"Readings / charge"| Admin
+  P0 -->|"Alerts / work status"| Admin
+  P0 -->|"Reports / run status"| Admin
+  P0 -->|"Setup config"| Device
+  P0 -->|"Upload ACK"| Device
+  P0 -->|"Control / capture"| Device
+  P0 -->|"Commands / hours"| Device
+  Device -->|"Device ID"| P0
+  Device -->|"RPM / battery"| P0
+  Device -->|"IR / response"| P0
+  Device -->|"Timer receipt"| P0
+  Staff -->|"Sign-in data"| P0
+  Staff -->|"Room setup"| P0
+  Staff -->|"Status request"| P0
+  Staff -->|"Inbox actions"| P0
+  Staff -->|"Progress / submit"| P0
+  P0 -->|"Session access"| Staff
+  P0 -->|"Assigned nodes"| Staff
+  P0 -->|"Live status"| Staff
+  P0 -->|"Mobile notices"| Staff
+  P0 -->|"Tasks / approval"| Staff

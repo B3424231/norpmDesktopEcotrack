@@ -1,0 +1,342 @@
+[
+  {
+    "path": "scratch/(files)",
+    "MiB": 3.8,
+    "files": 96
+  },
+  {
+    "path": "scratch/analytics-climate-modes-electron",
+    "MiB": 2.81,
+    "files": 57
+  },
+  {
+    "path": "scratch/build-live-ir",
+    "MiB": 100.56,
+    "files": 544
+  },
+  {
+    "path": "scratch/build-receiver-monitor",
+    "MiB": 99.58,
+    "files": 544
+  },
+  {
+    "path": "scratch/build-receiver-transmitter",
+    "MiB": 100.82,
+    "files": 544
+  },
+  {
+    "path": "scratch/capability-verification-electron",
+    "MiB": 2.84,
+    "files": 58
+  },
+  {
+    "path": "scratch/clear-logs-ui-electron",
+    "MiB": 1.17,
+    "files": 34
+  },
+  {
+    "path": "scratch/cloud-db-test-runtime",
+    "MiB": 24.26,
+    "files": 311
+  },
+  {
+    "path": "scratch/cloud-receiver-build",
+    "MiB": 94.61,
+    "files": 544
+  },
+  {
+    "path": "scratch/cloud-receiver-pinless-build",
+    "MiB": 94.82,
+    "files": 544
+  },
+  {
+    "path": "scratch/cloud-receiver-pinless-heltec-build",
+    "MiB": 99.05,
+    "files": 544
+  },
+  {
+    "path": "scratch/connection-recovery-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/controller-details-electron",
+    "MiB": 2.81,
+    "files": 57
+  },
+  {
+    "path": "scratch/controller-workflow-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/device-setup-ui-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/EcoTrackCloudReceiver",
+    "MiB": 0.02,
+    "files": 1
+  },
+  {
+    "path": "scratch/EcoTrackCloudReceiverPinless",
+    "MiB": 0.02,
+    "files": 1
+  },
+  {
+    "path": "scratch/EcoTrackLiveIR",
+    "MiB": 0.04,
+    "files": 1
+  },
+  {
+    "path": "scratch/EcoTrackMultiBrand",
+    "MiB": 108.87,
+    "files": 18
+  },
+  {
+    "path": "scratch/EcoTrackReceiverMonitor",
+    "MiB": 0.02,
+    "files": 1
+  },
+  {
+    "path": "scratch/EcoTrackReceiverTransmitter",
+    "MiB": 0.04,
+    "files": 1
+  },
+  {
+    "path": "scratch/ir-capabilities-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/ir-realtime-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/live-power-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/multi-brand-controls-electron",
+    "MiB": 2.89,
+    "files": 58
+  },
+  {
+    "path": "scratch/node-schedule-times-electron",
+    "MiB": 1.17,
+    "files": 35
+  },
+  {
+    "path": "scratch/notification-removal-electron",
+    "MiB": 2.81,
+    "files": 57
+  },
+  {
+    "path": "scratch/page-connections-before",
+    "MiB": 0.79,
+    "files": 12
+  },
+  {
+    "path": "scratch/registration-modal-electron",
+    "MiB": 2.84,
+    "files": 58
+  },
+  {
+    "path": "reports/ac-off-recording",
+    "MiB": 0.4,
+    "files": 17
+  },
+  {
+    "path": "reports/analytics-climate-modes",
+    "MiB": 0.35,
+    "files": 15
+  },
+  {
+    "path": "reports/analytics-reset",
+    "MiB": 0.15,
+    "files": 6
+  },
+  {
+    "path": "reports/ble-error-code",
+    "MiB": 0.74,
+    "files": 23
+  },
+  {
+    "path": "reports/clear-logs-ui",
+    "MiB": 0.41,
+    "files": 10
+  },
+  {
+    "path": "reports/cloud-hardware",
+    "MiB": 0.31,
+    "files": 22
+  },
+  {
+    "path": "reports/command-retention",
+    "MiB": 0.0,
+    "files": 2
+  },
+  {
+    "path": "reports/connection-recovery",
+    "MiB": 0.55,
+    "files": 13
+  },
+  {
+    "path": "reports/controller-card-name",
+    "MiB": 0.1,
+    "files": 9
+  },
+  {
+    "path": "reports/controller-details",
+    "MiB": 0.25,
+    "files": 7
+  },
+  {
+    "path": "reports/controller-display-name",
+    "MiB": 0.39,
+    "files": 18
+  },
+  {
+    "path": "reports/controller-table-compact",
+    "MiB": 0.22,
+    "files": 5
+  },
+  {
+    "path": "reports/controller-workflow",
+    "MiB": 1.0,
+    "files": 26
+  },
+  {
+    "path": "reports/database-audit",
+    "MiB": 12.96,
+    "files": 11
+  },
+  {
+    "path": "reports/device-setup-ui",
+    "MiB": 0.72,
+    "files": 17
+  },
+  {
+    "path": "reports/ir-controller-name",
+    "MiB": 0.03,
+    "files": 3
+  },
+  {
+    "path": "reports/ir-latency",
+    "MiB": 1.02,
+    "files": 26
+  },
+  {
+    "path": "reports/ir-transmitter",
+    "MiB": 0.72,
+    "files": 20
+  },
+  {
+    "path": "reports/live-bluetooth",
+    "MiB": 0.77,
+    "files": 26
+  },
+  {
+    "path": "reports/maintenance-save-fix",
+    "MiB": 0.03,
+    "files": 4
+  },
+  {
+    "path": "reports/maintenance-ui-fix",
+    "MiB": 0.01,
+    "files": 4
+  },
+  {
+    "path": "reports/migration-deadlock",
+    "MiB": 0.08,
+    "files": 6
+  },
+  {
+    "path": "reports/mobile-cloud-integration",
+    "MiB": 13.91,
+    "files": 90
+  },
+  {
+    "path": "reports/mobile-home-registration",
+    "MiB": 0.91,
+    "files": 24
+  },
+  {
+    "path": "reports/mobile-ui-cleanup",
+    "MiB": 13.82,
+    "files": 82
+  },
+  {
+    "path": "reports/multi-brand-capabilities",
+    "MiB": 2.15,
+    "files": 89
+  },
+  {
+    "path": "reports/node-schedule-times",
+    "MiB": 0.2,
+    "files": 13
+  },
+  {
+    "path": "reports/normal-control-ui",
+    "MiB": 1.5,
+    "files": 36
+  },
+  {
+    "path": "reports/notification-composer-removal",
+    "MiB": 0.14,
+    "files": 6
+  },
+  {
+    "path": "reports/page-connections",
+    "MiB": 0.14,
+    "files": 6
+  },
+  {
+    "path": "reports/registration-modal",
+    "MiB": 0.84,
+    "files": 27
+  },
+  {
+    "path": "reports/remote-power",
+    "MiB": 1.09,
+    "files": 24
+  },
+  {
+    "path": "reports/schedule-name-duplication",
+    "MiB": 0.07,
+    "files": 5
+  },
+  {
+    "path": "reports/special-functions-ui",
+    "MiB": 0.74,
+    "files": 20
+  },
+  {
+    "path": "reports/step3-bluetooth",
+    "MiB": 0.78,
+    "files": 25
+  },
+  {
+    "path": "reports/tcl-power",
+    "MiB": 0.73,
+    "files": 13
+  },
+  {
+    "path": "reports/tcl-turbo",
+    "MiB": 0.88,
+    "files": 25
+  },
+  {
+    "path": "firmware/(files)",
+    "MiB": 0.01,
+    "files": 1
+  },
+  {
+    "path": "firmware/esp32s3_ecotrack_node",
+    "MiB": 52.2,
+    "files": 13
+  }
+]

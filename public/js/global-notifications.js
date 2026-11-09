@@ -2,11 +2,73 @@
 // This script is included on all EcoTrack pages to provide background rule monitoring and alert notifications.
 
 let globalTriggeredCount = 0;
+let globalNotificationBadgeRequest = 0;
+const locallyProducedNotificationIds = new Set();
+const globalNotificationsInFlight = new Set();
+// Shared across pages so saved inbox events produce one system alert.
+function notificationAlertState(key) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return null; }
+}
+function observeInboxNotifications(records, readState) {
+  const key = 'ecoTrackInboxAlertState';
+  const previous = notificationAlertState(key);
+  const delivered = notificationAlertState('ecoTrackGlobalAlertDelivery') || {};
+  const next = {};
+  const alerts = [];
+  for (const row of records) {
+    if (!row.id || row.type === 'ac_command_schedule') continue;
+    const id = String(row.id);
+    const active = Boolean(row.triggered) && row.is_dismissed_from_inbox !== true &&
+      !String(row.content || '').startsWith('__INBOX_DISMISSED__|||');
+    next[id] = active;
+    const newEvent = previous && previous[id] !== true && !locallyProducedNotificationIds.has(id);
+    if (active && !readState[id] && (newEvent || delivered[id] === false)) alerts.push(row);
+  }
+  // The first successful read seeds history; opening a page must not replay it.
+  localStorage.setItem(key, JSON.stringify(next));
+  alerts.forEach(row => triggerGlobalNotification(row.content || '', row));
+}
+function completeGlobalNotificationDelivery(signature, success) {
+  if (!signature) return;
+  const key = 'ecoTrackGlobalAlertDelivery';
+  const delivered = notificationAlertState(key) || {};
+  delivered[signature] = success;
+  localStorage.setItem(key, JSON.stringify(delivered));
+  globalNotificationsInFlight.delete(signature);
+}
 let _cachedRules = null;
 let _cachedRuleNodes = null;
 let _lastRulesFetchTime = 0;
 const _ruleViolationTracking = {};
 const _recentTriggeredKeys = new Set();
+let cloudRuleCapability = null;
+let cloudRuleCapabilityUntil = 0;
+let cloudRuleCapabilityRead = null;
+async function cloudOwnsRuleSample(node) {
+  if (!node?.last_measurement_report_id || !node.last_measurement_at) return false;
+  if (Date.now() < cloudRuleCapabilityUntil) return cloudRuleCapability === true;
+  if (cloudRuleCapabilityRead) return cloudRuleCapabilityRead;
+  const client = window.supabaseClient || window.sb;
+  if (!client?.rpc) return false;
+  const pending = Promise.resolve().then(async () => {
+    try {
+      const result = await client.rpc('ecotrack_cloud_rule_evaluation');
+      if (result.error) {
+        if (cloudRuleCapability === true) return true;
+        if (!['PGRST202','42883'].includes(result.error.code)) return true;
+        cloudRuleCapability = false;
+        cloudRuleCapabilityUntil = Date.now() + 5000;
+        return false;
+      }
+      cloudRuleCapability = result.data === true;
+      cloudRuleCapabilityUntil = Date.now() + 60000;
+      return cloudRuleCapability;
+    } catch (_) { return true; }
+  });
+  cloudRuleCapabilityRead = pending;
+  try { return await pending; }
+  finally { if (cloudRuleCapabilityRead === pending) cloudRuleCapabilityRead = null; }
+}
 
 window.invalidateRulesCache = function() {
   _cachedRules = null;
@@ -19,16 +81,63 @@ window.addEventListener('rules:updated', () => {
   }
 });
 
+// Share one sidebar presentation for global updates and the notifications page.
+function renderSidebarNotificationBadge(count) {
+  const badge = document.getElementById('notificationBadge');
+  if (!badge) return;
+  const unreadCount = localStorage.getItem('ecoTrack_notifications_enabled') === 'false' ? 0 : count;
+  const visible = unreadCount > 0;
+  badge.classList.toggle('hidden', !visible);
+  badge.style.display = visible ? 'inline-flex' : 'none';
+  badge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+  badge.parentElement.setAttribute('aria-label', visible
+    ? `Notifications, ${unreadCount} unread ${unreadCount === 1 ? 'notification' : 'notifications'}`
+    : 'Notifications');
+}
+
 // Update badge on all pages
+// Track persisted schedule occurrences independently of rule alerts. A status is
+// recorded before a popup so repeated polling and other pages do not re-alert.
+function observeScheduleNotifications(records, readState) {
+  const key = 'ecoTrackScheduleNotificationStatuses';
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { saved = null; }
+  const initialized = saved && typeof saved === 'object';
+  const states = initialized ? saved : {};
+  const alerts = [];
+  const delivered = notificationAlertState('ecoTrackGlobalAlertDelivery') || {};
+  let changedRead = false;
+  for (const row of records) {
+    if (row.type !== 'ac_command_schedule' || !row.id || row.is_dismissed_from_inbox === true || String(row.content || '').startsWith('__INBOX_DISMISSED__|||')) continue;
+    const event = row.schedule_event;
+    if (!event || !event.id || row.event_key !== `ac-schedule:${event.id}`) continue;
+    const id = String(row.id), status = event.status;
+    const problem = ['failed','missed','unconfirmed'].includes(status);
+    const previous = states[id];
+    if (initialized && problem && previous !== status && !['failed','missed','unconfirmed'].includes(previous)) {
+      if (readState[id]) { delete readState[id]; changedRead = true; }
+      alerts.push(row);
+    } else if (problem && !readState[id] && delivered[`${id}:${status}`] === false) alerts.push(row);
+    states[id] = status;
+  }
+  try {
+    localStorage.setItem(key, JSON.stringify(states));
+    if (changedRead) localStorage.setItem('ecoTrackNotificationReadState', JSON.stringify(readState));
+  } catch (_) {}
+  alerts.forEach(row => triggerGlobalNotification('Command schedule needs attention.', row));
+}
+
 async function updateGlobalNotificationBadge() {
+  const request = ++globalNotificationBadgeRequest;
+  if (window._notificationInboxMutations) return;
+  const revision = window._notificationInboxRevision || 0;
+  const storedRevision = localStorage.getItem('ecoTrackNotificationInboxRevision');
+  const isCurrent = () => request === globalNotificationBadgeRequest && !window._notificationInboxMutations &&
+    revision === (window._notificationInboxRevision || 0) && storedRevision === localStorage.getItem('ecoTrackNotificationInboxRevision');
   const isNotifEnabled = localStorage.getItem('ecoTrack_notifications_enabled') !== 'false';
 
   if (!isNotifEnabled) {
-    const badge = document.getElementById('notificationBadge');
-    if (badge) {
-      badge.classList.add('hidden');
-      badge.style.display = 'none';
-    }
+    renderSidebarNotificationBadge(0);
     const headerBadge = document.getElementById('headerNotificationBadge');
     if (headerBadge) {
       headerBadge.classList.add('hidden');
@@ -46,18 +155,22 @@ async function updateGlobalNotificationBadge() {
     const readState = JSON.parse(localStorage.getItem('ecoTrackNotificationReadState') || '{}');
     
     let records = [];
+    let ipcLoaded = false;
+    let loaded = false;
     if (window.electron && typeof window.electron.invoke === 'function') {
       try {
         const res = await window.electron.invoke('notifications-fetch-all');
         if (res && res.success && res.data) {
           records = res.data;
+          ipcLoaded = true;
+          loaded = true;
         }
       } catch (ipcErr) {
         console.warn('IPC notifications-fetch-all error in badge:', ipcErr);
       }
     }
 
-    if (!records.length) {
+    if (!ipcLoaded) {
       const sb = window.supabaseClient || window.sb;
       if (sb) {
         try {
@@ -67,6 +180,7 @@ async function updateGlobalNotificationBadge() {
             .order('created', { ascending: false });
           if (!error && data) {
             records = data;
+            loaded = true;
           }
         } catch (e) {
           // Supabase query error
@@ -74,10 +188,10 @@ async function updateGlobalNotificationBadge() {
       }
     }
     
+    if (!isCurrent() || !loaded) return;
     // Re-check after async query
     if (localStorage.getItem('ecoTrack_notifications_enabled') === 'false') {
-      const badge = document.getElementById('notificationBadge');
-      if (badge) { badge.classList.add('hidden'); badge.style.display = 'none'; }
+      renderSidebarNotificationBadge(0);
       const headerBadge = document.getElementById('headerNotificationBadge');
       if (headerBadge) { headerBadge.classList.add('hidden'); headerBadge.style.display = 'none'; }
       const analyticsBadge = document.getElementById('analyticsAlertsBadge');
@@ -85,6 +199,8 @@ async function updateGlobalNotificationBadge() {
       return;
     }
 
+    observeScheduleNotifications(records, readState);
+    observeInboxNotifications(records, readState);
     globalTriggeredCount = records.filter(notification => 
       notification.triggered &&
       notification.is_dismissed_from_inbox !== true &&
@@ -93,17 +209,7 @@ async function updateGlobalNotificationBadge() {
     ).length;
     
     // Update sidebar bell badge
-    const badge = document.getElementById('notificationBadge');
-    if (badge) {
-      if (globalTriggeredCount > 0) {
-        badge.classList.remove('hidden');
-        badge.style.display = 'flex';
-        badge.textContent = globalTriggeredCount;
-      } else {
-        badge.classList.add('hidden');
-        badge.style.display = 'none';
-      }
-    }
+    renderSidebarNotificationBadge(globalTriggeredCount);
 
     // Update header notification badge if present (e.g., in Admin Profile header)
     const headerBadge = document.getElementById('headerNotificationBadge');
@@ -121,8 +227,9 @@ async function updateGlobalNotificationBadge() {
     // Update analytics page alerts badge if it exists
     const analyticsBadge = document.getElementById('analyticsAlertsBadge');
     if (analyticsBadge) {
-      analyticsBadge.textContent = globalTriggeredCount;
-      if (globalTriggeredCount > 0) {
+      const ruleUnreadCount = records.filter(n => n.type !== 'ac_command_schedule' && n.triggered && n.is_dismissed_from_inbox !== true && !String(n.content || '').startsWith('__INBOX_DISMISSED__|||') && !readState[String(n.id || n.pbId || n.id_internal || '')]).length;
+      analyticsBadge.textContent = ruleUnreadCount;
+      if (ruleUnreadCount > 0) {
         analyticsBadge.classList.remove('hidden');
         analyticsBadge.style.display = 'flex';
       } else {
@@ -158,10 +265,6 @@ function dismissGlobalNotification() {
 // Universal notification navigation helper: restores Electron window on Windows,
 // persists navigation context, and either directs to Notification.html or opens the modal dynamically
 function navigateToNotification(navContext = {}) {
-  if (navContext.report_id) {
-    window.location.href = `staff.html?verifyReport=${encodeURIComponent(navContext.report_id)}`;
-    return;
-  }
   // 1. Restore & focus Electron window via IPC
   try {
     if (window.electron && typeof window.electron.send === 'function') {
@@ -172,6 +275,10 @@ function navigateToNotification(navContext = {}) {
   try {
     window.focus();
   } catch (_) {}
+  if (navContext.report_id) {
+    window.location.href = `staff.html?verifyReport=${encodeURIComponent(navContext.report_id)}`;
+    return;
+  }
 
   const roomId = navContext.room_id || navContext.room || '';
   const notifId = navContext.id || navContext.notif_id || navContext.notif || '';
@@ -224,8 +331,23 @@ function triggerGlobalNotification(message, notifContext = {}) {
   if (localStorage.getItem('ecoTrack_notifications_enabled') === 'false') {
     return;
   }
+  const notificationId = notifContext.id || notifContext.notif_id;
+  let deliverySignature = null, retrying = false;
+  if (notificationId) {
+    const key = 'ecoTrackGlobalAlertDelivery';
+    const delivered = notificationAlertState(key) || {};
+    const signature = String(notificationId) + (notifContext.type === 'ac_command_schedule' ? ':' + notifContext.schedule_event?.status : '');
+    if (delivered[signature] === true || globalNotificationsInFlight.has(signature)) return;
+    retrying = delivered[signature] === false;
+    deliverySignature = signature;
+    globalNotificationsInFlight.add(signature);
+    // Persist an unfinished attempt so a crash/navigation cannot lose the alert.
+    delivered[signature] = false;
+    localStorage.setItem(key, JSON.stringify(delivered));
+  }
 
-  updateGlobalNotificationBadge(); // Re-sync from DB
+  // Retries are driven by the polling timer, never by recursive inbox reads.
+  if (!retrying) updateGlobalNotificationBadge();
   
   // Clean message for display if it includes node prefix
   let displayMessage = message;
@@ -258,7 +380,7 @@ function triggerGlobalNotification(message, notifContext = {}) {
   const dialog = document.getElementById('globalNotificationDialog');
   const messageEl = document.getElementById('globalNotificationMessage');
   
-  if (dialog) {
+  if (dialog && !retrying) {
     const viewLinks = dialog.querySelectorAll('a[href*="Notification.html"], #goToNotificationsBtn');
     viewLinks.forEach(link => {
       link.onclick = (e) => {
@@ -279,7 +401,7 @@ function triggerGlobalNotification(message, notifContext = {}) {
   // Strip redundant leading status emojis (⏰, 🌙, ⚠️, 📅, 🌡️, 🔋) so only the notification title has the icon
   const cleanBodyMessage = (displayMessage || '').replace(/^[⏰🌙⚠️🌡️🔋📅\s]+/, '').trim();
 
-  if (dialog && messageEl) {
+  if (dialog && messageEl && !retrying) {
     messageEl.textContent = cleanBodyMessage;
     const titleEl = dialog.querySelector('h3');
     if (titleEl) {
@@ -300,36 +422,41 @@ function triggerGlobalNotification(message, notifContext = {}) {
     dialog.style.display = 'flex';
   }
 
-  // Native browser desktop notification with click redirect
-  if (typeof Notification !== 'undefined') {
-    if (Notification.permission === 'granted') {
+  let notifTitle = 'EcoTrack Threshold Alert';
+  if (notifContext.type === 'controller_installation') notifTitle = 'EcoTrack Device Installation';
+  else if (notifContext.type === 'ac_command_schedule') notifTitle = 'EcoTrack Command Schedule';
+  else if (notifContext.report_id || String(notifContext.type || '').startsWith('maintenance')) notifTitle = 'EcoTrack Maintenance Verification Required';
+  else if (displayMessage.includes('Wake Up')) notifTitle = 'EcoTrack Control Wake Up';
+  else if (displayMessage.includes('Sleep')) notifTitle = 'EcoTrack Control Sleep Schedule';
+  const alertContext = { id: notifId, room_id: roomId, control_name: controlName, sensor_name: controlName,
+    report_id: notifContext.report_id, message: cleanBodyMessage, content: message };
+  if (window.electron?.invoke) {
+    Promise.resolve().then(() => window.electron.invoke('system-notification-show', { title: notifTitle, body: cleanBodyMessage, context: alertContext }))
+      .then(result => {
+        completeGlobalNotificationDelivery(deliverySignature, result?.success === true);
+        if (!result?.success) console.warn('System notification unavailable:', result?.error);
+      })
+      .catch(error => { completeGlobalNotificationDelivery(deliverySignature, false); console.warn('System notification unavailable:', error.message); });
+  } else if (typeof Notification !== 'undefined') {
+    const show = () => {
+      if (Notification.permission !== 'granted') { completeGlobalNotificationDelivery(deliverySignature, false); return; }
       try {
-        let notifTitle = '⚠️ EcoTrack Threshold Alert';
-        if (displayMessage.includes('Wake Up')) notifTitle = '⏰ EcoTrack Control Wake Up';
-        else if (displayMessage.includes('Sleep Schedule') || displayMessage.includes('Sleep')) notifTitle = '🌙 EcoTrack Control Sleep Schedule';
-        else if (notifContext.report_id) notifTitle = 'EcoTrack Maintenance Verification Required';
-
         const browserNotif = new Notification(notifTitle, {
           body: cleanBodyMessage,
           icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%2310b981" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>'
         });
-        browserNotif.onclick = () => {
-          navigateToNotification({
-            id: notifId,
-            room_id: roomId,
-            control_name: controlName,
-            sensor_name: controlName,
-            report_id: notifContext.report_id,
-            message: cleanBodyMessage,
-            content: message
-          });
-        };
-      } catch (_) {}
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission();
-    }
-  }
+        browserNotif.onclick = () => navigateToNotification(alertContext);
+        completeGlobalNotificationDelivery(deliverySignature, true);
+      } catch (_) { completeGlobalNotificationDelivery(deliverySignature, false); }
+    };
+    if (Notification.permission === 'granted') show();
+    else if (Notification.permission !== 'denied') Notification.requestPermission().then(show).catch(() => completeGlobalNotificationDelivery(deliverySignature, false));
+    else completeGlobalNotificationDelivery(deliverySignature, false);
+  } else completeGlobalNotificationDelivery(deliverySignature, false);
 
+  // Schedule problems are inbox alerts, not rule violations.
+  if (retrying || notifContext.type === 'ac_command_schedule' || notifContext.type === 'controller_installation' ||
+      notifContext.report_id || String(notifContext.type || '').startsWith('maintenance')) return;
   // Dispatch global event and immediately re-evaluate rule violation benchmarks so every triggered alert is counted
   try {
     window.dispatchEvent(new CustomEvent('notification:triggered', {
@@ -355,6 +482,7 @@ function resetNotificationCount() {
 }
 
 window.syncNotificationBadges = updateGlobalNotificationBadge;
+window.electron?.on?.('system-notification-clicked', (_event, context) => navigateToNotification(context));
 
 // ===== AUTOMATED BACKGROUND RULE EVALUATION ENGINE =====
 
@@ -446,17 +574,97 @@ async function getActiveRulesAndNodes() {
 }
 
 // Helper to check if current time is within rule's optional schedule
+function notificationRuleClock(now) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(now).map(part => [part.type, part.value]));
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+}
 function isRuleWithinSchedule(rule, now) {
-  const dateStr = now.toISOString().split('T')[0];
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
-  const timeStr = `${hours}:${minutes}`;
+  const { date: dateStr, time: timeStr } = notificationRuleClock(now);
 
   if (rule.start_date && dateStr < rule.start_date) return false;
   if (rule.end_date && dateStr > rule.end_date) return false;
+  if (rule.start_time && rule.end_time && rule.start_time > rule.end_time)
+    return timeStr >= rule.start_time || timeStr <= rule.end_time;
   if (rule.start_time && timeStr < rule.start_time) return false;
   if (rule.end_time && timeStr > rule.end_time) return false;
   return true;
+}
+
+const ruleNotificationPending = new Set();
+function notificationViolationElapsed(sample, node, rule, scope, startKey, alertKey) {
+  const observed = Date.parse(sample.observed_at || sample.created || sample.timestamp || '');
+  const unit = { seconds: 1, minutes: 60, hours: 3600 }[String(node?.interval_unit || '').toLowerCase()];
+  const seconds = Number(sample.interval_seconds ?? node?.expected_interval_seconds ?? (Number(node?.interval_val) * unit));
+  const cadence = Number.isFinite(seconds) && seconds >= 1 && seconds <= 86400 ? seconds * 1000 : null;
+  if (!Number.isFinite(observed)) return null;
+  const evidenceKey = startKey + '_evidence';
+  const signature = JSON.stringify([rule.type, rule.condition, rule.value, rule.unit, rule.duration,
+    rule.start_date, rule.end_date, rule.start_time, rule.end_time, scope,
+    sample.source, sample.monitoring_id, sample.boot_id, sample.calibration_id]);
+  let previous;
+  try { previous = JSON.parse(localStorage.getItem(evidenceKey) || 'null'); } catch (_) {}
+  const valid = previous && previous.signature === signature && Number.isFinite(previous.observed) &&
+    Number.isFinite(previous.start) && previous.start <= previous.observed;
+  if (valid && observed < previous.observed) return null;
+  const continuous = valid && (observed === previous.observed || cadence && previous.cadence &&
+    observed - previous.observed <= 1.5 * Math.min(cadence, previous.cadence));
+  const start = continuous ? previous.start : observed;
+  if (!continuous) localStorage.removeItem(alertKey);
+  localStorage.setItem(startKey, String(start));
+  localStorage.setItem(evidenceKey, JSON.stringify({ observed, start, cadence, signature }));
+  // Repeated polls cannot add time to an unchanged observation.
+  return cadence || Number(rule.duration) === 0 ? observed - start : null;
+}
+
+function notificationSampleFresh(sample, node, nowMs = Date.now()) {
+  const observed = Date.parse(sample?.observed_at || sample?.created || sample?.timestamp || '');
+  const multiplier = { seconds: 1, minutes: 60, hours: 3600 }[String(node?.interval_unit || '').toLowerCase()];
+  const cadence = Number(sample?.interval_seconds ?? node?.expected_interval_seconds ?? (Number(node?.interval_val) * multiplier));
+  const lifetime = Number.isFinite(cadence) && cadence >= 1 && cadence <= 86400 ? Math.max(15000, cadence * 3000) : 45000;
+  return Number.isFinite(observed) && observed <= nowMs + 5000 && nowMs - observed <= lifetime;
+}
+
+// A saved schedule or nodes.status is configuration, not hardware evidence.
+function notificationHardwareConnection(state, now = Date.now()) {
+  const seen = Date.parse(state?.last_seen || '');
+  if (!Number.isFinite(seen) || seen > now + 5000) return 'offline';
+  const wake = Date.parse(state?.sleeping_until || '');
+  if (Number.isFinite(wake) && wake > now && wake > seen) return 'sleeping';
+  return now - seen <= 45000 ? 'online' : 'offline';
+}
+let notificationHardwareCache = null;
+let notificationHardwareFetch = null;
+let notificationHardwareFetchedAt = 0;
+async function getNotificationHardwareStates() {
+  if (notificationHardwareCache && Date.now() - notificationHardwareFetchedAt < 5000)
+    return notificationHardwareCache;
+  if (notificationHardwareFetch) return notificationHardwareFetch;
+  const sb = window.supabaseClient || window.sb;
+  if (!sb) return {};
+  notificationHardwareFetch = (async () => {
+    try {
+      let query = sb.from('ecotrack_device_state').select('node_id,device_id,last_seen,sleeping_until');
+      let timer;
+      if (typeof AbortController === 'function' && typeof query.abortSignal === 'function') {
+        const controller = new AbortController(); query = query.abortSignal(controller.signal);
+        timer = setTimeout(() => controller.abort(), 4000);
+      }
+      let response;
+      try { response = await query; } finally { if (timer) clearTimeout(timer); }
+      if (response.error || !Array.isArray(response.data)) throw response.error || new Error('Invalid hardware state');
+      notificationHardwareCache = Object.fromEntries(response.data.map(row => [String(row.node_id), row]));
+      notificationHardwareFetchedAt = Date.now();
+      return notificationHardwareCache;
+    } catch (_) {
+      // Fail closed. Old successful state must not produce new alerts after a failed read.
+      notificationHardwareCache = null;
+      return {};
+    } finally { notificationHardwareFetch = null; }
+  })();
+  return notificationHardwareFetch;
 }
 
 /**
@@ -474,7 +682,9 @@ async function evaluateTelemetryAgainstRules(telemetry) {
 
   // 1. CONTROL ASSIGNMENT CHECK:
   // Locate node in DB record. If node is not assigned to a room, it is in the "Available AC Controls" lobby!
-  const currentNode = nodeMap[controlName] || nodeMap[telemetry.id] || nodeMap[telemetry.pb_id];
+  const currentNode = nodeMap[telemetry.pb_id] || nodeMap[telemetry.node_id] || nodeMap[telemetry.id] || nodeMap[controlName];
+  if (await cloudOwnsRuleSample(currentNode)) return;
+  const evidenceId = currentNode?.id || telemetry.pb_id || telemetry.id || controlName;
   const assignedRoomId = (currentNode && currentNode.room_id)
     ? String(currentNode.room_id).trim()
     : (telemetry.room_id ? String(telemetry.room_id).trim() : '');
@@ -483,8 +693,9 @@ async function evaluateTelemetryAgainstRules(telemetry) {
     // Control is in the Available AC Controls lobby (unassigned).
     // Clean up any stale violation timers and skip evaluation completely!
     for (const r of rules) {
-      const vKey = `${r.id}_${controlName}`;
+      const vKey = `${r.id}_${evidenceId}`;
       localStorage.removeItem(`ecoTrack_violation_start_${vKey}`);
+      localStorage.removeItem(`ecoTrack_violation_start_${vKey}_evidence`);
       localStorage.removeItem(`ecoTrack_alert_triggered_${vKey}`);
     }
     return;
@@ -493,18 +704,41 @@ async function evaluateTelemetryAgainstRules(telemetry) {
   const now = new Date();
   const nowMs = now.getTime();
   const sb = window.supabaseClient || window.sb;
+  const monitoring = telemetry.source === 'monitoring';
+  const hardwareStates = monitoring ? {} : await getNotificationHardwareStates();
+  const hardware = hardwareStates[String(currentNode?.id || telemetry.node_id || telemetry.pb_id || '')];
+  const monitorMatches = monitoring && currentNode?.monitoring_id === telemetry.monitoring_id &&
+    ['monitoring', 'both'].includes(currentNode.device_mode) && telemetry.fresh === true &&
+    !['offline', 'sleeping'].includes(telemetry.connection_status);
+  if (!notificationSampleFresh(telemetry, currentNode, nowMs) ||
+      (monitoring ? !monitorMatches : notificationHardwareConnection(hardware, nowMs) !== 'online')) {
+    for (const rule of rules) {
+      const key = `${rule.id}_${evidenceId}`;
+      localStorage.removeItem(`ecoTrack_violation_start_${key}`);
+      localStorage.removeItem(`ecoTrack_violation_start_${key}_evidence`);
+      localStorage.removeItem(`ecoTrack_alert_triggered_${key}`);
+    }
+    return;
+  }
 
   for (const rule of rules) {
+    const clearEvidence = () => {
+      localStorage.removeItem(`ecoTrack_violation_start_${rule.id}_${evidenceId}`);
+      localStorage.removeItem(`ecoTrack_violation_start_${rule.id}_${evidenceId}_evidence`);
+      localStorage.removeItem(`ecoTrack_alert_triggered_${rule.id}_${evidenceId}`);
+    };
     // Strictly skip disabled rules
     if (!rule.enabled || rule.enabled === false || rule.enabled === 'false' || rule.enabled === 0 || rule.enabled === '0') {
-      const violationKey = `${rule.id}_${controlName}`;
+      const violationKey = `${rule.id}_${evidenceId}`;
       localStorage.removeItem(`ecoTrack_violation_start_${violationKey}`);
+      localStorage.removeItem(`ecoTrack_violation_start_${violationKey}_evidence`);
       localStorage.removeItem(`ecoTrack_alert_triggered_${violationKey}`);
       continue;
     }
 
     // Check optional schedule
     if (!isRuleWithinSchedule(rule, now)) {
+      clearEvidence();
       continue;
     }
 
@@ -513,6 +747,7 @@ async function evaluateTelemetryAgainstRules(telemetry) {
     // 2. ROOM MATCH RESTRICTION:
     // If the rule is associated with a specific room, this control MUST belong to that room in the AC Control Interface!
     if (ruleRoomId && assignedRoomId !== ruleRoomId) {
+      clearEvidence();
       continue;
     }
 
@@ -527,7 +762,7 @@ async function evaluateTelemetryAgainstRules(telemetry) {
 
     // 4. SPECIFIC CONTROL TARGET RESTRICTION:
     const associatedNodes = ruleNodes.filter(rn => rn.rule_id === rule.id);
-    const targetNodeNames = associatedNodes.map(rn => rn.node_name);
+    const targetNodeNames = associatedNodes.map(rn => rn.node_id || rn.node_name);
     if (rule.node) targetNodeNames.push(rule.node);
     if (Array.isArray(rule.nodes)) targetNodeNames.push(...rule.nodes);
 
@@ -536,7 +771,7 @@ async function evaluateTelemetryAgainstRules(telemetry) {
         tn === controlName || tn === telemetry.id || tn === telemetry.pb_id ||
         (currentNode && (tn === currentNode.id || tn === currentNode.name))
       );
-      if (!matchesControl) continue;
+      if (!matchesControl) { clearEvidence(); continue; }
     }
 
     let isViolated = false;
@@ -546,8 +781,10 @@ async function evaluateTelemetryAgainstRules(telemetry) {
     const durationMs = durationMins * 60000;
 
     if (rule.type === 'temperature') {
-      let currentTemp = Number(telemetry.temp ?? telemetry.temperature);
-      if (isNaN(currentTemp)) continue;
+      const rawTemp = telemetry.temp ?? telemetry.temperature;
+      if (rawTemp === null || rawTemp === undefined || rawTemp === '') { clearEvidence(); continue; }
+      let currentTemp = Number(rawTemp);
+      if (!Number.isFinite(currentTemp)) { clearEvidence(); continue; }
 
       let compareVal = thresholdVal;
       if (rule.unit === '°F') {
@@ -565,8 +802,9 @@ async function evaluateTelemetryAgainstRules(telemetry) {
         else if (rule.condition === 'equals') violationReason = `Temperature equals ${thresholdVal}${unit}`;
       }
     } else if (rule.type === 'battery') {
+      if (telemetry.battery === null || telemetry.battery === undefined || telemetry.battery === '') { clearEvidence(); continue; }
       let currentBatt = Number(telemetry.battery);
-      if (isNaN(currentBatt)) continue;
+      if (!Number.isFinite(currentBatt)) { clearEvidence(); continue; }
 
       if (currentBatt <= 5.0) {
         currentBatt = Math.round((currentBatt / 4.2) * 100);
@@ -580,67 +818,47 @@ async function evaluateTelemetryAgainstRules(telemetry) {
       }
     }
 
-    const violationKey = `${rule.id}_${controlName}`;
+    const violationKey = `${rule.id}_${evidenceId}`;
     const startKey = `ecoTrack_violation_start_${violationKey}`;
     const alertKey = `ecoTrack_alert_triggered_${violationKey}`;
 
     if (isViolated) {
-      const rawStart = localStorage.getItem(startKey);
-      let startTime = rawStart !== null ? Number(rawStart) : null;
-      if (startTime === null || isNaN(startTime)) {
-        startTime = nowMs;
-        localStorage.setItem(startKey, String(startTime));
-      }
+      const elapsedViolationTime = notificationViolationElapsed(telemetry, currentNode, rule,
+        [assignedRoomId, [...targetNodeNames].sort()], startKey, alertKey);
 
-      const elapsedViolationTime = nowMs - startTime;
-
-      if (elapsedViolationTime >= durationMs) {
+      if (elapsedViolationTime !== null && elapsedViolationTime >= durationMs) {
         const lastAlertTime = Number(localStorage.getItem(alertKey)) || 0;
         const repeatIntervalMs = Math.max(durationMs, 60 * 1000);
 
-        if (!lastAlertTime || (nowMs - lastAlertTime) >= repeatIntervalMs) {
-          localStorage.setItem(alertKey, String(nowMs));
+        if ((!lastAlertTime || (nowMs - lastAlertTime) >= repeatIntervalMs) && !ruleNotificationPending.has(violationKey)) {
+          ruleNotificationPending.add(violationKey);
 
-          const dateStr = now.toISOString().split('T')[0];
-          const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
+          const dateStr = notificationRuleClock(now).date;
+          const timeStr = now.toLocaleTimeString('en-US', { timeZone: 'Asia/Singapore', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true });
           const defaultMsg = rule.message || 'Environmental threshold exceeded';
           const fullContent = `${controlName}|||${violationReason ? violationReason + '. ' : ''}${defaultMsg}`;
 
           try {
-            let notifId = null;
+            const payload = { room_id: assignedRoomId || rule.room_id || null,
+              rule_id: rule.id || null, node_id: currentNode?.id || telemetry.pb_id || null,
+              content: fullContent, time: timeStr, date: dateStr, triggered: true };
+            let saved;
             if (window.electron && typeof window.electron.invoke === 'function') {
-              try {
-                const res = await window.electron.invoke('notification-create', {
-                  room_id: assignedRoomId || rule.room_id || null,
-                  rule_id: rule.id || null,
-                  node_id: currentNode?.id || telemetry.pb_id || null,
-                  content: fullContent,
-                  time: timeStr,
-                  date: dateStr,
-                  triggered: true
-                });
-                if (res && res.success && res.data) notifId = res.data.id;
-              } catch (ipcErr) {
-                console.warn('IPC notification-create error, fallback to sb:', ipcErr);
-              }
+              const result = await window.electron.invoke('notification-create', payload);
+              if (!result?.success) throw new Error(result?.error || 'Notification save was rejected');
+              saved = result.data;
+            } else if (sb) {
+              const result = await sb.from('notifications').insert([payload]).select().maybeSingle();
+              if (result.error) throw new Error(result.error.message || 'Notification save was rejected');
+              saved = result.data;
             }
-
-            if (!notifId && sb) {
-              const { data: insertedData } = await sb.from('notifications').insert([{
-                room_id: assignedRoomId || rule.room_id || null,
-                rule_id: rule.id || null,
-                node_id: currentNode?.id || telemetry.pb_id || null,
-                content: fullContent,
-                time: timeStr,
-                date: dateStr,
-                triggered: true
-              }]).select().maybeSingle();
-              if (insertedData) notifId = insertedData.id;
-            }
+            if (typeof saved?.id !== 'string' || !saved.id.trim()) throw new Error('Database did not confirm a saved notification');
+            const notifId = saved.id;
+            localStorage.setItem(alertKey, String(nowMs));
             console.log(`[EcoTrack Rules Engine] Alert triggered after ${durationMins} min duration for ${controlName}: ${fullContent}`);
 
             const auditEntry = {
-              id: notifId || `v_hist_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+              id: notifId,
               room_id: assignedRoomId || rule.room_id || null,
               rule_id: rule.id || null,
               content: fullContent,
@@ -671,7 +889,7 @@ async function evaluateTelemetryAgainstRules(telemetry) {
             }
 
             triggerGlobalNotification(fullContent, {
-              id: notifId || auditEntry.id,
+              id: notifId,
               room_id: assignedRoomId || rule.room_id || null,
               control_name: controlName,
               sensor_name: controlName
@@ -688,21 +906,26 @@ async function evaluateTelemetryAgainstRules(telemetry) {
             }
           } catch (insertErr) {
             console.warn('[EcoTrack Rules Engine] Failed to record triggered notification:', insertErr.message);
+          } finally {
+            ruleNotificationPending.delete(violationKey);
           }
         }
       }
     } else {
       localStorage.removeItem(startKey);
+      localStorage.removeItem(startKey + '_evidence');
       localStorage.removeItem(alertKey);
     }
   }
 }
 
-// Global hook for live packet streaming (called from telemetry-new.js)
+// Global hook for live telemetry packet streaming.
 window.evaluateRulesForTelemetry = evaluateTelemetryAgainstRules;
 
 // Background polling loop across all pages to check latest control telemetry
 async function startGlobalRuleChecker() {
+  if (startGlobalRuleChecker.running) return;
+  startGlobalRuleChecker.running = true;
   const sb = window.supabaseClient || window.sb;
 
   try {
@@ -733,66 +956,48 @@ async function startGlobalRuleChecker() {
       return;
     }
 
-    // 2. Build map of latest control telemetry starting with assigned nodes' live columns
-    const latestPerControl = {};
-    assignedNodes.forEach(n => {
-      const name = n.name || n.id;
-      latestPerControl[name] = {
-        id: name,
-        name: name,
-        control_name: name,
-        sensor_name: name,
-        node_id: n.id,
-        pb_id: n.id,
-        room_id: n.room_id,
-        temp: n.temp ?? n.temperature ?? 0,
-        temperature: n.temp ?? n.temperature ?? 0,
-        battery: n.battery ?? 100,
-        pressure: n.pressure ?? 0,
-        rssi: n.rssi ?? 0,
-        status: n.status || 'online'
-      };
-    });
-
-    // 3. Overlay latest packet readings from SQLite backend (http://localhost:5000/api/telemetry) if available
-    try {
-      const backendUrl = (window.electron && window.electron.env && window.electron.env.BACKEND_URL) || 'http://localhost:5000';
-      const tRes = await fetch(`${backendUrl}/api/telemetry`, { signal: AbortSignal.timeout(1500) });
-      if (tRes.ok) {
-        const tItems = await tRes.json();
-        if (Array.isArray(tItems)) {
-          tItems.forEach(t => {
-            const name = t.control_name || t.sensor_name || t.node_id;
-            if (name && latestPerControl[name]) {
-              latestPerControl[name] = {
-                ...latestPerControl[name],
-                ...t,
-                temp: t.temperature ?? t.temp ?? latestPerControl[name].temp,
-                temperature: t.temperature ?? t.temp ?? latestPerControl[name].temperature,
-                battery: t.battery ?? latestPerControl[name].battery
-              };
-            }
-          });
-        }
-      }
-    } catch (_) {}
-
-    // 4. Evaluate each assigned node against all active enabled rules
-    for (const item of Object.values(latestPerControl)) {
-      await evaluateTelemetryAgainstRules({
-        id: item.control_name || item.sensor_name || item.node_id,
-        name: item.control_name || item.sensor_name || item.node_id,
-        pb_id: item.node_id,
-        room_id: item.room_id,
-        temp: item.temp ?? item.temperature,
-        temperature: item.temp ?? item.temperature,
-        pressure: item.pressure,
-        battery: item.battery,
-        rssi: item.rssi,
-        status: item.status
-      });
+    const backendUrl = (window.electron?.env?.BACKEND_URL || 'http://localhost:5000').replace(/\/$/, '');
+    async function localRead(path) {
+      try {
+        const response = await fetch(backendUrl + path, { signal: AbortSignal.timeout(2000), cache: 'no-store' });
+        return response.ok ? await response.json() : null;
+      } catch (_) { return null; }
     }
-  } catch (_) {}
+    const monitorResponse = await localRead('/api/monitoring/devices');
+    const monitors = Array.isArray(monitorResponse?.items) ? monitorResponse.items : [];
+    // Query the latest row for each canonical identity, not an arbitrary global page.
+    // A legacy display-name alias is accepted only when it identifies one node.
+    for (let offset = 0; offset < assignedNodes.length; offset += 6) {
+      await Promise.all(assignedNodes.slice(offset, offset + 6).map(async node => {
+        let sample = {}, source = 'controller', monitor;
+        if (['monitoring', 'both'].includes(node.device_mode)) {
+          monitor = monitors.find(item => item.id === node.monitoring_id && item.active);
+          const latest = monitor?.latest;
+          sample = latest ? { ...latest,
+            temp: latest.temperature_quality === 'ok' && latest.clock_quality === 'synchronized' ? latest.outlet_temperature_c : null,
+            temperature: latest.temperature_quality === 'ok' && latest.clock_quality === 'synchronized' ? latest.outlet_temperature_c : null,
+            // Voltage is not a measured battery percentage.
+            battery: null } : {};
+          source = 'monitoring';
+        } else {
+          const aliases = [node.id];
+          if (node.name && assignedNodes.filter(item => item.name === node.name).length === 1) aliases.push(node.name);
+          const filter = [...new Set(aliases.filter(Boolean))].flatMap(id =>
+            ['node_id', 'sensor_name'].map(field => `${field} = ${JSON.stringify(id)}`)).join(' || ');
+          const params = new URLSearchParams({ filter, perPage: '1', sort: '-created' });
+          const response = await localRead('/api/telemetry?' + params);
+          const rows = Array.isArray(response) ? response : response?.items;
+          if (Array.isArray(rows)) sample = rows[0] || {};
+        }
+        await evaluateTelemetryAgainstRules({ ...sample, source,
+          id: node.id, name: node.name || node.id, node_id: node.id, pb_id: node.id, room_id: node.room_id,
+          monitoring_id: monitor?.id, fresh: monitor?.fresh === true,
+          temp: sample.temp ?? sample.temperature ?? null, temperature: sample.temperature ?? sample.temp ?? null,
+          battery: sample.battery ?? null, rotation_rpm: sample.rotation_rpm ?? null, rssi: sample.rssi_dbm ?? sample.rssi ?? null
+        });
+      }));
+    }
+  } catch (_) {} finally { startGlobalRuleChecker.running = false; }
 }
 
 // ===== CONTROL WAKE UP & SLEEP SCHEDULE MONITOR =====
@@ -803,7 +1008,7 @@ let _lastScheduleFetchTime = 0;
 function to24HourHHMM(timeVal) {
   if (!timeVal) return null;
   const str = String(timeVal).trim();
-  if (str === '00:00' || str === '') return null;
+  if (str === '') return null;
 
   // Check 12-hour AM/PM: e.g. "06:00 AM", "6:00 AM", "10:00 PM", "12:43 PM"
   const ampmMatch = /^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)$/i.exec(str);
@@ -844,7 +1049,7 @@ function formatScheduleTimeDisplay(value, fallback = '06:00 AM') {
 
 async function checkControlSchedules(forceRefresh = false) {
   const sb = window.supabaseClient || window.sb;
-  if (!sb) return;
+  if (!sb || localStorage.getItem('ecoTrack_notifications_enabled') === 'false') return;
 
   const now = new Date();
   const currentHH = String(now.getHours()).padStart(2, '0');
@@ -903,7 +1108,10 @@ async function checkControlSchedules(forceRefresh = false) {
       } catch (_) {}
     }
 
+    const hardwareStates = await getNotificationHardwareStates();
     for (const node of _cachedNodesForSchedule || []) {
+      const connection = notificationHardwareConnection(hardwareStates[String(node.id)], nowMs);
+      if (connection === 'offline') continue;
       // Skip controls that are not assigned to a room
       if (!node.room_id || !roomMap[node.room_id]) {
         continue;
@@ -911,9 +1119,9 @@ async function checkControlSchedules(forceRefresh = false) {
       const nodeName = node.name || node.id;
       const roomName = roomMap[node.room_id];
 
-      // Defaults to 06:00 (Wake) and 22:00 (Sleep) matching scheduler.html UI display
-      const normWake = to24HourHHMM(node.wake_time) || '06:00';
-      const normSleep = to24HourHHMM(node.sleep_time) || '22:00';
+      const normWake = to24HourHHMM(node.wake_time);
+      const normSleep = to24HourHHMM(node.sleep_time);
+      if (!normWake || !normSleep || normWake === normSleep) continue;
 
       const [wH, wM] = normWake.split(':').map(Number);
       const wakeMinutes = wH * 60 + wM;
@@ -925,8 +1133,10 @@ async function checkControlSchedules(forceRefresh = false) {
       const sleepDisplay = formatScheduleTimeDisplay(normSleep, '10:00 PM');
 
       // 1. Check Wake Up Trigger:
-      // Realtime match OR scheduled wake has passed today
-      const isWakeDue = (currentHHMM === normWake) || (nowMinutes >= wakeMinutes);
+      // Announce a wake only inside the configured active window and after a fresh heartbeat.
+      const isWakeDue = connection === 'online' && (wakeMinutes < sleepMinutes
+        ? nowMinutes >= wakeMinutes && nowMinutes < sleepMinutes
+        : nowMinutes >= wakeMinutes || nowMinutes < sleepMinutes);
       if (isWakeDue) {
         const wakeKey = `ecoTrack_notif_wake_${node.id || nodeName}_${todayDateStr}_${normWake}`;
         const hasLocalWake = localStorage.getItem(wakeKey);
@@ -940,7 +1150,7 @@ async function checkControlSchedules(forceRefresh = false) {
           localStorage.setItem(wakeKey, 'pending_' + Date.now());
 
           const notifId = `notif_wake_${(node.id || nodeName).replace(/[^a-zA-Z0-9]/g, '')}_${Date.now()}`;
-          const messageText = `Control Wake Up: Control ${nodeName} in ${roomName} has entered active wake cycle (${wakeDisplay}). Monitoring and telemetry active.`;
+          const messageText = `Control Wake Up: Control ${nodeName} in ${roomName} is online during its wake schedule (${wakeDisplay}).`;
           const fullContent = `${nodeName}|||${messageText}`;
 
           try {
@@ -953,15 +1163,17 @@ async function checkControlSchedules(forceRefresh = false) {
                 date: todayDateStr,
                 triggered: true
               });
-              if (res && res.success && res.data?.id) insertedId = res.data.id;
+              if (!res?.success) throw new Error(res?.error || 'Notification was not saved.');
+              if (res.data?.id) insertedId = res.data.id;
             } else if (sb) {
-              const { data } = await sb.from('notifications').insert([{
+              const { data, error } = await sb.from('notifications').insert([{
                 room_id: node.room_id || null,
                 content: fullContent,
                 time: wakeDisplay,
                 date: todayDateStr,
                 triggered: true
               }]).select().maybeSingle();
+              if (error) throw error;
               if (data && data.id) insertedId = data.id;
             }
 
@@ -987,9 +1199,10 @@ async function checkControlSchedules(forceRefresh = false) {
       }
 
       // 2. Check Sleep Time Trigger:
-      // Realtime match OR scheduled sleep has passed today (if sleep > wake) OR in overnight sleep window
-      const isSleepDue = (currentHHMM === normSleep) ||
-        (sleepMinutes > wakeMinutes ? (nowMinutes >= sleepMinutes) : (nowMinutes >= sleepMinutes && nowMinutes < wakeMinutes));
+      // The controller must have reported sleeping_until; the clock alone cannot prove sleep.
+      const isSleepDue = connection === 'sleeping' && (sleepMinutes > wakeMinutes
+        ? nowMinutes >= sleepMinutes || nowMinutes < wakeMinutes
+        : nowMinutes >= sleepMinutes && nowMinutes < wakeMinutes);
 
       if (isSleepDue) {
         const sleepKey = `ecoTrack_notif_sleep_${node.id || nodeName}_${todayDateStr}_${normSleep}`;
@@ -1004,7 +1217,7 @@ async function checkControlSchedules(forceRefresh = false) {
           localStorage.setItem(sleepKey, 'pending_' + Date.now());
 
           const notifId = `notif_sleep_${(node.id || nodeName).replace(/[^a-zA-Z0-9]/g, '')}_${Date.now()}`;
-          const messageText = `Control Sleep Schedule: Control ${nodeName} in ${roomName} has entered scheduled sleep cycle (${sleepDisplay}) for energy conservation.`;
+          const messageText = `Control Sleep Schedule: Control ${nodeName} in ${roomName} has reported scheduled sleep (${sleepDisplay}).`;
           const fullContent = `${nodeName}|||${messageText}`;
 
           try {
@@ -1017,15 +1230,17 @@ async function checkControlSchedules(forceRefresh = false) {
                 date: todayDateStr,
                 triggered: true
               });
-              if (res && res.success && res.data?.id) insertedId = res.data.id;
+              if (!res?.success) throw new Error(res?.error || 'Notification was not saved.');
+              if (res.data?.id) insertedId = res.data.id;
             } else if (sb) {
-              const { data } = await sb.from('notifications').insert([{
+              const { data, error } = await sb.from('notifications').insert([{
                 room_id: node.room_id || null,
                 content: fullContent,
                 time: sleepDisplay,
                 date: todayDateStr,
                 triggered: true
               }]).select().maybeSingle();
+              if (error) throw error;
               if (data && data.id) insertedId = data.id;
             }
 
@@ -1164,6 +1379,7 @@ window.createSystemNotification = async function(payload) {
     record = result.data;
   }
   window.EcoDataBus?.invalidate('notifications:data');
+  if (record?.id) locallyProducedNotificationIds.add(String(record.id));
   window.dispatchEvent(new CustomEvent('ecotrack:notification-created', { detail: record }));
   updateGlobalNotificationBadge();
   window.loadNotificationMessages?.();
@@ -1203,10 +1419,13 @@ async function checkMaintenanceVerificationSubmissions() {
       for (const character of signature) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
       const key = `maintenance_verification:${report.id}:${hash >>> 0}`;
       if (observedMaintenanceSubmissions.has(key)) continue;
+      const equipment=window.EcoTrackMaintenance?.resolveReportEquipment?.(report);
+      const targetName=equipment?.controllerName || 'Controller unavailable';
+      const location=equipment?.location || report.room_name || report.room || 'Location unavailable';
       const record = await window.createSystemNotification({
         type: 'maintenance_verification', event_key: key, report_id: report.id,
         room_id: report.room_id || null,
-        content: `Verification Required: Technician ${report.staff_name || report.staffName || 'Unassigned'} submitted maintenance for ${report.aircon_name || report.airconId || 'AC unit'} in ${report.room_name || report.room || 'Unassigned room'}. Report: ${report.id}.`
+        content: `Verification Required: Technician ${report.staff_name || report.staffName || 'Unassigned'} submitted maintenance for ${targetName}${equipment?.airconName && equipment.airconName !== 'Aircon name unavailable' ? ' ('+equipment.airconName+')' : ''} in ${location}. Report: ${report.id}.`
       });
       observedMaintenanceSubmissions.add(key);
       if (record) triggerGlobalNotification(record.content, record);
@@ -1232,7 +1451,7 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Listen for storage changes from other pages/tabs
   window.addEventListener('storage', (e) => {
-    if (e.key === 'ecoTrackNotificationReadState' || e.key === 'triggeredNotifications' || e.key === 'ecoTrack_notifications_enabled') {
+    if (e.key === 'ecoTrackNotificationReadState' || e.key === 'triggeredNotifications' || e.key === 'ecoTrackNotificationInboxRevision' || e.key === 'ecoTrack_notifications_enabled') {
       updateGlobalNotificationBadge();
     }
   });
@@ -1252,6 +1471,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }, 2000);
 
   setInterval(startGlobalRuleChecker, 6000);
+  setInterval(updateGlobalNotificationBadge, 10000);
   setInterval(checkControlSchedules, 10000); // Check control schedules every 10 seconds
   const maintenanceTimer = setInterval(checkMaintenanceVerificationSubmissions, 10000);
   window.addEventListener('pagehide', () => clearInterval(maintenanceTimer), { once: true });

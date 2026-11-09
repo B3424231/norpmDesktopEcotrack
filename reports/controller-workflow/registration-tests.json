@@ -1,10 +1,13 @@
 {
-  "passed": 27,
+  "passed": 30,
   "checks": [
     "Editable Status removed; IP stays hardware-reported",
+    "Setup guidance identifies the next action without requesting reconnection or claiming a save; cloud confirmation and Bluetooth retries remain available",
     "Remote detection requires an actual Bluetooth selection",
     "Bluetooth remote detection works before registration without adding a controller",
     "Password Enter does not implicitly register a device",
+    "Monitoring/Both submit explicit device roles and sensor configuration; monitoring never submits an IR protocol",
+    "Missing/invalid device roles block registration before writes; retired hardware/range inputs are absent",
     "Save waits for heartbeat and metadata/AC binding, guards duplicates, then publishes completion",
     "Cloud failure stays incomplete and leaves Save available for retry",
     "Rejected registration can be retried",

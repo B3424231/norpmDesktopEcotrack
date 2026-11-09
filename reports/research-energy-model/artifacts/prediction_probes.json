@@ -1,0 +1,182 @@
+[
+  {
+    "settings": {
+      "setpoint_c": 21.0,
+      "fan_command": "auto",
+      "operating_mode": "auto",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "lab_hot",
+    "expected_model_estimate_kwh": 1.4000000000000037
+  },
+  {
+    "settings": {
+      "setpoint_c": 21.0,
+      "fan_command": "low",
+      "operating_mode": "cool",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": true,
+      "display": false
+    },
+    "scenario_id": "lab_hot",
+    "expected_model_estimate_kwh": 1.4000000000000037
+  },
+  {
+    "settings": {
+      "setpoint_c": 21.0,
+      "fan_command": "medium",
+      "operating_mode": "cool",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": true,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "lab_hot",
+    "expected_model_estimate_kwh": 1.2907937374910523
+  },
+  {
+    "settings": {
+      "setpoint_c": 24.0,
+      "fan_command": "auto",
+      "operating_mode": "auto",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "lab_hot",
+    "expected_model_estimate_kwh": 1.392440152846982
+  },
+  {
+    "settings": {
+      "setpoint_c": 27.0,
+      "fan_command": "auto",
+      "operating_mode": "auto",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "lab_hot",
+    "expected_model_estimate_kwh": 0.5868402782192945
+  },
+  {
+    "settings": {
+      "setpoint_c": 21.0,
+      "fan_command": "auto",
+      "operating_mode": "auto",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "hot_room",
+    "expected_model_estimate_kwh": 1.1867015156141751
+  },
+  {
+    "settings": {
+      "setpoint_c": 27.0,
+      "fan_command": "auto",
+      "operating_mode": "auto",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "hot_room",
+    "expected_model_estimate_kwh": 0.022572088111435046
+  },
+  {
+    "settings": {
+      "setpoint_c": 24.0,
+      "fan_command": "medium",
+      "operating_mode": "cool",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": true,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "mild_warm",
+    "expected_model_estimate_kwh": 0.18760936911468126
+  },
+  {
+    "settings": {
+      "setpoint_c": 24.0,
+      "fan_command": "low",
+      "operating_mode": "fan",
+      "eco": false,
+      "turbo": false,
+      "swing": false,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "lab_cold",
+    "expected_model_estimate_kwh": 0.021902818270165242
+  },
+  {
+    "settings": {
+      "setpoint_c": 24.0,
+      "fan_command": "low",
+      "operating_mode": "heat",
+      "eco": true,
+      "turbo": false,
+      "swing": true,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "cold_room",
+    "expected_model_estimate_kwh": 0.854480956314675
+  },
+  {
+    "settings": {
+      "setpoint_c": 21.0,
+      "fan_command": "high",
+      "operating_mode": "cool",
+      "eco": false,
+      "turbo": false,
+      "swing": true,
+      "quiet": false,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "mild_cool",
+    "expected_model_estimate_kwh": 0.04803648888888892
+  },
+  {
+    "settings": {
+      "setpoint_c": 27.0,
+      "fan_command": "quiet",
+      "operating_mode": "cool",
+      "eco": false,
+      "turbo": false,
+      "swing": true,
+      "quiet": true,
+      "horizontal_swing": false,
+      "display": false
+    },
+    "scenario_id": "mild_cool",
+    "expected_model_estimate_kwh": 0.01367541302235171
+  }
+]

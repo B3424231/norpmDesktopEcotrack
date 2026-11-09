@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
-const out = path.join(root, 'reports/device-setup-ui');
+const out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root, 'reports/device-setup-ui');
 app.setPath('userData', path.join(root, 'scratch/device-setup-ui-electron'));
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
@@ -34,7 +34,7 @@ async function render(theme, width, height) {
     '<style>' + css + '</style></head><body class="app-shell"></body></html>';
   await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(fixture));
   await win.webContents.executeJavaScript(
-    'window.__qaHandlers = new Map(); window.__qaResponses = []; window.electron = { on: (name, fn) => window.__qaHandlers.set(name, fn), invoke: async (name, data) => { window.__qaResponses.push({name, data}); return {success:true}; }};\n' + hardware
+    'window.__qaHandlers = new Map(); window.__qaResponses = []; window.electron = { on: (name, fn) => window.__qaHandlers.set(name, fn), invoke: async (name, data) => { window.__qaResponses.push({name, data}); return {success:true}; }};\n' + fs.readFileSync(path.join(root,'public/js/device-labels.js'),'utf8') + hardware
   );
   await win.webContents.executeJavaScript(`
     window.__qaPending = window.__qaHandlers.get('bluetooth-select-request')({}, {
@@ -70,7 +70,7 @@ async function render(theme, width, height) {
   assert(metrics.titleContrast >= 4.5, 'Title must remain readable');
   assert(metrics.choiceContrast >= 4.5, 'Device name must remain readable');
   assert(metrics.choiceFits && metrics.cancelSeparate && metrics.labelled);
-  assert(metrics.focus.startsWith('EcoTrack-'));
+  assert(metrics.focus.includes('AC device'));
   await win.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
   const screenshot = path.join(out, 'picker-' + theme + '-' + width + '.png');
   fs.writeFileSync(screenshot, (await win.webContents.capturePage(undefined, {stayHidden:true, stayAwake:true})).toPNG());

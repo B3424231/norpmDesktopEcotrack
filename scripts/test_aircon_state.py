@@ -14,7 +14,8 @@ spec.loader.exec_module(backend)
 class StateTests(unittest.TestCase):
     def test_cloud_and_local_snapshots_survive_round_trip(self):
         api = backend.app.test_client()
-        original = {'desired_state': {'power': 'on', 'mode': 'cool', 'fan': 'quiet', 'temp': 24}, 'command_status': 'transmitted'}
+        api.environ_base['HTTP_AUTHORIZATION'] = 'Bearer ' + backend.monitoring_service.admin_token
+        original = {'desired_state': {'power': 'on', 'mode': 'cool', 'fan': 'quiet', 'temp': 24, 'eco': False, 'turbo': True, 'swing_vertical': True, 'swing_horizontal': False, 'display': True, 'filter': False, 'quiet': None}, 'command_status': 'transmitted'}
         row = {'id': 'cloud-state', 'node_id': 'n1', 'created': '2026-10-03T10:00:00Z', 'control_snapshot': original, 'aircon_id': 'ac1'}
         backend.import_cloud_telemetry([row])
         row['control_snapshot'] = {'desired_state': {'mode': 'fan'}}

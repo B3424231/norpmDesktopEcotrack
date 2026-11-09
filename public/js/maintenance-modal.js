@@ -2,7 +2,7 @@
  * EcoTrack - Maintenance Management Controller
  * Dynamically linked to live Supabase nodes, rooms, and real maintenance records.
  * Handles Create Report Modal, Report Details Modal with full Light & Dark theme support,
- * Aircon Control Diagnostics, Task Checklists, Progress Tracking, and Verification.
+ * AC Device Diagnostics, Task Checklists, Progress Tracking, and Verification.
  */
 
 (function () {
@@ -66,6 +66,11 @@
     return id.includes('-TEST-') || id.startsWith('TEST-') || id.endsWith('-TEST') || id.includes('TEST_') || id.includes('MOCK');
   }
 
+  function isReportSubmittedForVerification(report) {
+    return ['for verification', 'pending verification', 'awaiting admin verification']
+      .includes(String(report?.status || '').trim().toLowerCase());
+  }
+
   function normalizeReport(r) {
     if (!r) return null;
     let rawTasks = [];
@@ -84,7 +89,7 @@
         { id: 1, name: 'Aircon Cleaning', status: 'Not Started', notes: '', updated: 'Today' },
         { id: 2, name: 'Filter Cleaning', status: 'Not Started', notes: '', updated: 'Today' },
         { id: 3, name: 'Temperature Control Inspection', status: 'Not Started', notes: '', updated: 'Today' },
-        { id: 4, name: 'Air Pressure Control Inspection', status: 'Not Started', notes: '', updated: 'Today' },
+        { id: 4, name: 'Rotation Monitoring Inspection', status: 'Not Started', notes: '', updated: 'Today' },
         { id: 5, name: 'Energy Control Inspection', status: 'Not Started', notes: '', updated: 'Today' }
       ];
     }
@@ -227,9 +232,11 @@
       }
     } else if (isReworkStatus) {
       status = 'Need Rework';
-    } else if (allTasksCompleted || status === 'For Verification' || status === 'Awaiting Admin Verification') {
-      // 100% completed checklist tasks automatically transition to For Verification (Awaiting Admin Verification)!
+    } else if (isReportSubmittedForVerification(r)) {
       status = 'For Verification';
+    } else if (allTasksCompleted) {
+      // Checklist completion alone is progress; submission is a separate server transition.
+      status = 'In Progress';
     } else if (isRepTask) {
       // Corrective repair order status: if tasks are not all completed, status is In Progress (never Under Repair or Completed)
       status = 'In Progress';
@@ -307,9 +314,12 @@
       id: r.id,
       airconId: r.aircon_name || r.aircon_id || r.airconId || 'AC-Unassigned',
       aircon_id: r.aircon_id,
+      node_id: r.node_id || r.nodeId || r.controller_node_id || null,
+      controller_name: r.controller_name || r.controllerName || '',
+      room_id: r.room_id || r.roomId || null,
       aircon_name: r.aircon_name || r.airconId,
-      airconType: r.aircon_type || r.airconType || r.brand || 'Split Type (Inverter)',
-      aircon_type: r.aircon_type || r.airconType || r.brand || 'Split Type (Inverter)',
+      airconType: r.aircon_type || r.airconType || 'Type unavailable',
+      aircon_type: r.aircon_type || r.airconType || 'Type unavailable',
       room: r.room_name || r.room || 'Main Campus',
       room_name: r.room_name || r.room,
       type: r.type || 'Preventive Maintenance',
@@ -414,6 +424,7 @@
       // 1. Explicit parentReportId pointing to this report
       const pId = String(r.parentReportId || r.parent_report_id || r.linkedParentId || '').trim().toLowerCase();
       if (pId && pId === rId) return true;
+      if (pId) return false;
 
       // 2. Any checklist task in report explicitly references this child repair order ID
       if (Array.isArray(report.tasks) && report.tasks.some(t => t.linkedRepairId && String(t.linkedRepairId).trim().toLowerCase() === String(r.id).trim().toLowerCase())) {
@@ -443,7 +454,7 @@
     // 1. Direct task.linkedRepairId match
     if (task.linkedRepairId) {
       const found = childRepairs.find(cr => String(cr.id || '').trim().toLowerCase() === String(task.linkedRepairId).trim().toLowerCase());
-      if (found) return found;
+      return found || null;
     }
 
     // 2. Direct parentTaskId match on child repair report
@@ -457,20 +468,23 @@
     // 3. Match by task name vs parentTaskName or issue.component (exact match first)
     const tName = String(task.name || '').trim().toLowerCase();
     if (tName) {
-      const foundExact = childRepairs.find(cr => {
+      if (report.tasks.filter(t => String(t.name || '').trim().toLowerCase() === tName).length !== 1) return null;
+      const foundExact = childRepairs.filter(cr => {
+        if (cr.parentTaskId != null || cr.parent_task_id != null || cr.issue?.parentTaskId != null || cr.issue?.taskId != null) return false;
         const crTaskName = String(cr.parentTaskName || cr.parent_task_name || '').trim().toLowerCase();
         const crIssueComp = String(cr.issue?.component || '').trim().toLowerCase();
         return crTaskName === tName || crIssueComp === tName;
       });
-      if (foundExact) return foundExact;
+      if (foundExact.length) return foundExact.length === 1 ? foundExact[0] : null;
 
       // 4. Fallback: single-component issue match (never match if child issue has multiple comma-separated components)
-      const found = childRepairs.find(cr => {
+      const found = childRepairs.filter(cr => {
+        if (cr.parentTaskId != null || cr.parent_task_id != null || cr.issue?.parentTaskId != null || cr.issue?.taskId != null) return false;
         const comp = String(cr.issue?.component || '').trim();
         if (comp.includes(',') || comp.includes(';') || comp.includes('•')) return false;
         return isComponentInIssue(tName, cr.issue);
       });
-      if (found) return found;
+      if (found.length) return found.length === 1 ? found[0] : null;
     }
 
     return null;
@@ -485,21 +499,23 @@
   function isRepairReportDone(repairReport) {
     if (!repairReport) return false;
     const s = String(repairReport.status || '').trim().toLowerCase();
-    if (s === 'verified' || s === 'completed' || s === 'for verification') return true;
-    if (Array.isArray(repairReport.tasks) && repairReport.tasks.length > 0 && repairReport.tasks.every(t => t.status === 'Completed')) {
-      return true;
-    }
+    if (s === 'verified' || s === 'completed') return true;
     return false;
   }
 
   function isRepairReportVerified(repairReport) {
-    if (!repairReport) return false;
-    const s = String(repairReport.status || '').trim().toLowerCase();
-    if (s === 'verified') return true;
-    if (Array.isArray(repairReport.tasks) && repairReport.tasks.length > 0 && repairReport.tasks.every(t => t.status === 'Completed' && t.verified)) {
-      return true;
-    }
-    return false;
+    return isRepairReportDone(repairReport);
+  }
+
+  function isMaintenanceTaskComplete(task) {
+    return task?.status === 'Completed' && (!task.linkedRepairId || task.repaired === true);
+  }
+
+  function maintenanceReportPhase(report) {
+    if (isRepairReportDone(report)) return 'Completed';
+    if (isReportSubmittedForVerification(report)) return 'For Verification';
+    if (report?.tasks?.length && report.tasks.every(isMaintenanceTaskComplete)) return 'Ready to submit';
+    return report?.status || 'Pending';
   }
 
   function resolvePhotoUrl(rawPhoto) {
@@ -603,30 +619,13 @@
       const isRepTask = isActualRepairTask(report);
       if (isRepTask) {
         if (report.status === 'Under Repair' || report.status === 'Pending' || report.status === 'Assigned' || report.status === 'Needs Repair') {
-          const allDone = Array.isArray(report.tasks) && report.tasks.length > 0 && report.tasks.every(t => t.status === 'Completed');
-          report.status = allDone ? 'For Verification' : 'In Progress';
+          report.status = 'In Progress';
           changed = true;
         }
         return;
       }
 
-      // 1. Maintain and clean up linked repair IDs for parent report
-      if (report.linkedRepairId) {
-        const linkedRep = reports.find(r => r && String(r.id || '').toLowerCase() === String(report.linkedRepairId).toLowerCase());
-        const isExplicitParent = linkedRep && (String(linkedRep.parentReportId || linkedRep.linkedParentId || '').toLowerCase() === String(report.id || '').toLowerCase());
-        if (!linkedRep || !isExplicitParent) {
-          delete report.linkedRepairId;
-          if (report.issue && report.issue.linkedRepairId) delete report.issue.linkedRepairId;
-          if (Array.isArray(report.tasks)) {
-            report.tasks.forEach(t => {
-              if (t.linkedRepairId && String(t.linkedRepairId).toLowerCase() === String(report.linkedRepairId).toLowerCase()) {
-                delete t.linkedRepairId;
-              }
-            });
-          }
-          changed = true;
-        }
-      }
+      // Keep stable links when a child is missing; absence cannot prove approval.
 
       // 2. Discover all child repair tasks connected to this parent report
       const childRepairs = getChildRepairReportsFor(report, reports);
@@ -648,10 +647,10 @@
             if (t.linkedRepairId) {
               const directExists = reports.some(r => r && String(r.id || '').toUpperCase() === String(t.linkedRepairId).toUpperCase());
               if (!directExists) {
-                delete t.linkedRepairId;
-                if (t.status === 'Under Repair' && !t.repaired) {
-                  t.status = 'Needs Repair';
-                }
+                t.status = 'Under Repair';
+                t.repaired = false;
+                t.verified = false;
+                t.verifiedAt = null;
                 changed = true;
               }
             }
@@ -694,7 +693,7 @@
           }
 
           const isChildVerified = isRepairReportVerified(childRep);
-          const isChildDone = isRepairReportDone(childRep);
+
 
           if (isChildVerified) {
             if (t.status !== 'Completed' || !t.repaired || !t.verified) {
@@ -705,11 +704,12 @@
               t.updated = 'Just now';
               changed = true;
             }
-          } else if (isChildDone) {
-            if (t.status !== 'Completed' || !t.repaired || t.verified) {
-              t.status = 'Completed';
-              t.repaired = true;
+          } else if (isReportSubmittedForVerification(childRep)) {
+            if (t.status !== 'For Verification' || t.repaired || t.verified) {
+              t.status = 'For Verification';
+              t.repaired = false;
               t.verified = false;
+              t.verifiedAt = null;
               t.updated = 'Just now';
               changed = true;
             }
@@ -719,6 +719,7 @@
               t.status = 'Under Repair';
               t.repaired = false;
               t.verified = false;
+              t.verifiedAt = null;
               t.updated = 'Just now';
               changed = true;
             }
@@ -729,17 +730,16 @@
       // 4. Recalculate parent report's overall status based on the aggregate status of all tasks
       if (Array.isArray(report.tasks) && report.tasks.length > 0) {
         const hasNeedsRepairTask = report.tasks.some(t => t.status === 'Needs Repair' && !t.repaired);
-        const hasUnderRepairTask = report.tasks.some(t => {
+        const hasUnderRepairTask = Boolean(report.linkedRepairId && !childRepairs.some(cr => String(cr.id).trim().toLowerCase() === String(report.linkedRepairId).trim().toLowerCase())) || childRepairs.some(cr => !isRepairReportDone(cr) && !isReportSubmittedForVerification(cr)) || report.tasks.some(t => {
           if (t.status === 'Under Repair' && !t.repaired) return true;
           const cr = getRepairReportForTask(report, t, reports);
-          return Boolean(cr && !isRepairReportDone(cr));
+          return Boolean(t.linkedRepairId && !cr) || Boolean(cr && !isRepairReportDone(cr) && !isReportSubmittedForVerification(cr));
         });
         const allTasksDone = report.tasks.every(t => {
           const cr = getRepairReportForTask(report, t, reports);
           if (cr && !isRepairReportDone(cr)) return false;
           return t.status === 'Completed' || t.repaired;
         });
-        const allTasksVerified = allTasksDone && report.tasks.every(t => t.verified);
 
         if (hasNeedsRepairTask) {
           if (report.status !== 'Needs Repair' || report.verified) {
@@ -761,25 +761,19 @@
             report.issue.repaired = false;
             report.issue.status = 'Under Repair';
           }
-        } else if (allTasksVerified) {
-          if (report.status !== 'Completed' || !report.verified) {
-            report.status = 'Completed';
-            report.verified = true;
-            changed = true;
-          }
-          if (report.issue) {
-            report.issue.repaired = true;
-            report.issue.status = 'Repaired';
-          }
         } else if (allTasksDone) {
           if (report.status !== 'For Verification' && report.status !== 'Completed' && report.status !== 'Closed') {
-            report.status = 'For Verification';
+            report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
             changed = true;
           }
           if (report.issue) {
             report.issue.repaired = true;
             report.issue.status = 'Repaired';
           }
+        } else if (report.tasks.some(t => t.status === 'For Verification')) {
+          report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
+          report.verified = false;
+          changed = true;
         }
       }
     });
@@ -817,9 +811,13 @@
     const merged = Array.isArray(remoteData) ? remoteData.map(normalizeReport).filter(Boolean) : [];
     for (const [id, write] of confirmedReportWrites) {
       if (write.revision <= readRevision) continue;
-      const record = normalizeReport(write.record);
-      const index = merged.findIndex(item => item.id === id);
-      if (index >= 0) merged[index] = record; else merged.push(record);
+      const index = merged.findIndex(item => String(item.id) === String(id));
+      if (write.record === null) {
+        if (index >= 0) merged.splice(index, 1);
+      } else {
+        const record = normalizeReport(write.record);
+        if (index >= 0) merged[index] = record; else merged.push(record);
+      }
     }
     merged.sort((a, b) => {
       const timeA = Date.parse(a.created || a.created_date || a.createdDate) || 0;
@@ -928,19 +926,21 @@
     reportReadClient = sb;
     reportAuthVersion += 1;
     reportRowsRead = null;
+    clearMaintenanceInventory();
     confirmedReportWrites.clear();
     sb.auth?.onAuthStateChange?.(() => {
       if (reportReadClient !== sb) return;
       reportAuthVersion += 1;
       reportRowsRead = null;
+      clearMaintenanceInventory();
       confirmedReportWrites.clear();
       if (reportsFetchPromise) reportsFetchPending = true;
     });
   }
   function readMaintenanceRows(sb) {
     ensureReportReadSession(sb);
-    if (reportRowsRead?.client === sb) return reportRowsRead.promise;
-    const request = { client: sb, promise: null };
+    if (reportRowsRead?.client === sb && reportRowsRead.revision === reportWriteRevision) return reportRowsRead.promise;
+    const request = { client: sb, revision: reportWriteRevision, promise: null };
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     let timeout;
     request.promise = Promise.resolve(window.ecotrackAuthReady).then(async () => {
@@ -987,7 +987,7 @@
   async function performReportsFetch(isSilent = false, authoritative = false) {
     const sb = getSb();
     const tbody = document.getElementById('pageReportTableBody');
-    const hasLocalData = Array.isArray(_reportsCache) && _reportsCache.length > 0;
+    const hasLocalData = window.EcoDataBus?.getCached('maintenance:reports') != null || Array.isArray(_reportsCache) && _reportsCache.length > 0;
 
     // Only render skeletons if we truly have NO local cached reports to display
     if (!isSilent && !hasLocalData && tbody) {
@@ -1010,6 +1010,7 @@
           data.forEach(record => reportVersions.set(record.id, record.updated));
           const localExisting = authoritative ? [] : ((_reportsCache && _reportsCache.length > 0) ? _reportsCache : getReportsLocal());
           _reportsCache = mergeReportsSafely(data, localExisting, readRevision);
+          window.EcoDataBus?.mutate('maintenance:reports', true);
           try {
             localStorage.setItem('ecoTrack_maintenance_reports', JSON.stringify(_reportsCache));
           } catch (e) { }
@@ -1255,42 +1256,212 @@
   }
 
   let _nodesAirconCache = [];
-  window.addEventListener?.('devices:synced', () => {
+  let _maintenanceInventoryReady = false;
+  let _staffRoomHierarchy = null;
+  function updateStaffLocationHierarchy(rooms, floors, buildings) {
+    const floorMap = new Map(floors.map(item => [String(item.id), item]));
+    const buildingMap = new Map(buildings.map(item => [String(item.id), item]));
+    _staffRoomHierarchy = new Map(rooms.map(room => {
+      const floor = floorMap.get(String(room.floor_id));
+      const building = floor && buildingMap.get(String(floor.building_id));
+      return [String(room.id), { roomId: room.id, roomName: room.name || '',
+        floorId: floor?.id || '', floorName: floor?.name || '',
+        buildingId: building?.id || '', buildingName: building?.name || '',
+        assignment: [building?.name, floor?.name, room.name].filter(Boolean).join(' • ') }];
+    }));
+    window.dispatchEvent(new CustomEvent('ecotrack:locations-updated'));
+  }
+  function resolveStaffHierarchy(staff) {
+    const roomId = String(staff?.room_id || staff?.roomId || '').trim();
+    if (!_staffRoomHierarchy || !roomId || ['all','all_rooms'].includes(roomId.toLowerCase())) return null;
+    return _staffRoomHierarchy.get(roomId) || { roomId, roomName: 'Unassigned',
+      floorId: '', floorName: '', buildingId: '', buildingName: '', assignment: 'Unassigned' };
+  }
+  function clearMaintenanceInventory() {
     _nodesAirconCache = [];
+    _maintenanceInventoryReady = false;
     localStorage.removeItem('ecoTrack_aircons_cache');
-  });
+  }
+  window.addEventListener?.('devices:synced', clearMaintenanceInventory);
 
   function formatBatteryDisplay(rawVal, isOnline = true) {
-    if (rawVal === undefined || rawVal === null || rawVal === '') {
-      return {
-        val: isOnline ? '100%' : 'Offline',
-        status: isOnline ? 'Connected' : 'Offline',
-        code: isOnline ? 'healthy' : 'offline'
-      };
-    }
-    const num = parseFloat(String(rawVal).replace(/[^\d.-]/g, ''));
-    if (isNaN(num)) {
-      return {
-        val: String(rawVal),
-        status: isOnline ? 'Connected' : 'Offline',
-        code: isOnline ? 'healthy' : 'offline'
-      };
-    }
-    // If voltage (e.g. 4.18V or <= 5.0V), calculate percentage using standard 4.2V nominal max
-    const pct = num <= 5.0
-      ? Math.min(100, Math.max(0, Math.round((num / 4.2) * 100)))
-      : Math.min(100, Math.max(0, Math.round(num)));
-    const isWarning = pct < 25 || num < 3.3;
+    const unknown = { val: 'Unavailable', status: isOnline ? 'Unavailable' : 'Offline',
+      code: isOnline ? 'unknown' : 'offline' };
+    if (!['number', 'string'].includes(typeof rawVal)) return unknown;
+    const match = String(rawVal).trim().match(/^(-?(?:\d+(?:\.\d+)?|\.\d+))\s*(%|v)?$/i);
+    if (!match) return unknown;
+    const num = Number(match[1]);
+    const voltage = String(match[2] || '').toLowerCase() === 'v';
+    if (!Number.isFinite(num) || num < 0 || (!voltage && num > 100)) return unknown;
+    // nodes.battery is a reported percentage, including 0..5%. Explicit legacy
+    // voltage strings retain their unit; do not invent a charge percentage.
+    const val = voltage ? `${num} V` : `${Math.round(num)}%`;
+    const isWarning = voltage ? num < 3.3 : num < 25;
     return {
-      val: `${pct}%`,
-      status: isOnline ? `${pct}%` : 'Offline',
+      val,
+      status: isOnline ? val : 'Offline',
       code: !isOnline ? 'offline' : (isWarning ? 'warning' : 'healthy')
     };
   }
 
+  function maintenanceControllerDiagnostics(measurements = {}, deviceState = null, now = Date.now()) {
+    const seen = Date.parse(deviceState?.last_seen || '');
+    const wake = Date.parse(deviceState?.sleeping_until || '');
+    const validSeen = Number.isFinite(seen) && seen <= now + 5000;
+    const sleeping = validSeen && Number.isFinite(wake) && wake > now && wake > seen;
+    const online = validSeen && !sleeping && now - seen <= 45000;
+    const state = sleeping ? 'Sleeping' : online ? 'Online' : 'Offline';
+    function reading(raw, unit) {
+      const number = ['number', 'string'].includes(typeof raw) && String(raw).trim() !== '' ? Number(raw) : NaN;
+      const available = Number.isFinite(number);
+      return { status: online ? (available ? 'Connected' : 'Unavailable') : state,
+        val: available ? `${number}${unit}` : 'Unavailable',
+        code: online ? (available ? 'healthy' : 'unknown') : 'offline' };
+    }
+    const battery = window.EcoTrackBattery?.read(deviceState, now);
+    const batteryDisplay = battery?.reported ? { val: Math.round(battery.percent) + '%' + (battery.label ? ' · ' + battery.label : ''),
+      status: battery.live ? battery.label || 'Connected' : state, code: battery.live ? (battery.percent <= 20 ? 'warning' : 'healthy') : 'offline' }
+      : battery ? { val: 'Unavailable', status: online ? 'Unavailable' : state, code: online ? 'unknown' : 'offline' } : formatBatteryDisplay(measurements.battery, online);
+    return { state, controls: {
+      temp: { name: 'Temperature', ...reading(measurements.temp, '°C') },
+      battery: { name: 'Battery', ...batteryDisplay },
+      signal: { name: 'Signal', ...reading(measurements.rssi, ' dBm') }
+    } };
+  }
+  function currentMaintenanceControllers(rows) {
+    return rows.filter(row=>window.EcoTrackMode?.mode==='monitoring' ? ['monitoring','both'].includes(row.deviceMode) : window.EcoTrackMode?.mode==='controller' ? row.deviceMode!=='monitoring' : true).map(row => ({ ...row,
+      ...maintenanceControllerDiagnostics(row.measurements || {}, row.deviceState || null) }));
+  }
+
+  function maintenanceDisplayText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+  }
+
+  function maintenanceDeviceLabel() {
+    return window.EcoTrackMode?.mode==='monitoring' ? 'AC Device' : window.EcoTrackMode?.mode==='both' ? 'AC Device' : 'AC Controller';
+  }
+  function maintenanceControllerName(ac) {
+    if (ac.id === 'None') return window.EcoTrackMode?.mode==='monitoring' ? 'No AC device assigned' : window.EcoTrackMode?.mode==='both' ? 'No AC device assigned' : 'No controller assigned';
+    const service = window.EcoTrackAirconSystem?.NodeService;
+    const controller = ac.nodeId ? service?.getNode?.(ac.nodeId) : null;
+    const name = [controller?.name, ac.nodeName].map(value => String(value || '').trim()).find(value => value &&
+      value !== String(ac.nodeId || '') && !/^(?:AC-)?esp32s3-[a-f0-9]{12}$/i.test(value)) ||
+      (ac.nodeId ? window.EcoTrackMode?.mode && window.EcoTrackMode.mode!=='controller' ? 'Unnamed '+maintenanceDeviceLabel().toLowerCase() : 'Unnamed controller' : window.EcoTrackMode?.mode && window.EcoTrackMode.mode!=='controller' ? maintenanceDeviceLabel()+' unavailable' : 'Controller unavailable');
+    return window.ecoDeviceDisplayName?.(name) || name;
+  }
+
+  function maintenanceAirconType(...values) {
+    const value = values.map(item => String(item || '').trim()).find(Boolean);
+    if (!value) return 'Type unavailable';
+    // Older report snapshots joined a protocol/manufacturer label to the physical type.
+    return value.replace(/^.+?\s+[-–—]\s+(?=(?:split|window|cassette|ducted?|portable|floor|ceiling|central|wall|tower|multi[- ]split)\b)/i, '');
+  }
+
+  function findMaintenanceAircon(report, aircons = getAirconsDatabase()) {
+    const unique = rows => {
+      const matches = new Map(rows.map(ac => [ac.airconId || ac.nodeId || ac.id,ac]));
+      return matches.size === 1 ? [...matches.values()][0] : null;
+    };
+    // Legacy maintenance aircon_id references nodes, while newer clients may provide an AC ID.
+    const references = [report.aircon_id,report.node_id,report.nodeId,report.controller_node_id]
+      .map(value => String(value || '').trim()).filter(Boolean);
+    const exact = aircons.filter(ac => [ac.airconId,ac.nodeId,ac.id].some(value => value && references.includes(String(value))));
+    if (exact.length) return unique(exact);
+    const profiles = (window.EcoTrackAirconSystem?.AirconProfileManager?.getAll?.() || [])
+      .filter(ac => [ac.aircon_id,ac.controller_node_id,ac.node_id,ac.device_id].some(value => value && references.includes(String(value))));
+    const profileMap = new Map(profiles.map(ac => [ac.aircon_id || ac.device_id,ac]));
+    if (profileMap.size === 1) {
+      const profile = [...profileMap.values()][0];
+      const linked = aircons.filter(ac => (ac.airconId && ac.airconId === profile.aircon_id) || (ac.id && ac.id === profile.device_id) ||
+        (ac.nodeId && [profile.controller_node_id,profile.node_id].includes(ac.nodeId)));
+      if (linked.length) return unique(linked);
+      return {id:profile.device_id,airconId:profile.aircon_id,airconName:profile.name,
+        nodeId:profile.controller_node_id || profile.node_id,airconType:profile.aircon_type || profile.model,
+        room:profile.room_name,building:profile.building || profile.building_name,floor:profile.floor || profile.floor_name};
+    }
+    // Never redirect a missing stable reference to another unit that happens to share its old name.
+    if (references.length) return null;
+    const aliases = [report.airconId,report.aircon_name].map(value => String(value || '').trim()).filter(Boolean);
+    return unique(aircons.filter(ac => [ac.id,ac.assetTag,ac.airconName,ac.model].some(value => value && aliases.includes(String(value)))));
+  }
+
+  function maintenanceReportEquipment(report, aircon = findMaintenanceAircon(report)) {
+    const profiles = window.EcoTrackAirconSystem?.AirconProfileManager?.getAll?.() || [];
+    const profileMatches = aircon ? profiles.filter(ac => (aircon.airconId && ac.aircon_id === aircon.airconId) || (aircon.id && ac.device_id === aircon.id)) : [];
+    const profile = profileMatches.length === 1 ? profileMatches[0] : null;
+    const controllerName = aircon ? maintenanceControllerName(aircon) : (window.EcoTrackMode?.mode && window.EcoTrackMode.mode!=='controller' ? maintenanceDeviceLabel()+' unavailable' : 'Controller unavailable');
+    const rawName = String(profile?.name || aircon?.airconName || report.aircon_name || '').trim();
+    const airconName = rawName && !/^(?:AC-)?esp32s3-[a-f0-9]{12}$/i.test(rawName) &&
+      !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(rawName) &&
+      ![report.aircon_id,profile?.controller_node_id,profile?.node_id].some(id => id && String(id) === rawName) ? rawName : 'Aircon name unavailable';
+    return {controllerName,airconName,
+      airconType:maintenanceAirconType(profile?.aircon_type, profile?.model, aircon?.airconType, report.aircon_type, report.airconType),
+      location:[aircon?.building || report.building_name,aircon?.floor || report.floor_name,aircon?.room || report.room_name || report.room].filter(Boolean).join(' • ') || 'Location unavailable',
+      protocol:profile?.protocol_name || profile?.protocol || aircon?.protocolName || 'Unavailable'};
+  }
+
+  function maintenanceStateClasses(state) {
+    return state === 'Online'
+      ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border-emerald-400/40'
+      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-600';
+  }
+
+  function renderMaintenanceDiagnostics(ac) {
+    return [['temp', 'Temp', 'Temperature'], ['signal', 'Wi-Fi', 'Wi-Fi signal'], ['battery', 'Battery', 'Battery']]
+      .map(([key, label, fullLabel]) => {
+        if(key === 'battery' && window.EcoTrackBattery) return `<span data-maintenance-battery="${maintenanceDisplayText(ac.nodeId || '')}" class="eco-maintenance-reading">${window.EcoTrackBattery.markup(window.EcoTrackBattery.read(ac.deviceState))}</span>`;
+        const reading = ac.controls?.[key];
+        const available = reading?.val && !['Unavailable','Reference needed'].includes(reading.val);
+        const last = available && ac.state !== 'Online';
+        const value = available ? `${last ? 'Last ' : ''}${reading.val}` : reading?.val === 'Reference needed' ? 'Reference needed' : 'No data';
+        const description = `${fullLabel}: ${value}; controller ${ac.state || 'Unavailable'}`;
+        const dot = reading?.code === 'healthy' ? 'bg-emerald-500'
+          : reading?.code === 'warning' ? 'bg-amber-500' : 'bg-slate-400';
+        return `<span data-maintenance-diagnostic="${key}" title="${maintenanceDisplayText(description)}" aria-label="${maintenanceDisplayText(description)}"
+          class="eco-maintenance-reading">
+          <span aria-hidden="true" class="w-1.5 h-1.5 rounded-full shrink-0 ${dot}"></span>
+          <span class="font-medium">${label}:</span><span>${maintenanceDisplayText(value)}</span>
+        </span>`;
+      }).join('');
+  }
+
+  let maintenanceBatteryRead = false;
+  async function refreshMaintenanceBatteryReadings() {
+    if(document.hidden || !window.EcoTrackBattery) return;
+    const elements = [...document.querySelectorAll('[data-maintenance-battery]')].filter(el => el.getClientRects().length);
+    if(!elements.length) return;
+    const render = () => elements.forEach(el => {
+      const row = _nodesAirconCache.find(item => String(item.nodeId) === el.dataset.maintenanceBattery);
+      const cached = window.EcoTrackAirconSystem?.NodeService?.getNode?.(el.dataset.maintenanceBattery)?.cloud_state;
+      if(row && window.EcoTrackBattery.acceptHeartbeat(cached, row.deviceState)) row.deviceState = cached;
+      window.EcoTrackBattery.render(el, row?.deviceState);
+    });
+    render(); // Aging still hides charging when a cloud read fails.
+    const client = getSb(), ids = [...new Set(elements.map(el => el.dataset.maintenanceBattery).filter(Boolean))];
+    if(maintenanceBatteryRead || !client || !ids.length) return;
+    const authVersion = reportAuthVersion;
+    maintenanceBatteryRead = true;
+    try {
+      const response = await client.from('ecotrack_device_state').select('node_id,last_seen,sleeping_until,applied_config').in('node_id', ids);
+      if(authVersion !== reportAuthVersion) return;
+      if(!response.error) for(const state of response.data || []) for(const row of _nodesAirconCache) {
+        if(String(row.nodeId) === state.node_id && window.EcoTrackBattery.acceptHeartbeat(state, row.deviceState)) row.deviceState = state;
+      }
+      render();
+    } catch(_) { /* A failed read never renews a heartbeat. */ }
+    finally { maintenanceBatteryRead = false; }
+  }
+  let maintenanceBatteryTimer = setInterval(refreshMaintenanceBatteryReadings, 2500);
+  window.addEventListener('pagehide', () => clearInterval(maintenanceBatteryTimer));
+  window.addEventListener('pageshow', event => { if(event.persisted) maintenanceBatteryTimer = setInterval(refreshMaintenanceBatteryReadings, 2500); });
+
   function getAirconsDatabase() {
+    // An empty verified registry is a result, not permission to invent devices from AC assets.
+    if (_maintenanceInventoryReady) return currentMaintenanceControllers(_nodesAirconCache);
     if (_nodesAirconCache && _nodesAirconCache.length > 0) {
-      return _nodesAirconCache;
+      return currentMaintenanceControllers(_nodesAirconCache);
     }
     try {
       const cached = localStorage.getItem('ecoTrack_aircons_cache');
@@ -1298,7 +1469,7 @@
         const parsed = JSON.parse(cached);
         if (Array.isArray(parsed) && parsed.length > 0) {
           _nodesAirconCache = parsed;
-          return _nodesAirconCache;
+          return currentMaintenanceControllers(_nodesAirconCache);
         }
       }
     } catch (_) {}
@@ -1306,22 +1477,31 @@
     if (window.EcoTrackAirconSystem?.AirconProfileManager?.getAll) {
       const apmList = window.EcoTrackAirconSystem.AirconProfileManager.getAll();
       if (Array.isArray(apmList) && apmList.length > 0) {
-        _nodesAirconCache = apmList.map(a => ({
+        _nodesAirconCache = apmList.flatMap(a => {
+          const service = window.EcoTrackAirconSystem.NodeService;
+          const controller = (a.controller_node_id ? service?.getNode?.(a.controller_node_id) : null) ||
+            (a.node_id ? service?.getNode?.(a.node_id) : null);
+          const nodeId = controller?.db_id || controller?.pb_id || controller?.id;
+          if (!nodeId) return [];
+          const measurements = controller ? { temp: controller.temp, rotation_rpm: controller.rotation_rpm, rotation_quality:controller.rotation_quality, sensor_config:controller.sensor_config,
+            battery: controller.cloud_state?.battery ?? controller.battery,
+            rssi: controller.cloud_state?.rssi ?? controller.rssi } : {};
+          const deviceState = controller?.cloud_state || null;
+          return [{
           id: a.device_id || a.name || a.id,
-          nodeId: a.node_id || a.device_id,
+          airconId:a.aircon_id || a.id, airconName:a.name || a.asset_tag || a.device_id || '', airconType:a.aircon_type || a.model || '', protocolName:a.protocol_name || a.protocol || '',
+          assetTag:a.device_id || '', building:a.building || a.building_name || '', floor:a.floor || a.floor_name || '',
+          nodeId,
           room: a.room_name || a.location || 'Assigned Room',
           roomId: a.room_id || '',
           brand: a.model || a.aircon_type || 'Split Type (Inverter)',
           model: a.name || a.device_id,
-          state: a.power === 'ON' ? 'Operational' : 'Offline',
-          controls: {
-            temp: { name: 'Temperature', status: 'Connected', val: `${a.temp || 24}°C`, code: 'healthy' },
-            pressure: { name: 'Air Pressure', status: 'Connected', val: '101.3 kPa', code: 'healthy' },
-            battery: { name: 'Battery', val: '100%', status: 'Connected', code: 'healthy' },
-            signal: { name: 'Signal', status: 'Connected', val: '-65 dBm', code: 'healthy' }
-          }
-        }));
-        return _nodesAirconCache;
+          nodeName: controller?.name || a.node_name || '', deviceMode:controller?.device_mode || 'controller',
+          measurements, deviceState,
+          ...maintenanceControllerDiagnostics(measurements, deviceState)
+        }];
+        });
+        return currentMaintenanceControllers(_nodesAirconCache);
       }
     }
 
@@ -1334,39 +1514,56 @@
           room: n.room_name || n.room || 'Assigned Room',
           brand: n.aircon_type || 'Split Type (Inverter)',
           model: n.name || n.id,
-          state: n.status === 'online' ? 'Operational' : 'Offline',
-          controls: {
-            temp: { name: 'Temperature', status: n.status === 'online' ? 'Connected' : 'Offline', val: (n.temp !== undefined && n.temp !== null) ? `${n.temp}°C` : 'Connected', code: n.status === 'online' ? 'healthy' : 'offline' },
-            pressure: { name: 'Air Pressure', status: n.status === 'online' ? 'Connected' : 'Offline', val: (n.pressure !== undefined && n.pressure !== null) ? `${n.pressure} kPa` : 'Connected', code: n.status === 'online' ? 'healthy' : 'offline' },
-            battery: { name: 'Battery', ...formatBatteryDisplay(n.battery, n.status === 'online') },
-            signal: { name: 'Signal', status: n.status === 'online' ? 'Connected' : 'Offline', val: (n.rssi !== undefined && n.rssi !== null) ? `${n.rssi} dBm` : 'Connected', code: (n.rssi && n.rssi < -90) ? 'warning' : (n.status === 'online' ? 'healthy' : 'offline') }
-          }
+          nodeName: n.name || '',deviceMode:n.device_mode || 'controller',
+          measurements: { temp: n.temp ?? n.temperature, rotation_rpm: n.rotation_rpm, rotation_quality:n.rotation_quality, sensor_config:n.sensor_config, battery: n.battery, rssi: n.rssi },
+          deviceState: null,
+          ...maintenanceControllerDiagnostics({ temp: n.temp ?? n.temperature, rotation_rpm: n.rotation_rpm, rotation_quality:n.rotation_quality, sensor_config:n.sensor_config, battery: n.battery, rssi: n.rssi })
         }))
         .sort((a, b) => String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric: true, sensitivity: 'base' }));
     }
     return [];
   }
 
+  async function readMaintenanceSensors() {
+    if(window.EcoTrackMode?.mode==='controller')return [];
+    try {
+      const base=new URL(window.ECOTRACK_CONFIG?.backendUrl || window.electron?.env?.BACKEND_URL || 'http://localhost:5000');
+      if(!['localhost','127.0.0.1','[::1]'].includes(base.hostname) || !['http:','https:'].includes(base.protocol))return [];
+      const response=await fetch(base.origin+'/api/monitoring/devices',{signal:AbortSignal.timeout(2000),cache:'no-store'});
+      return response.ok ? (await response.json()).items || [] : [];
+    } catch(_){return [];}
+  }
   async function fetchAirconsFromSupabase() {
     const sb = getSb();
     if (sb) {
       try {
+        ensureReportReadSession(sb);
+        const authVersion = reportAuthVersion;
         const fetchPromise = Promise.all([
           sb.from('nodes').select('*'),
           sb.from('rooms').select('*'),
           sb.from('floors').select('*'),
           sb.from('buildings').select('*'),
-          sb.from('aircons').select('*')
+          sb.from('aircons').select('*'),
+          sb.from('ecotrack_device_state').select('node_id,last_seen,sleeping_until,rssi,applied_config'),
+          readMaintenanceSensors()
         ]);
         const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error('Aircons fetch timed out (2.5s)')), 2500)
         );
-        const [nodesRes, roomsRes, floorsRes, buildingsRes, airconsRes] = await Promise.race([fetchPromise, timeoutPromise]);
+        const [nodesRes, roomsRes, floorsRes, buildingsRes, airconsRes, hardwareRes, sensorRows] = await Promise.race([fetchPromise, timeoutPromise]);
+        if (authVersion !== reportAuthVersion || getSb() !== sb) return;
+        for (const response of [nodesRes, roomsRes, floorsRes, buildingsRes, airconsRes]) {
+          if (response.error) throw response.error;
+        }
+        const hardwareMap = Object.fromEntries((hardwareRes.error ? [] : hardwareRes.data || []).map(row => [String(row.node_id), row]));
         const nodes = nodesRes.data || [];
         const rooms = roomsRes.data || [];
         const floors = floorsRes.data || [];
         const buildings = buildingsRes.data || [];
         const aircons = (airconsRes && airconsRes.data) ? airconsRes.data : [];
+        _maintenanceInventoryReady = true;
+        updateStaffLocationHierarchy(rooms, floors, buildings);
 
         if (nodes && nodes.length > 0) {
           const buildingMap = {};
@@ -1402,57 +1599,47 @@
           const airconByNodeMap = {};
           if (Array.isArray(aircons)) {
             aircons.forEach(a => {
-              if (a && a.node_id) {
-                airconByNodeMap[a.node_id] = a;
+              if (a && (a.controller_node_id || a.node_id)) {
+                airconByNodeMap[a.controller_node_id || a.node_id] = a;
               }
             });
           }
 
-          // Only include nodes assigned to an active room, matching the Telemetry view
-          const assignedNodes = nodes.filter(n => n.room_id && roomMap[n.room_id]);
+          // A device can inherit its location from its assigned air conditioner.
+          const linkedAircon = n => aircons.find(ac=>ac.id===n.monitor_aircon_id) || airconByNodeMap[n.id] || airconByNodeMap[n.name] || null;
+          const assignedNodes = nodes.filter(n => roomMap[n.room_id] || roomMap[linkedAircon(n)?.room_id]);
 
           _nodesAirconCache = (assignedNodes.length > 0 ? assignedNodes : nodes).map(n => {
-            const rInfo = roomMap[n.room_id] || {};
-            const linkedAc = airconByNodeMap[n.id] || null;
-            const primaryId = linkedAc ? linkedAc.asset_tag : (n.name || n.id);
+            const linkedAc = linkedAircon(n);
+            const roomId = roomMap[n.room_id] ? n.room_id : linkedAc?.room_id || n.room_id;
+            const rInfo = roomMap[roomId] || {};
+            const primaryId = n.device_mode==='monitoring' ? 'sensor:'+n.id : linkedAc?.asset_tag || n.name || n.id;
+            const fetchedState = hardwareMap[String(n.id)] || null;
+            const cachedState = _nodesAirconCache.find(row => String(row.nodeId) === String(n.id))?.deviceState;
+            const accept = window.EcoTrackBattery?.acceptHeartbeat;
+            const deviceState = accept ? accept(fetchedState, cachedState) ? fetchedState : accept(cachedState, null) ? cachedState : null : fetchedState;
+            const sensor=sensorRows?.find(sensor=>sensor.id===n.monitoring_id), sample=sensor?.fresh ? sensor.latest : null;
+            const sensorRole=['monitoring','both'].includes(n.device_mode);
+            const measurements = sensorRole ? {temp:sample?.outlet_temperature_c ?? null,rotation_rpm:sample?.rotation_rpm ?? null,rotation_quality:sample?.rotation_quality,sensor_config:n.sensor_config,battery:sample?.battery_voltage==null ? null : sample.battery_voltage+' V',rssi:sample?.rssi_dbm ?? deviceState?.rssi ?? null} : { temp: n.temp ?? n.temperature, rotation_rpm: n.rotation_rpm, rotation_quality:n.rotation_quality, sensor_config:n.sensor_config,
+              battery: n.battery, rssi: deviceState?.rssi ?? n.rssi };
             return {
               id: primaryId,
               nodeId: n.id,
-              nodeName: n.name || n.id,
+              nodeName: n.name || '',deviceMode:n.device_mode || 'controller',
               assetTag: linkedAc ? linkedAc.asset_tag : null,
+              airconId:linkedAc?.id || null, airconName:linkedAc?.name || '',
+              airconType:linkedAc?.aircon_type || linkedAc?.model || n.aircon_type || '',
+              protocolName:linkedAc?.protocol_name || linkedAc?.protocol || n.protocol_name || '',
               room: rInfo.name || n.room_name || n.room || 'Assigned Room',
-              roomId: n.room_id || '',
+              roomId: roomId || '',
               floor: rInfo.floor_name || n.floor_name || '',
               floorId: rInfo.floor_id || '',
               building: rInfo.building_name || n.building_name || '',
               buildingId: rInfo.building_id || '',
-              brand: (linkedAc && linkedAc.brand) ? `${linkedAc.brand} - ${linkedAc.model || n.aircon_type || 'Inverter'}` : (n.aircon_type || 'Split Type (Inverter)'),
-              model: primaryId,
-              state: n.status === 'online' ? 'Operational' : 'Offline',
-              controls: {
-                temp: {
-                  name: 'Temperature',
-                  status: n.status === 'online' ? 'Connected' : 'Offline',
-                  val: (n.temp !== undefined && n.temp !== null) ? `${n.temp}°C` : 'Connected',
-                  code: n.status === 'online' ? 'healthy' : 'offline'
-                },
-                pressure: {
-                  name: 'Air Pressure',
-                  status: n.status === 'online' ? 'Connected' : 'Offline',
-                  val: (n.pressure !== undefined && n.pressure !== null) ? `${n.pressure} kPa` : 'Connected',
-                  code: n.status === 'online' ? 'healthy' : 'offline'
-                },
-                battery: {
-                  name: 'Battery',
-                  ...formatBatteryDisplay(n.battery, n.status === 'online')
-                },
-                signal: {
-                  name: 'Signal',
-                  status: n.status === 'online' ? 'Connected' : 'Offline',
-                  val: (n.rssi !== undefined && n.rssi !== null) ? `${n.rssi} dBm` : 'Connected',
-                  code: (n.rssi && n.rssi < -90) ? 'warning' : (n.status === 'online' ? 'healthy' : 'offline')
-                }
-              }
+              brand: linkedAc?.aircon_type || linkedAc?.model || n.aircon_type || 'Type unavailable',
+              model: linkedAc?.name || primaryId,
+              measurements, deviceState,
+              ...maintenanceControllerDiagnostics(measurements, deviceState)
             };
           });
 
@@ -1469,6 +1656,11 @@
 
           if (typeof window.updateReportFilters === 'function') window.updateReportFilters();
           window.dispatchEvent(new CustomEvent('ecotrack:aircons-updated', { detail: _nodesAirconCache }));
+        } else {
+          _nodesAirconCache = [];
+          localStorage.removeItem('ecoTrack_aircons_cache');
+          if (typeof window.updateReportFilters === 'function') window.updateReportFilters();
+          window.dispatchEvent(new CustomEvent('ecotrack:aircons-updated', { detail: [] }));
         }
       } catch (err) {
         console.warn('[Supabase aircons load]:', err.message);
@@ -1479,6 +1671,8 @@
   // Filter AC controls strictly matching the technician's assigned building, floor, and room
   function getStaffBuilding(staff) {
     if (!staff) return '';
+    const canonical = resolveStaffHierarchy(staff);
+    if (canonical) return canonical.buildingName;
     let bld = (staff.building_name || staff.buildingName || staff.building || '').trim();
     if (!bld && staff.assignment) {
       bld = staff.assignment.split('•')[0].trim();
@@ -1489,6 +1683,10 @@
   function getAirconsForStaff(staff, airconsList) {
     if (!Array.isArray(airconsList) || airconsList.length === 0) return [];
     if (!staff) return airconsList;
+    const assignedRoomId = String(staff.room_id || staff.roomId || '').trim();
+    if (assignedRoomId && !['all','all_rooms'].includes(assignedRoomId.toLowerCase())) {
+      return airconsList.filter(ac => String(ac.roomId || ac.room_id || '') === assignedRoomId);
+    }
 
     // 1. Extract location identifiers and names
     const bldName = (staff.building_name || staff.buildingName || staff.building || '').toLowerCase().trim();
@@ -1644,10 +1842,23 @@
       if (prop === 'map') return (...args) => realAircons.map(...args);
       if (prop === 'filter') return (...args) => realAircons.filter(...args);
       if (prop === 'forEach') return (...args) => realAircons.forEach(...args);
+      if (prop === Symbol.iterator) return realAircons[Symbol.iterator].bind(realAircons);
+      if (typeof prop === 'symbol') return realAircons[prop];
       if (!isNaN(prop)) return realAircons[prop];
       return realAircons[prop];
     }
   });
+
+  function maintenanceStaffPresence(staff) {
+    if (typeof staff?.is_online === 'boolean') return {online:staff.is_online,label:staff.is_online ? 'Online' : 'Offline'};
+    const status = String(staff?.status || '').trim();
+    return {online:status.toLowerCase() === 'online',label:status || 'Offline'};
+  }
+
+  function maintenanceStaffStatusBadge(staff) {
+    const presence = maintenanceStaffPresence(staff);
+    return `<span class="eco-maintenance-staff-status" data-online="${presence.online}"><svg width="7" height="7" viewBox="0 0 8 8" aria-hidden="true"><circle cx="4" cy="4" r="3" fill="currentColor"/></svg>${maintenanceDisplayText(presence.label)}</span>`;
+  }
 
   function getStaffList() {
     try {
@@ -1724,6 +1935,8 @@
       if (match) s = match;
       else return '';
     }
+    const canonical = resolveStaffHierarchy(s);
+    if (canonical) return canonical.assignment;
     const bld = (s.building_name || s.buildingName || s.building || '').trim();
     const flr = (s.floor_name || s.floorName || s.floor || '').trim();
     const rm = (s.room_name || s.roomName || s.room || '').trim();
@@ -1974,7 +2187,7 @@
   }
 
   function getAllMaintenanceTypes() {
-    const all = [...getStandardTypes(), ...getCustomTypes()];
+    const all = [...getStandardTypes().map(type=>type==='Control Maintenance' && window.EcoTrackMode?.mode && window.EcoTrackMode.mode!=='controller' ? (window.EcoTrackMode.mode==='monitoring'?'Sensor Maintenance':'Device Maintenance') : type), ...getCustomTypes()];
     try {
       if (typeof createFormState !== 'undefined' && createFormState && createFormState.type && !all.some(t => t.toLowerCase() === createFormState.type.toLowerCase())) {
         all.unshift(createFormState.type);
@@ -2082,7 +2295,7 @@
     { name: 'Aircon Cleaning', selected: true },
     { name: 'Filter Cleaning', selected: true },
     { name: 'Temperature Control Inspection', selected: true },
-    { name: 'Air Pressure Control Inspection', selected: true },
+    { name: 'Rotation Monitoring Inspection', selected: true },
     { name: 'Energy Control Inspection', selected: true },
     { name: 'Control Calibration', selected: false },
     { name: 'Control Wiring Inspection', selected: false }
@@ -2118,7 +2331,28 @@
   };
   createFormState.type = getAllMaintenanceTypes()[0] || 'Control Maintenance';
 
-  async function openCreateReportModal() {
+  async function launchReportModal(trigger, prepare, label) {
+    const button = trigger?.currentTarget || trigger || document.activeElement?.closest('button');
+    try {
+      return await (window.EcoTrackModalLoading
+        ? window.EcoTrackModalLoading.run(button, prepare, { label })
+        : prepare());
+    } catch (error) {
+      console.error('[Maintenance] Could not prepare report:', error);
+      showToast('Error', 'The report could not be opened. Check your connection and try again.', 'error');
+    }
+  }
+
+  function openCreateReportModal(trigger) {
+    return launchReportModal(trigger, prepareCreateReportModal, 'Preparing report…');
+  }
+
+  function openEditReportModal(reportId, trigger) {
+    if (!reportId) return;
+    return launchReportModal(trigger, () => prepareEditReportModal(reportId), 'Loading report…');
+  }
+
+  async function prepareCreateReportModal() {
     editingReportId = null;
     createFormState.type = getAllMaintenanceTypes()[0] || 'Control Maintenance';
     createFormState.priority = 'High';
@@ -2161,7 +2395,7 @@
     document.body.style.overflow = 'hidden';
   }
 
-  async function openEditReportModal(reportId) {
+  async function prepareEditReportModal(reportId) {
     if (!reportId) return;
     await Promise.all([
       fetchReportsFromSupabase(true),
@@ -2200,7 +2434,7 @@
       'Aircon Cleaning',
       'Filter Cleaning',
       'Temperature Control Inspection',
-      'Air Pressure Control Inspection',
+      'Rotation Monitoring Inspection',
       'Energy Control Inspection',
       'Control Calibration',
       'Control Wiring Inspection'
@@ -2377,14 +2611,14 @@
               <line x1="8" y1="21" x2="16" y2="21"></line>
               <line x1="12" y1="17" x2="12" y2="21"></line>
             </svg>
-            AC Control & Aircon Information <span class="text-rose-500">*</span>
+            ${maintenanceDeviceLabel()} & Aircon Information <span class="text-rose-500">*</span>
           </label>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
           <div class="relative">
             <label class="block text-[11px] font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wider">
-              AC Control Name
+              ${maintenanceDeviceLabel()} Name
               ${staffBuildingName ? `
                 <span class="text-[10px] font-semibold text-[#10b981] dark:text-emerald-400 normal-case ml-1.5 font-sans tracking-normal bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-md border border-emerald-500/20">📍 ${staffBuildingName.toLowerCase().includes('all') ? 'All Buildings (Campus-Wide)' : staffBuildingName.replace(/\b([a-z])/g, c => c.toUpperCase())}</span>
               ` : ''}
@@ -2393,9 +2627,9 @@
             <button type="button" id="modalAirconDropdownTrigger"
               class="w-full bg-white dark:bg-[#0c1328] border-2 border-gray-300 dark:border-[#10b981]/50 text-gray-800 dark:text-white rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-[#10b981] dark:focus:border-cyan-400 cursor-pointer shadow-sm flex items-center justify-between hover:border-[#10b981] transition-all"
               aria-haspopup="listbox" aria-expanded="false">
-              <div class="flex items-center gap-2 truncate min-w-0" title="${selectedAc.id} — ${selectedAcFullLoc}">
-                <span class="w-2 h-2 rounded-full ${selectedAc.state === 'Needs Repair' ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.7)]' : 'bg-emerald-400 ring-2 ring-emerald-400/20'} shrink-0"></span>
-                <span class="truncate font-bold text-xs">${selectedAc.id} — ${selectedAcLoc}</span>
+              <div class="flex items-center gap-2 truncate min-w-0" title="${maintenanceDisplayText(maintenanceControllerName(selectedAc))} — ${selectedAcFullLoc}">
+                <span class="w-2 h-2 rounded-full ${selectedAc.state === 'Needs Repair' ? 'bg-rose-500' : selectedAc.state === 'Online' ? 'bg-emerald-400' : 'bg-slate-400'} shrink-0"></span>
+                <span class="truncate font-bold text-xs">${maintenanceDisplayText(maintenanceControllerName(selectedAc))} — ${selectedAcLoc}</span>
               </div>
               <svg class="w-4 h-4 text-gray-400 dark:text-[#10b981] transition-transform duration-200 shrink-0 ml-1.5" id="modalAirconDropdownArrow" viewBox="0 0 20 20" fill="currentColor">
                 <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
@@ -2405,7 +2639,7 @@
             <select id="modalCreateAirconSelect" class="sr-only hidden" tabindex="-1" aria-hidden="true">
               ${aircons.map(ac => `
                 <option value="${ac.id}" ${ac.id === selectedAc.id ? 'selected' : ''}>
-                  ${ac.id} — ${formatAcLocation(ac, false)} (${ac.brand})
+                  ${maintenanceDisplayText(maintenanceControllerName(ac))} — ${formatAcLocation(ac, false)} (${ac.brand})
                 </option>
               `).join('')}
             </select>
@@ -2423,8 +2657,8 @@
                        data-aircon-id="${ac.id}">
                     <div class="min-w-0 flex-1 mr-2">
                       <div class="flex items-center gap-1.5">
-                        <span class="w-1.5 h-1.5 rounded-full ${isWarning ? 'bg-rose-500' : (acActive ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400')} shrink-0"></span>
-                        <span class="text-xs font-bold truncate">${ac.id}</span>
+                        <span class="w-1.5 h-1.5 rounded-full ${isWarning ? 'bg-rose-500' : (acActive ? 'bg-amber-400 animate-pulse' : ac.state === 'Online' ? 'bg-emerald-400' : 'bg-slate-400')} shrink-0"></span>
+                        <span class="text-xs font-bold truncate">${maintenanceDisplayText(maintenanceControllerName(ac))}</span>
                         ${acActive ? `<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 shrink-0">Active: ${acActive.status}</span>` : ''}
                       </div>
                       <div class="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 truncate mt-0.5" title="${acFull}">
@@ -2435,8 +2669,8 @@
                       </div>
                     </div>
                     <div class="flex items-center gap-1.5 shrink-0">
-                      <span class="px-2 py-0.5 text-[9px] font-extrabold rounded-full ${isWarning ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-700 dark:text-rose-300 border border-rose-400/40' : 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/40'}">
-                        ${ac.state || 'Operational'}
+                      <span class="px-2 py-0.5 text-[9px] font-extrabold rounded-full border ${isWarning ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-700 dark:text-rose-300 border-rose-400/40' : maintenanceStateClasses(ac.state)}">
+                        ${ac.state || 'Unavailable'}
                       </span>
                       ${isSelected ? `
                         <svg class="w-3.5 h-3.5 text-[#10b981] dark:text-emerald-400 shrink-0" viewBox="0 0 20 20" fill="currentColor">
@@ -2458,15 +2692,15 @@
           </div>
 
           <div class="md:col-span-2">
-            <label class="block text-[11px] font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wider">AC Control & Aircon Details</label>
-            <div class="bg-emerald-50/70 dark:bg-[#081a14] border border-emerald-500/30 dark:border-[#10b981]/40 rounded-xl p-3 flex flex-col gap-2 shadow-sm">
+            <label class="block text-[11px] font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wider">${maintenanceDeviceLabel()} & Aircon Details</label>
+            <div class="eco-maintenance-panel rounded-xl p-3 flex flex-col gap-2">
               <div class="flex items-center justify-between border-b border-gray-200 dark:border-white/10 pb-1.5">
                 <div class="min-w-0 flex-1 mr-2">
-                  <span class="text-xs font-bold text-[#18392B] dark:text-cyan-300">Control: ${selectedAc.id}</span>
+                  <span class="text-xs font-bold text-[#18392B] dark:text-cyan-300">${maintenanceDeviceLabel()}: ${maintenanceDisplayText(maintenanceControllerName(selectedAc))}</span>
                   <span class="text-xs text-gray-600 dark:text-gray-400 ml-2 font-medium truncate" title="${selectedAcFullLoc}">• 📍 ${selectedAcLoc}</span>
                 </div>
-                <span class="px-2 py-0.5 text-[10px] font-extrabold rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/40">
-                  ${selectedAc.state || 'Operational'}
+                <span class="eco-repair-status eco-maintenance-pill" data-tone="${selectedAc.state === 'Online' ? 'success' : 'neutral'}">
+                  ${selectedAc.state || 'Unavailable'}
                 </span>
               </div>
               <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
@@ -2475,24 +2709,13 @@
                   <span class="font-semibold text-gray-800 dark:text-gray-200 text-[11px]">${selectedAc.brand || 'Split Type (Inverter)'}</span>
                 </div>
                 <div>
-                  <span class="text-[10px] text-gray-500 dark:text-gray-400 block uppercase">AC Control Name</span>
-                  <span class="font-semibold text-gray-800 dark:text-gray-200 text-[11px]">${selectedAc.id}</span>
+                  <span class="text-[10px] text-gray-500 dark:text-gray-400 block uppercase">${maintenanceDeviceLabel()} Name</span>
+                  <span data-maintenance-controller-name class="font-semibold text-gray-800 dark:text-gray-200 text-[11px] break-words">${maintenanceDisplayText(maintenanceControllerName(selectedAc))}</span>
                 </div>
                 <div>
-                  <span class="text-[10px] text-gray-500 dark:text-gray-400 block uppercase mb-1">Control Diagnostics</span>
-                  <div class="flex flex-wrap gap-1.5">
-                    <span class="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-gray-200 dark:border-white/10 text-[10px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
-                      <span class="w-1.5 h-1.5 rounded-full ${selectedAc.controls?.temp?.code === 'offline' ? 'bg-rose-500' : 'bg-emerald-500'}"></span>
-                      ${selectedAc.controls?.temp?.val || 'Connected'}
-                    </span>
-                    <span class="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-gray-200 dark:border-white/10 text-[10px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
-                      <span class="w-1.5 h-1.5 rounded-full ${selectedAc.controls?.pressure?.code === 'offline' ? 'bg-rose-500' : 'bg-emerald-500'}"></span>
-                      ${selectedAc.controls?.pressure?.val || 'Connected'}
-                    </span>
-                    <span class="px-2 py-0.5 rounded bg-white dark:bg-slate-900 border border-gray-200 dark:border-white/10 text-[10px] text-emerald-700 dark:text-emerald-300 flex items-center gap-1">
-                      <span class="w-1.5 h-1.5 rounded-full ${selectedAc.controls?.battery?.code === 'warning' ? 'bg-amber-500' : (selectedAc.controls?.battery?.code === 'offline' ? 'bg-rose-500' : 'bg-emerald-500')}"></span>
-                      ${formatBatteryDisplay(selectedAc.controls?.battery?.val ?? selectedAc.controls?.battery?.status, selectedAc.state !== 'Offline').val}
-                    </span>
+                  <span class="text-[10px] text-gray-500 dark:text-gray-400 block uppercase mb-1">${maintenanceDeviceLabel()} Diagnostics</span>
+                  <div class="flex flex-wrap gap-1.5" aria-label="${maintenanceDeviceLabel()} diagnostic readings">
+                    ${renderMaintenanceDiagnostics(selectedAc)}
                   </div>
                 </div>
               </div>
@@ -2602,7 +2825,7 @@
             class="w-full bg-white dark:bg-[#0c1328] border-2 border-gray-300 dark:border-[#10b981]/50 text-gray-800 dark:text-white rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-[#10b981] dark:focus:border-cyan-400 cursor-pointer shadow-sm flex items-center justify-between hover:border-[#10b981] transition-all"
             aria-haspopup="listbox" aria-expanded="false">
             <div class="flex items-center gap-2 truncate">
-              <span class="w-2 h-2 rounded-full ${createFormState.priority === 'Critical' ? 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.6)]' : (createFormState.priority === 'High' ? 'bg-amber-500' : (createFormState.priority === 'Medium' ? 'bg-sky-500' : 'bg-emerald-500'))} shrink-0"></span>
+              <span class="maintenance-priority-dot" data-priority="${createFormState.priority || 'Low'}" aria-hidden="true"></span>
               <span>${createFormState.priority || 'Low'}</span>
             </div>
             <svg class="w-4 h-4 text-gray-400 dark:text-[#10b981] transition-transform duration-200 shrink-0 ml-1.5" id="modalPriorityDropdownArrow" viewBox="0 0 20 20" fill="currentColor">
@@ -2615,7 +2838,7 @@
             <option value="High" ${createFormState.priority === 'High' ? 'selected' : ''}>High</option>
             <option value="Critical" ${createFormState.priority === 'Critical' ? 'selected' : ''}>Critical</option>
           </select>
-          <div id="modalPriorityDropdownMenu"
+          <div id="modalPriorityDropdownMenu" role="listbox" aria-label="Priority"
             class="hidden absolute left-3 right-3 top-full mt-1.5 z-50 bg-white dark:bg-[#0c1328] border-2 border-gray-200 dark:border-[#10b981]/60 rounded-xl shadow-2xl dark:shadow-[0_12px_32px_rgba(0,0,0,0.85)] max-h-56 overflow-y-auto p-1.5 space-y-1 custom-dropdown-menu">
             ${[
         { val: 'Low', color: 'bg-emerald-500', sub: 'Standard / Routine' },
@@ -2626,19 +2849,17 @@
         const isSel = createFormState.priority === p.val;
         return `
                 <div class="custom-priority-item flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer transition-all duration-150 ${isSel ? 'bg-emerald-50 dark:bg-[#10b981]/25 text-[#18392B] dark:text-emerald-300 font-bold border border-emerald-500/30' : 'text-gray-700 dark:text-gray-200 hover:bg-emerald-50 dark:hover:bg-[#10b981]/15 hover:text-[#10b981] dark:hover:text-emerald-300'}"
-                     data-priority-val="${p.val}">
+                     data-priority-val="${p.val}" role="option" aria-selected="${isSel}">
                   <div class="flex items-center gap-2">
-                    <span class="w-2 h-2 rounded-full ${p.color} shrink-0"></span>
+                    <span class="maintenance-priority-dot" data-priority="${p.val}" aria-hidden="true"></span>
                     <div>
                       <span class="text-xs font-bold">${p.val}</span>
                       <span class="text-[10px] text-gray-500 dark:text-gray-400 block">${p.sub}</span>
                     </div>
                   </div>
-                  ${isSel ? `
-                    <svg class="w-3.5 h-3.5 text-[#10b981] dark:text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
-                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                    </svg>
-                  ` : ''}
+                  <svg class="maintenance-priority-check" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${isSel ? '' : 'hidden'}>
+                    <path d="m5 12 4 4L19 6" />
+                  </svg>
                 </div>
               `;
       }).join('')}
@@ -2667,35 +2888,33 @@
 
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
           <div class="relative">
-            <label class="block text-[11px] font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wider">Technician <span class="text-rose-500">*</span></label>
+            <label id="modalStaffPickerLabel" class="block text-[11px] font-bold text-gray-600 dark:text-gray-400 mb-1.5 uppercase tracking-wider">Technician <span class="text-rose-500">*</span></label>
             <button type="button" id="modalStaffDropdownTrigger"
-              class="w-full bg-white dark:bg-[#0c1328] border-2 border-gray-300 dark:border-[#10b981]/50 text-gray-800 dark:text-white rounded-xl px-3 py-2 text-xs font-bold focus:outline-none focus:border-[#10b981] dark:focus:border-cyan-400 cursor-pointer shadow-sm flex items-center justify-between hover:border-[#10b981] transition-all"
-              aria-haspopup="listbox" aria-expanded="false">
-              <div class="flex items-center gap-2 truncate">
-                <span class="w-2 h-2 rounded-full ${selectedStaff && (selectedStaff.status === 'Active' || selectedStaff.status === 'Online' || selectedStaff.is_online) ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-gray-400'} shrink-0"></span>
-                <span class="truncate">${selectedStaff ? `${selectedStaff.name} (${selectedStaff.status || (selectedStaff.is_online ? 'Active' : 'Offline')})` : 'No technicians registered'}</span>
-              </div>
-              <svg class="w-4 h-4 text-gray-400 dark:text-[#10b981] transition-transform duration-200 shrink-0 ml-1.5" id="modalStaffDropdownArrow" viewBox="0 0 20 20" fill="currentColor">
+              class="eco-maintenance-staff-trigger"
+              aria-haspopup="listbox" aria-expanded="false" aria-controls="modalStaffDropdownMenu" aria-labelledby="modalStaffPickerLabel modalStaffSelectedName">
+              <span id="modalStaffSelectedName" class="eco-maintenance-staff-name" title="${maintenanceDisplayText(selectedStaff?.name || '')}">${maintenanceDisplayText(selectedStaff?.name || 'No technicians registered')}</span>
+              ${selectedStaff ? maintenanceStaffStatusBadge(selectedStaff) : ''}
+              <svg class="eco-maintenance-staff-arrow" id="modalStaffDropdownArrow" viewBox="0 0 20 20" width="16" height="16" fill="currentColor" aria-hidden="true">
                 <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
               </svg>
             </button>
             <select id="modalCreateStaffSelect" class="sr-only hidden" tabindex="-1" aria-hidden="true">
               ${staffList.length > 0 ? staffList.map(s => `
                 <option value="${s.id}" ${selectedStaff && s.id === selectedStaff.id ? 'selected' : ''}>
-                  ${s.name} (${s.status || 'Active'})
+                  ${maintenanceDisplayText(s.name)} (${maintenanceDisplayText(maintenanceStaffPresence(s).label)})
                 </option>
               `).join('') : '<option value="">No technicians registered</option>'}
             </select>
             <div id="modalStaffDropdownMenu"
+              role="listbox" aria-labelledby="modalStaffPickerLabel"
               class="hidden absolute left-0 right-0 top-full mt-1.5 z-50 bg-white dark:bg-[#0c1328] border-2 border-gray-200 dark:border-[#10b981]/60 rounded-xl shadow-2xl dark:shadow-[0_12px_32px_rgba(0,0,0,0.85)] max-h-56 overflow-y-auto p-1.5 space-y-1 custom-dropdown-menu">
               ${staffList.length > 0 ? staffList.map(s => {
         const isSelected = selectedStaff && s.id === selectedStaff.id;
-        const isOnline = s.status === 'Active' || s.status === 'Online' || s.is_online;
         const photoSrc = resolveStaffAvatar(s);
         const initials = (s.name || 'ST').split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase();
         return `
-                  <div class="custom-staff-item flex items-center justify-between px-2.5 py-2 rounded-lg cursor-pointer transition-all duration-150 ${isSelected ? 'bg-emerald-50 dark:bg-[#10b981]/25 text-[#18392B] dark:text-emerald-300 font-bold border border-emerald-500/30' : 'text-gray-700 dark:text-gray-200 hover:bg-emerald-50 dark:hover:bg-[#10b981]/15 hover:text-[#10b981] dark:hover:text-emerald-300'}"
-                       data-staff-name="${s.name}" data-staff-id="${s.id}">
+                  <button type="button" class="custom-staff-item eco-maintenance-staff-option"
+                       data-staff-name="${maintenanceDisplayText(s.name)}" data-staff-id="${maintenanceDisplayText(s.id)}" role="option" aria-selected="${Boolean(isSelected)}" tabindex="-1">
                     <div class="flex items-center gap-2.5 min-w-0">
                       <div class="w-7 h-7 rounded-full overflow-hidden border border-[#10b981]/50 bg-emerald-100 dark:bg-emerald-950 flex items-center justify-center font-bold text-[10px] text-[#10b981] shrink-0 shadow-sm">
                         ${photoSrc ? `
@@ -2706,7 +2925,7 @@
                         `}
                       </div>
                       <div class="min-w-0">
-                        <div class="text-xs font-bold truncate leading-tight">${s.name}</div>
+                        <div class="text-xs font-bold truncate leading-tight">${maintenanceDisplayText(s.name)}</div>
                         <div class="text-[10px] text-gray-500 dark:text-gray-400 truncate leading-tight">${s.role || 'HVAC / Aircon Technician'}</div>
                         ${(() => {
             const sLoc = resolveStaffLocation(s);
@@ -2715,16 +2934,14 @@
                       </div>
                     </div>
                     <div class="flex items-center gap-1.5 shrink-0 ml-2">
-                      <span class="px-2 py-0.5 text-[9px] font-bold rounded-full ${isOnline ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/30' : 'bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-gray-400 border border-gray-300 dark:border-white/10'}">
-                        ${s.status || (isOnline ? 'Active' : 'Offline')}
-                      </span>
+                      ${maintenanceStaffStatusBadge(s)}
                       ${isSelected ? `
                         <svg class="w-3.5 h-3.5 text-[#10b981] dark:text-emerald-400" viewBox="0 0 20 20" fill="currentColor">
                           <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
                         </svg>
                       ` : ''}
                     </div>
-                  </div>
+                  </button>
                 `;
       }).join('') : `
                 <div class="p-3 text-center text-xs text-gray-400 italic">No technicians registered</div>
@@ -2975,13 +3192,9 @@
 
       <!-- FOOTER -->
       <div class="flex items-center justify-end gap-2.5 pt-3 border-t border-gray-200 dark:border-white/10">
-        <button id="modalBtnCancelCreate"
+        <button id="modalBtnCancelCreate" type="button"
           class="px-4 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-white/10 dark:hover:bg-white/20 text-gray-700 dark:text-gray-200 text-xs font-bold transition-all border border-gray-200 dark:border-white/10 cursor-pointer shadow-sm">
           Cancel
-        </button>
-        <button id="modalBtnSaveDraft"
-          class="px-4 py-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-500/20 dark:hover:bg-emerald-500/30 text-emerald-800 dark:text-emerald-300 text-xs font-bold transition-all border border-emerald-500/30 cursor-pointer shadow-sm">
-          Save Draft
         </button>
         <button id="modalBtnSubmitReport"
           class="px-5 py-2 rounded-xl bg-[#10b981] hover:bg-emerald-400 text-slate-950 text-xs font-extrabold transition-all border-0 shadow-lg shadow-emerald-500/20 cursor-pointer flex items-center gap-1.5">
@@ -2996,6 +3209,7 @@
     // ─────────────────────────────────────────────────────────────
     // CUSTOM DROPDOWN ENGINE & EVENT BINDINGS
     // ─────────────────────────────────────────────────────────────
+    document.getElementById('modalBtnCancelCreate')?.addEventListener('click', closeCreateReportModal);
     const dropdownPrefixes = ['modalStaff', 'modalAircon', 'modalType', 'modalPriority', 'modalDescPreset'];
 
     function closeAllDropdowns() {
@@ -3034,6 +3248,29 @@
           }
         }
       });
+      if (prefix === 'modalStaff') {
+        trigger.addEventListener('keydown', event => {
+          if (!['ArrowDown','ArrowUp'].includes(event.key)) return;
+          event.preventDefault();
+          if (menu.classList.contains('hidden')) trigger.click();
+          const options = [...menu.querySelectorAll('[role="option"]')];
+          (options.find(option => option.getAttribute('aria-selected') === 'true') ||
+            options[event.key === 'ArrowUp' ? options.length - 1 : 0])?.focus();
+        });
+        menu.addEventListener('keydown', event => {
+          if (event.key === 'Escape') {
+            event.preventDefault(); closeAllDropdowns(); trigger.focus(); return;
+          }
+          if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+          event.preventDefault();
+          const options = [...menu.querySelectorAll('[role="option"]')];
+          if (!options.length) return;
+          const current = options.indexOf(document.activeElement);
+          const index = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 :
+            (current + (event.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length;
+          options[index].focus();
+        });
+      }
     });
 
     // 1. Aircon Selection Event
@@ -3075,6 +3312,7 @@
           renderCreateModalContent();
         }
         closeAllDropdowns();
+        document.getElementById('modalStaffDropdownTrigger')?.focus();
       });
     });
 
@@ -3216,12 +3454,14 @@
           if (sel) sel.value = pVal;
           const trigDiv = document.getElementById('modalPriorityDropdownTrigger')?.firstElementChild;
           if (trigDiv) {
-            const dotColor = pVal === 'Critical' ? 'bg-rose-500 shadow-[0_0_6px_rgba(244,63,94,0.6)]' : (pVal === 'High' ? 'bg-amber-500' : (pVal === 'Medium' ? 'bg-sky-500' : 'bg-emerald-500'));
-            trigDiv.innerHTML = `<span class="w-2 h-2 rounded-full ${dotColor} shrink-0"></span><span>${pVal}</span>`;
+            trigDiv.innerHTML = `<span class="maintenance-priority-dot" data-priority="${pVal}" aria-hidden="true"></span><span>${pVal}</span>`;
           }
           document.querySelectorAll('.custom-priority-item').forEach(i => {
             const isMatch = i.getAttribute('data-priority-val') === pVal;
             i.className = `custom-priority-item flex items-center justify-between px-2.5 py-1.5 rounded-lg cursor-pointer transition-all duration-150 ${isMatch ? 'bg-emerald-50 dark:bg-[#10b981]/25 text-[#18392B] dark:text-emerald-300 font-bold border border-emerald-500/30' : 'text-gray-700 dark:text-gray-200 hover:bg-emerald-50 dark:hover:bg-[#10b981]/15 hover:text-[#10b981] dark:hover:text-emerald-300'}`;
+            i.setAttribute('aria-selected', String(isMatch));
+            const check = i.querySelector('.maintenance-priority-check');
+            if (check) check.toggleAttribute('hidden', !isMatch);
           });
         }
         closeAllDropdowns();
@@ -3542,7 +3782,7 @@
       if (activeReport) {
         showFormError(
           'Duplicate Report Rejected',
-          `Aircon unit "${selectedAc.model || selectedAc.id}" already has an ongoing maintenance report (${activeReport.id}) with status "${activeReport.status}". Duplicate reporting is halted until the active report is verified and completed.`,
+          `${selectedAc.model || selectedAc.id} already has report ${activeReport.id} (${activeReport.status}). Complete and verify it before creating another.`,
           document.getElementById('modalAirconDropdownTrigger'),
           6
         );
@@ -3783,7 +4023,10 @@
       const sb = getSb();
       if (!sb) return;
       try {
-        const { data, error } = await sb.from('maintenance_reports').select('*').eq('id', currentDetailId).maybeSingle();
+        const readId = currentDetailId;
+        const readRevision = reportWriteRevision;
+        const { data, error } = await sb.from('maintenance_reports').select('*').eq('id', readId).maybeSingle();
+        if (currentDetailId !== readId || confirmedReportWrites.get(String(readId))?.revision > readRevision) return;
         if (!error && data) {
           const fresh = normalizeReport(data);
           if (fresh) {
@@ -3853,7 +4096,9 @@
     // Live background query to ensure fresh photos and tasks from Supabase immediately
     const sb = getSb();
     if (sb && reportId) {
+      const readRevision = reportWriteRevision;
       sb.from('maintenance_reports').select('*').eq('id', reportId).maybeSingle().then(({ data, error }) => {
+        if (confirmedReportWrites.get(String(reportId))?.revision > readRevision) return;
         if (!error && data) {
           const fresh = normalizeReport(data);
           if (fresh) {
@@ -3891,7 +4136,7 @@
     'Aircon Cleaning': 'Deep clean the evaporator and condenser coils, drain pan, blower wheel, and outer housing to ensure optimal airflow and hygienic operation.',
     'Filter Cleaning': 'Inspect and thoroughly clean air filter meshes, remove accumulated dust, and check for tears, blockage, or frame deformities.',
     'Temperature Control Inspection': 'Inspect thermal control probe, check calibration against ambient standards, and verify telemetry reading stability.',
-    'Air Pressure Control Inspection': 'Inspect differential pressure tubes, clear dust obstructions, and test airflow pressure control response.',
+    'Rotation Monitoring Inspection': 'Check free rotation, clean the disc and optical gap, and confirm the sensor detects wheel rotation.',
     'Energy Control Inspection': 'Verify CT clamps, voltage input terminals, and power telemetry logging for real-time energy calculation.',
     'Control Calibration': 'Zero-offset calibration and multi-point test verification against ambient laboratory references.',
     'Control Wiring Inspection': 'Check physical cable integrity, crimp connections, signal shielding, and terminal screw torque.'
@@ -3906,7 +4151,7 @@
     if (document.getElementById('ecoChecklistItemModal')) return;
 
     const modalHTML = `
-      <div id="ecoChecklistItemModal" class="hidden fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-[9999] flex items-center justify-center p-3 sm:p-4 transition-all">
+      <div id="ecoChecklistItemModal" role="dialog" aria-modal="true" aria-labelledby="ecoChecklistItemModalHeader" class="hidden fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-[9999] flex items-center justify-center p-3 sm:p-4 transition-all">
         <div class="bg-white dark:bg-[#0c1328] border-2 border-gray-200 dark:border-[#10b981]/50 rounded-3xl w-full max-w-md shadow-2xl flex flex-col overflow-hidden text-gray-800 dark:text-gray-100 transition-all max-h-[92vh]">
           <div id="ecoChecklistItemModalHeader" class="px-5 pt-5 pb-3 flex items-start justify-between border-b border-gray-100 dark:border-white/10 shrink-0">
             <!-- Header injected -->
@@ -4368,7 +4613,7 @@
         { id: 1, name: 'Aircon Cleaning', status: 'Not Started', notes: '', updated: 'Today' },
         { id: 2, name: 'Filter Cleaning', status: 'Not Started', notes: '', updated: 'Today' },
         { id: 3, name: 'Temperature Control Inspection', status: 'Not Started', notes: '', updated: 'Today' },
-        { id: 4, name: 'Air Pressure Control Inspection', status: 'Not Started', notes: '', updated: 'Today' },
+        { id: 4, name: 'Rotation Monitoring Inspection', status: 'Not Started', notes: '', updated: 'Today' },
         { id: 5, name: 'Energy Control Inspection', status: 'Not Started', notes: '', updated: 'Today' }
       ];
     }
@@ -4448,6 +4693,9 @@
     );
 
     const isRepReport = isActualRepairTask(report);
+    const dialog = header.parentElement;
+    dialog.classList.toggle('eco-remediation-dialog', isRepReport);
+    dialog.parentElement.setAttribute('aria-labelledby', isRepReport ? 'ecoRemediationTitle' : header.id);
     const isUnderRepair = !isRepReport && Boolean(
       !isRepairDone && !task.repaired && task.status !== 'Completed' && (
         (task.linkedRepairId && !task.repaired) ||
@@ -4460,8 +4708,22 @@
       (report.issue && isThisTaskDefect && !report.issue.repaired)
     );
 
-    // Header (Repaired, Under Repair In Progress, Issue View, or Standard Checklist View)
-    if (isRepairDone) {
+    // Header for corrective repair and routine checklist items.
+    if (isRepReport) {
+      const [stepName, ...stepDetails] = String(task.name || 'Repair step').split(': ');
+      const details = stepDetails.join(': ');
+      header.innerHTML = `
+        <div class="min-w-0">
+          <h2 id="ecoRemediationTitle">Corrective remediation step</h2>
+          <p class="eco-remediation-step-name">${maintenanceDisplayText(stepName)}</p>
+          ${details ? `<p class="eco-remediation-detail">${maintenanceDisplayText(details)}</p>` : ''}
+          <span class="eco-remediation-reference">${maintenanceDisplayText(report.id)}</span>
+        </div>
+        <button type="button" id="btnCloseChecklistItemModal" class="eco-repair-button eco-remediation-dismiss" aria-label="Close dialog">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      `;
+    } else if (isRepairDone) {
       header.innerHTML = `
         <div class="flex-1 pr-3">
           <div class="text-[11px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -4536,29 +4798,6 @@
           ✕
         </button>
       `;
-    } else if (isRepReport) {
-      header.innerHTML = `
-        <div class="flex-1 pr-3">
-          <div class="text-[11px] font-extrabold text-rose-600 dark:text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-            <span>CORRECTIVE REMEDIATION STEP</span>
-          </div>
-          <div class="flex items-center flex-wrap gap-2 mt-0.5">
-            <h3 class="text-xl font-bold text-[#18392B] dark:text-white tracking-tight">
-              ${task.name}
-            </h3>
-            <span class="px-2.5 py-0.5 text-[10px] font-bold rounded-full ${(task.verified || task.status === 'Completed' || task.repaired) ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/40' : (task.status === 'In Progress' ? 'bg-cyan-100 dark:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-400/40' : 'bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border border-rose-400/40')} shrink-0">
-              ${(task.verified || task.status === 'Completed' || task.repaired) ? 'COMPLETED' : (task.status || 'Not Started')}
-            </span>
-            <span class="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-rose-600 text-white shadow-xs">
-              ${report.id}
-            </span>
-          </div>
-        </div>
-        <button type="button" id="btnCloseChecklistItemModal" class="w-8 h-8 rounded-full bg-gray-100 dark:bg-white/10 hover:bg-gray-200 dark:hover:bg-white/20 text-gray-500 dark:text-gray-300 flex items-center justify-center font-bold text-sm cursor-pointer transition-colors shrink-0">
-          ✕
-        </button>
-      `;
     } else {
       header.innerHTML = `
         <div class="flex-1 pr-3">
@@ -4586,28 +4825,28 @@
 
     // Status Output Configuration
     let statusBorderClass = 'border-gray-200 dark:border-white/10';
-    let statusBgClass = 'bg-gray-50 dark:bg-slate-900/60';
+    let statusBgClass = 'eco-status-neutral bg-gray-50 dark:bg-slate-900/60';
     let statusTextClass = 'text-gray-700 dark:text-gray-300';
     let statusDot = '<span class="w-3 h-3 rounded-full bg-gray-400 dark:bg-gray-500 shrink-0"></span>';
 
     if (task.status === 'Completed' || (task.repaired && isRepairDone)) {
       statusBorderClass = 'border-emerald-400/60 dark:border-emerald-500/50';
-      statusBgClass = 'bg-emerald-50/70 dark:bg-emerald-950/40';
+      statusBgClass = 'eco-status-success bg-emerald-50/70 dark:bg-emerald-950/40';
       statusTextClass = 'text-emerald-800 dark:text-emerald-300';
       statusDot = '<span class="w-3 h-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50 shrink-0"></span>';
     } else if (isUnderRepair || task.status === 'Under Repair') {
       statusBorderClass = 'border-cyan-400/60 dark:border-cyan-500/50';
-      statusBgClass = 'bg-cyan-50/70 dark:bg-cyan-950/40';
+      statusBgClass = 'eco-status-info bg-cyan-50/70 dark:bg-cyan-950/40';
       statusTextClass = 'text-cyan-800 dark:text-cyan-300';
       statusDot = '<span class="w-3 h-3 rounded-full bg-cyan-500 animate-pulse shrink-0"></span>';
     } else if (task.status === 'Needs Repair' || isNeedsRepair) {
       statusBorderClass = 'border-rose-400/60 dark:border-rose-500/50';
-      statusBgClass = 'bg-rose-50/70 dark:bg-rose-950/40';
+      statusBgClass = 'eco-status-danger bg-rose-50/70 dark:bg-rose-950/40';
       statusTextClass = 'text-rose-800 dark:text-rose-300';
       statusDot = '<span class="w-3 h-3 rounded-full bg-rose-600 animate-pulse shrink-0"></span>';
     } else if (task.status === 'In Progress') {
       statusBorderClass = 'border-cyan-400/60 dark:border-cyan-500/50';
-      statusBgClass = 'bg-cyan-50/70 dark:bg-cyan-950/40';
+      statusBgClass = 'eco-status-info bg-cyan-50/70 dark:bg-cyan-950/40';
       statusTextClass = 'text-cyan-800 dark:text-cyan-300';
       statusDot = '<span class="w-3 h-3 rounded-full bg-cyan-500 shrink-0"></span>';
     }
@@ -4829,7 +5068,7 @@
           <div class="p-3 sm:p-3.5 rounded-2xl border ${statusBorderClass} ${statusBgClass} flex flex-wrap items-center justify-between gap-2 shadow-xs">
             <div class="flex items-center gap-2 flex-wrap min-w-0">
               ${statusDot}
-              <span class="text-sm font-black ${statusTextClass} whitespace-nowrap">Under Repair</span>
+              <span class="eco-status-info text-sm font-black ${statusTextClass} whitespace-nowrap">Under Repair</span>
               ${rId ? `<span class="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-cyan-100 dark:bg-cyan-900/60 text-cyan-800 dark:text-cyan-200 border border-cyan-400/50 shrink-0">Task: ${rId}</span>` : ''}
             </div>
             <span class="text-[11px] font-mono text-gray-500 dark:text-gray-400 font-medium shrink-0 ml-auto">Updated: ${task.updated || 'Just now'}</span>
@@ -4869,19 +5108,64 @@
           ${buildPhotoCarousel(allPhotos, 'Proof captured by technician')}
         </div>
       `;
-    } else {
-      // Normal Checklist Item view (Completed, Repaired, or In Progress)
+    } else if (isRepReport) {
+      const completed = task.verified || task.repaired || task.status === 'Completed';
+      const status = completed ? 'Completed' : (task.status || 'Not Started');
+      const statusTone = completed ? 'success' : ({
+        'In Progress': 'info',
+        'Under Repair': 'info',
+        'Needs Repair': 'danger',
+        'For Verification': 'warning'
+      })[status];
+      const photoPanel = allPhotos.length ? buildPhotoCarousel(allPhotos, 'Proof captured by technician') : `
+        <div class="eco-remediation-row eco-remediation-no-photo">
+          <span class="eco-remediation-icon" aria-hidden="true">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m4 18 5-5 4 4 4-5 4 4"/></svg>
+          </span>
+          No photo attached
+        </div>`;
       body.innerHTML = `
-        <!-- Status Output -->
+        <section>
+          <h3>Step status</h3>
+          <div class="eco-remediation-row eco-remediation-status">
+            <span class="eco-repair-status" data-tone="${statusTone || 'neutral'}">
+              ${completed ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>' : ''}
+              ${maintenanceDisplayText(status)}
+            </span>
+            ${task.updated ? `<span class="eco-remediation-detail">Updated ${maintenanceDisplayText(task.updated)}</span>` : ''}
+          </div>
+        </section>
+        <section>
+          <h3>Worker remarks</h3>
+          <p class="eco-remediation-detail eco-remediation-remarks">${maintenanceDisplayText(String(task.notes ?? '').trim() || 'No remarks submitted.')}</p>
+        </section>
+        <section>
+          <h3>Proof of maintenance</h3>
+          ${photoPanel}
+        </section>
+      `;
+    } else {
+      // Routine checklist item status and linked repair reference.
+      const repaired = task.repaired || isRepairDone;
+      const status = repaired && ['Needs Repair', 'Under Repair'].includes(task.status)
+        ? 'Completed' : (task.status || 'Not Started');
+      const tone = {
+        'Completed': 'success',
+        'In Progress': 'info',
+        'Under Repair': 'info',
+        'Needs Repair': 'danger',
+        'For Verification': 'warning'
+      }[status] || 'neutral';
+      const repairReference = repairReport?.id || task.linkedRepairId || report.linkedRepairId || 'Corrective Order';
+      body.innerHTML = `
         <div class="space-y-1.5">
-          <label class="block text-xs font-bold text-gray-700 dark:text-gray-300">Status:</label>
-          <div class="p-3 sm:p-3.5 rounded-2xl border ${statusBorderClass} ${statusBgClass} flex items-center justify-between shadow-xs">
-            <div class="flex items-center gap-2.5">
-              ${statusDot}
-              <span class="text-sm font-black ${statusTextClass}">${(task.repaired || isRepairDone) ? `${task.status === 'Needs Repair' || task.status === 'Under Repair' ? 'Completed' : task.status} (Repaired ✓)` : (task.status || 'Not Started')}</span>
-              ${(task.repaired || isRepairDone) ? `<span class="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 border border-emerald-400/50">Repaired via ${(repairReport && repairReport.id) || task.linkedRepairId || report.linkedRepairId || 'Corrective Order'}</span>` : ''}
+          <h4 class="text-xs font-bold">Step status</h4>
+          <div class="eco-remediation-row eco-remediation-status">
+            <div class="flex min-w-0 flex-wrap items-center gap-2">
+              <span class="eco-repair-status" data-tone="${tone}">${maintenanceDisplayText(status)}</span>
+              ${repaired ? `<span class="eco-repair-status" data-tone="neutral">Repaired via ${maintenanceDisplayText(repairReference)}</span>` : ''}
             </div>
-            <span class="text-[11px] font-mono text-gray-500 dark:text-gray-400 font-medium">Updated: ${task.updated || 'Today'}</span>
+            ${task.updated ? `<span class="eco-remediation-detail">Updated ${maintenanceDisplayText(task.updated)}</span>` : ''}
           </div>
         </div>
 
@@ -4915,37 +5199,41 @@
     // Footer actions
     const activeRepairId = (repairReport && repairReport.id) || task.linkedRepairId || null;
 
-    if (isRepReport) {
-      const isReadyForVerificationOrRework = task.verified || task.status === 'Completed' || task.repaired || isRepairDone;
-      if (!isReadyForVerificationOrRework) {
-        footer.innerHTML = `
-          <div class="flex items-center justify-between gap-3 w-full">
-            <button type="button" id="btnCancelChecklistItem" class="px-5 py-2.5 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300 font-bold text-xs rounded-2xl cursor-pointer transition-colors shrink-0">
-              Close
-            </button>
-            <div class="flex items-center gap-2 flex-1 justify-end">
-              <button type="button" disabled class="px-5 py-2.5 bg-cyan-50 dark:bg-cyan-950/50 text-cyan-700 dark:text-cyan-300 border border-cyan-400/50 rounded-2xl font-bold text-xs cursor-default flex items-center gap-2 select-none shadow-xs">
-                <span class="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></span>
-                <span>In Progress</span>
-              </button>
+    const closeButton = '<button type="button" id="btnCancelChecklistItem" class="eco-repair-button eco-remediation-close">Close</button>';
+    if (task.verified && !isNeedsRepair && !isUnderRepair) {
+      footer.innerHTML = `
+        <div class="flex flex-wrap items-center justify-between gap-2 w-full">
+          <span class="eco-repair-status eco-maintenance-pill" data-tone="success">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+            Verified
+          </span>
+          ${closeButton}
+        </div>
+      `;
+    } else if (isRepReport) {
+      const canVerify = isReportSubmittedForVerification(report) || report.status === 'Completed';
+      footer.innerHTML = canVerify ? `
+        <div class="eco-remediation-actions">
+          ${closeButton}
+          <button type="button" id="btnVerifyChecklistItem" class="eco-repair-button eco-primary-action">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 13 4 4L19 7"/></svg>
+            <span>Verify Step</span>
+          </button>
+        </div>
+      ` : `
+        <div class="eco-remediation-actions">
+          <div class="eco-remediation-waiting">
+            <span class="eco-remediation-icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l4 2"/></svg>
+            </span>
+            <div>
+              <strong>Awaiting report submission</strong>
+              <p class="eco-remediation-detail">Submit the repair report to enable verification.</p>
             </div>
           </div>
-        `;
-      } else {
-        footer.innerHTML = `
-          <div class="flex items-center justify-between gap-3 w-full">
-            <button type="button" id="btnCancelChecklistItem" class="px-5 py-2.5 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300 font-bold text-xs rounded-2xl cursor-pointer transition-colors shrink-0">
-              Close
-            </button>
-            <div class="flex items-center gap-2 flex-1 justify-end">
-              <button type="button" id="btnVerifyChecklistItem" class="px-5 py-2.5 ${task.verified ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md' : 'bg-[#10b981] hover:bg-emerald-400 text-white shadow-md'} font-bold text-xs rounded-2xl cursor-pointer transition-all flex items-center justify-center gap-1.5 shadow-sm">
-                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-                <span>${task.verified ? 'Verified (Click to Unverify)' : 'Verify Step'}</span>
-              </button>
-            </div>
-          </div>
-        `;
-      }
+          ${closeButton}
+        </div>
+      `;
     } else if (isUnderRepair && activeRepairId) {
       footer.innerHTML = `
         <div class="flex items-center justify-between gap-3 w-full">
@@ -4975,7 +5263,7 @@
         </div>
       `;
     } else {
-      const isItemReadyForReview = task.verified || task.status === 'Completed' || task.repaired || isRepairDone || report.status === 'For Verification' || report.status === 'Completed';
+      const isItemReadyForReview = isReportSubmittedForVerification(report) || report.status === 'Completed';
       if (!isItemReadyForReview) {
         footer.innerHTML = `
           <div class="flex items-center justify-between gap-3 w-full">
@@ -4997,9 +5285,9 @@
               Close
             </button>
             <div class="flex items-center gap-2 flex-1 justify-end">
-              <button type="button" id="btnVerifyChecklistItem" class="px-5 py-2.5 ${task.verified ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md' : 'bg-[#10b981] hover:bg-emerald-400 text-white shadow-md'} font-bold text-xs rounded-2xl cursor-pointer transition-all flex items-center justify-center gap-1.5 shadow-sm">
+              <button type="button" id="btnVerifyChecklistItem" class="eco-repair-button eco-primary-action flex items-center justify-center gap-1.5">
                 <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-                <span>${task.verified ? 'Verified (Click to Unverify)' : 'Verify Checklist Item'}</span>
+                <span>Verify Checklist Item</span>
               </button>
             </div>
           </div>
@@ -5071,85 +5359,91 @@
     }
 
     // Verify Action for standard and completed repair items
-    document.getElementById('btnVerifyChecklistItem')?.addEventListener('click', async () => {
-      task.verified = !task.verified;
-      if (task.verified) {
-        task.status = 'Completed';
-        task.repaired = true;
-        task.verifiedAt = new Date().toISOString();
-        if (!report.timeline) report.timeline = [];
-        report.timeline.unshift({ title: `Task "${task.name}" verified by Admin`, time: 'Just now', done: true, by: 'Admin' });
-      }
+    const verifyButton = document.getElementById('btnVerifyChecklistItem');
+    verifyButton?.addEventListener('click', async () => {
+      if (verifyButton.disabled || task.verified) return;
+      verifyButton.disabled = true;
+      task.verified = true;
+      task.status = 'Completed';
+      task.repaired = true;
+      task.verifiedAt = new Date().toISOString();
+      if (!report.timeline) report.timeline = [];
+      report.timeline.unshift({ title: `Task "${task.name}" verified by Admin`, time: 'Just now', done: true, by: 'Admin' });
       task.updated = 'Just now';
 
-      // If child repairReport exists, synchronize its verification status
-      if (repairReport && task.verified) {
-        repairReport.status = 'Completed';
-        repairReport.verified = true;
-        if (Array.isArray(repairReport.tasks)) {
-          repairReport.tasks.forEach(rt => {
-            rt.status = 'Completed';
-            rt.verified = true;
-            if (!rt.verifiedAt) rt.verifiedAt = new Date().toISOString();
+      try {
+        // If child repairReport exists, synchronize its verification status
+        if (repairReport) {
+          repairReport.status = 'Completed';
+          repairReport.verified = true;
+          if (Array.isArray(repairReport.tasks)) {
+            repairReport.tasks.forEach(rt => {
+              rt.status = 'Completed';
+              rt.verified = true;
+              if (!rt.verifiedAt) rt.verifiedAt = new Date().toISOString();
+            });
+          }
+          if (!repairReport.timeline) repairReport.timeline = [];
+          repairReport.timeline.unshift({
+            title: `Repair ${repairReport.id} verified & signed off by Admin`,
+            time: 'Just now',
+            done: true,
+            by: 'Admin'
           });
+          await saveReports(reportsList, repairReport);
         }
-        if (!repairReport.timeline) repairReport.timeline = [];
-        repairReport.timeline.unshift({
-          title: `Repair ${repairReport.id} verified & signed off by Admin`,
-          time: 'Just now',
-          done: true,
-          by: 'Admin'
-        });
-        await saveReports(reportsList, repairReport);
-      }
 
-      // Update overall report status
-      if (isRepReport) {
-        const repAllDone = report.tasks.every(t => t.status === 'Completed' || t.repaired);
-        const repAllVerified = report.tasks.every(t => (t.status === 'Completed' || t.repaired) && t.verified);
-        if (repAllVerified || repAllDone) report.status = 'Completed';
-        else if (report.tasks.some(t => t.status === 'In Progress' || t.status === 'Completed')) report.status = 'In Progress';
-        else report.status = 'Pending';
-
-        if (report.parentReportId || report.linkedParentId) {
-          const pRep = findReportById(reportsList, report.parentReportId || report.linkedParentId);
-          if (pRep && Array.isArray(pRep.tasks)) {
-            const pTask = pRep.tasks.find(pt => pt.linkedRepairId === report.id || (report.issue?.component && isComponentInIssue(pt.name, report.issue)));
-            if (pTask) {
-              if (repAllDone) pTask.repaired = true;
-              if (repAllVerified) pTask.verified = true;
-            }
-          }
-        }
-      } else {
-        const allDone = report.tasks.every(t => t.status === 'Completed' || t.repaired);
-        const allVerified = report.tasks.every(t => (t.status === 'Completed' || t.repaired) && t.verified);
-        const hasErr = report.tasks.some(t => t.status === 'Needs Repair' && !t.repaired);
-        if (hasErr) {
-          report.status = 'Needs Repair';
-          const errTask = report.tasks.find(t => t.status === 'Needs Repair' && !t.repaired);
-          if (errTask) {
-            report.issue = {
-              component: errTask.name,
-              notes: errTask.notes || 'Maintenance defect requires repair.'
-            };
-          }
-        } else {
-          if (report.issue && !report.issue.repaired) {
-            report.issue.repaired = true;
-            report.issue.status = 'Repaired';
-          }
-          if (allVerified) report.status = 'Completed';
-          else if (allDone) report.status = 'For Verification';
+        // Update overall report status
+        if (isRepReport) {
+          const repAllDone = report.tasks.every(t => t.status === 'Completed' || t.repaired);
+          const repAllVerified = report.tasks.every(t => (t.status === 'Completed' || t.repaired) && t.verified);
+          if (repAllVerified || repAllDone) report.status = 'Completed';
           else if (report.tasks.some(t => t.status === 'In Progress' || t.status === 'Completed')) report.status = 'In Progress';
           else report.status = 'Pending';
-        }
-      }
 
-      await saveReports(getReports(), report);
-      renderDetailModalContent();
-      renderChecklistItemModalContent(report, task);
-      showToast(task.verified ? 'Task Completed' : 'Task Incomplete', `"${task.name}" is now marked as ${task.verified ? 'Completed' : 'Incomplete'}.`, task.verified ? 'success' : 'info');
+          if (report.parentReportId || report.linkedParentId) {
+            const pRep = findReportById(reportsList, report.parentReportId || report.linkedParentId);
+            if (pRep && Array.isArray(pRep.tasks)) {
+              const pTask = pRep.tasks.find(pt => pt.linkedRepairId === report.id || (report.issue?.component && isComponentInIssue(pt.name, report.issue)));
+              if (pTask) {
+                if (repAllDone) pTask.repaired = true;
+                if (repAllVerified) pTask.verified = true;
+              }
+            }
+          }
+        } else {
+          const allDone = report.tasks.every(t => t.status === 'Completed' || t.repaired);
+          const allVerified = report.tasks.every(t => (t.status === 'Completed' || t.repaired) && t.verified);
+          const hasErr = report.tasks.some(t => t.status === 'Needs Repair' && !t.repaired);
+          if (hasErr) {
+            report.status = 'Needs Repair';
+            const errTask = report.tasks.find(t => t.status === 'Needs Repair' && !t.repaired);
+            if (errTask) {
+              report.issue = {
+                component: errTask.name,
+                notes: errTask.notes || 'Maintenance defect requires repair.'
+              };
+            }
+          } else {
+            if (report.issue && !report.issue.repaired) {
+              report.issue.repaired = true;
+              report.issue.status = 'Repaired';
+            }
+            if (allVerified) report.status = 'Completed';
+            else if (allDone) report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
+            else if (report.tasks.some(t => t.status === 'In Progress' || t.status === 'Completed')) report.status = 'In Progress';
+            else report.status = 'Pending';
+          }
+        }
+
+        await saveReports(getReports(), report);
+        renderDetailModalContent();
+        renderCurrentChecklistItemModal();
+        showToast('Task Completed', `"${task.name}" is now marked as Completed.`, 'success');
+      } catch {
+        // saveReports presents the error. Restore the action from the saved state.
+        renderCurrentChecklistItemModal();
+      }
     });
   }
 
@@ -5254,12 +5548,12 @@
     }
 
     // 3. Pressure Control / Air Pressure / PS-802 / Pneumatics
-    if (raw.includes('pressure') || raw.includes('ps-') || raw.includes('baro') || raw.includes('pneumatic')) {
+    if (raw.includes('rotation') || raw.includes('rpm') || raw.includes('airflow')) {
       return [
         'Safety Isolation & Lock Out Power Circuit',
-        'Inspect Pressure Control Tubing, Pneumatic Ports, and Cable Harness',
-        'Clean Port & Replace Damaged Pressure Control Module (PS-802)',
-        'Calibrate Zero-Point Offset & Verify Pressure Telemetry Under Operation'
+        'Inspect the rotating assembly, supports, and sensor connection',
+        'Clean the disc and optical gap; inspect the monitoring device',
+        'Verify sensor pulse detection during operation'
       ];
     }
 
@@ -5321,8 +5615,8 @@
     if (raw.includes('temperature') || raw.includes('temp') || raw.includes('thermal') || raw.includes('thermistor')) {
       return `Diagnose and repair temperature monitoring malfunction for ${componentName}. Inspect wiring harness, test control resistance/continuity, replace defective thermal probe if required, and calibrate control telemetry.`;
     }
-    if (raw.includes('pressure') || raw.includes('ps-') || raw.includes('baro')) {
-      return `Diagnose and service air pressure control system (${componentName}). Clean pneumatic sensing lines, replace damaged pressure transducer, calibrate zero-point offset, and verify live pressure telemetry logs.`;
+    if (raw.includes('rotation') || raw.includes('rpm') || raw.includes('airflow')) {
+      return `Inspect the rotation monitoring assembly (${componentName}). Check that the shaft turns freely, clean the disc and optical gap, inspect the connection, and confirm the sensor detects wheel rotation.`;
     }
     if (raw.includes('energy') || raw.includes('power') || raw.includes('current') || raw.includes('voltage')) {
       return `Inspect and repair energy monitoring circuitry for ${componentName}. Test current transformer (CT) clamp, check terminal connections, replace faulty metering control, and verify electrical telemetry readings.`;
@@ -5361,7 +5655,7 @@
       repairTask = report.tasks.find(t => t.status === 'Needs Repair');
     }
 
-    const repairComponentName = repairTask?.name || report.issue?.component || 'Air Pressure Control (PS-802)';
+    const repairComponentName = repairTask?.name || report.issue?.component || 'Monitoring device';
     const repairNotes = repairTask?.notes || report.issue?.notes || '';
 
     activeRepairPriority = 'Critical';
@@ -5431,7 +5725,7 @@
     _lastRenderedTaskId = repairTask?.id || null;
 
     const rawIssueComp = typeof report.issue?.component === 'string' ? report.issue.component.split(/[,;/]+/)[0].trim() : '';
-    const repairComponentName = repairTask?.name || rawIssueComp || 'Air Pressure Control (PS-802)';
+    const repairComponentName = repairTask?.name || rawIssueComp || 'Monitoring device';
 
     let repairNotes = repairTask?.notes?.trim() || '';
     if (!repairNotes && typeof report.issue?.notes === 'string') {
@@ -5969,7 +6263,7 @@
       (report.issue && report.issue.component ? report.tasks.find(t => isComponentInIssue(t.name, report.issue)) : null) ||
       report.tasks.find(t => t.status === 'Needs Repair' || t.status === 'Under Repair')
     ) : null;
-    const repairComponentName = repairTask?.name || report.issue?.component || 'Air Pressure Control (PS-802)';
+    const repairComponentName = repairTask?.name || report.issue?.component || 'Monitoring device';
     const repairNotes = repairTask?.notes || report.issue?.notes || 'Component defect detected during inspection requiring repair/replacement.';
 
     const titleInput = document.getElementById('repairTaskTitleInput');
@@ -6300,7 +6594,7 @@
           </div>
           <div class="truncate">
             <span class="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider block">Target Aircon & Control Unit</span>
-            <span class="text-xs font-bold text-gray-800 dark:text-white truncate block">Control: ${report.airconId} • ${report.room}</span>
+            <span class="text-xs font-bold text-gray-800 dark:text-white truncate block">${maintenanceDeviceLabel()}: ${maintenanceDisplayText(maintenanceReportEquipment(report).controllerName)} • ${maintenanceDisplayText(maintenanceReportEquipment(report).location)}</span>
           </div>
         </div>
         ${parentId ? `
@@ -6625,7 +6919,7 @@
   function cycleRepairStepStatus(reportId, taskId) {
     const reports = getReports();
     const report = findReportById(reports, reportId);
-    if (!report || !Array.isArray(report.tasks)) return;
+    if (!report || !Array.isArray(report.tasks) || isRepairReportDone(report) || isReportSubmittedForVerification(report)) return;
     const task = report.tasks.find(t => String(t.id) === String(taskId) || t.id == taskId);
     if (!task) return;
 
@@ -6636,7 +6930,7 @@
     task.updated = 'Just now';
     const allDone = report.tasks.every(t => t.status === 'Completed');
     if (allDone) {
-      report.status = 'For Verification';
+      report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
       report.verified = false;
     } else if (report.tasks.some(t => t.status === 'In Progress' || t.status === 'Completed')) {
       report.status = 'In Progress';
@@ -6666,12 +6960,13 @@
   // ===================================================================
 
   function renderRepDetailModalContent(report, aircon) {
+    const equipment = maintenanceReportEquipment(report, aircon);
     const header = document.getElementById('ecoDetailModalHeader');
     const body = document.getElementById('ecoDetailModalBody');
     if (!header || !body) return;
 
     const totalTasks = Array.isArray(report.tasks) ? report.tasks.length : 0;
-    const completedTasks = totalTasks > 0 ? report.tasks.filter(t => t.status === 'Completed' || t.repaired).length : 0;
+    const completedTasks = totalTasks > 0 ? report.tasks.filter(isMaintenanceTaskComplete).length : 0;
     const pct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
     const allDone = totalTasks > 0 && completedTasks === totalTasks;
 
@@ -6679,58 +6974,23 @@
     const defectComp = report.issue?.component || (report.tasks && report.tasks[0]?.name) || 'Defective AC Component';
     const defectNotes = report.description || report.issue?.notes || 'Hardware defect diagnosed during inspection.';
 
-    let statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-cyan-100 dark:bg-cyan-950/80 text-cyan-900 dark:text-cyan-300 border border-cyan-400 dark:border-cyan-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0"></span>In Progress</span>`;
-    if (report.status === 'Completed' || report.status === 'Verified' || report.verified) {
-      statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-900 dark:text-emerald-300 border border-emerald-400 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0"></span>Completed ✓</span>`;
-    } else if (allDone || report.status === 'For Verification' || report.status === 'Awaiting Admin Verification') {
-      statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-purple-100 dark:bg-purple-950/80 text-purple-900 dark:text-purple-200 border border-purple-400 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-purple-600 animate-pulse shrink-0"></span>For Verification</span>`;
-    }
-
-    if (header.parentElement) {
-      header.parentElement.className = "bg-white dark:bg-[#0c1328] border-2 border-rose-500/50 rounded-3xl w-full max-w-[980px] max-h-[90vh] shadow-2xl flex flex-col overflow-hidden text-gray-800 dark:text-gray-100 transition-colors";
-    }
-    header.className = "bg-white dark:bg-gradient-to-r dark:from-[#2d0f18] dark:to-[#0c1328] px-6 py-4 border-b border-rose-500/30 flex items-center justify-between shrink-0 transition-colors";
+    const phase = maintenanceReportPhase(report);
+    const isLocked = isRepairReportDone(report) || isReportSubmittedForVerification(report);
+    const phaseTone = phase === 'Completed' ? 'success' : ['Ready to submit', 'For Verification'].includes(phase) ? 'warning' : 'info';
+    if (header.parentElement) header.parentElement.className = 'eco-repair-dialog';
+    header.className = 'eco-repair-header';
     header.innerHTML = `
-      <div class="flex items-center gap-3">
-        <div class="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-500 dark:text-rose-400 shadow-sm shrink-0">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.3">
-            <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-          </svg>
-        </div>
-        <div>
-          <div class="flex items-center flex-wrap gap-2">
-            <h2 class="text-lg font-bold text-gray-900 dark:text-white tracking-tight">Corrective Repair Order</h2>
-            <span class="font-mono font-black text-rose-500 dark:text-rose-400">${report.id}</span>
-            ${statusBadge}
-            ${parentId ? `
-              <button type="button" class="btn-goto-parent group inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-full cursor-pointer transition-all shadow-xs" data-id="${parentId}" title="View origin report ${parentId}">
-                <span class="opacity-80 font-normal">Dispatched from</span>
-                <span class="font-mono font-bold tracking-tight">${parentId}</span>
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 opacity-80 group-hover:opacity-100 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform">
-                  <path d="M7 17L17 7"></path>
-                  <polyline points="7 7 17 7 17 17"></polyline>
-                </svg>
-              </button>
-            ` : ''}
-          </div>
-          <p class="text-xs font-medium text-gray-500 dark:text-gray-400">Target: ${report.airconId} — ${report.room} • Created: ${report.createdDate}</p>
-        </div>
+      <div class="eco-repair-heading">
+        <h2>Corrective repair order <span>${maintenanceDisplayText(report.id)}</span></h2>
+        <span class="eco-repair-status" data-tone="${phaseTone}">${maintenanceDisplayText(phase)}</span>
+        <p>${maintenanceDisplayText(equipment.controllerName)} • ${maintenanceDisplayText(equipment.location)}</p>
+        ${parentId ? `<button type="button" class="btn-goto-parent eco-repair-link" data-id="${maintenanceDisplayText(parentId)}">Parent report ${maintenanceDisplayText(parentId)} ↗</button>` : ''}
       </div>
-      <div class="flex items-center gap-2">
-        ${!((allDone || (totalTasks > 0 && completedTasks >= totalTasks) || String(report.status || '').toLowerCase().includes('complete') || String(report.status || '').toLowerCase().includes('verif') || report.verified)) ? `
-        <button type="button" onclick="window.EcoTrackMaintenance.openEditRepairTaskModal('${report.id}')"
-          class="px-3.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-500/15 hover:bg-rose-500 hover:text-white dark:hover:bg-rose-500 dark:hover:text-white text-rose-700 dark:text-rose-300 border border-rose-400/50 flex items-center gap-1.5 text-xs font-bold transition-all cursor-pointer shadow-xs">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-          Edit Repair Order
-        </button>
-        ` : ''}
-        <button id="btnCloseDetailModal"
-          class="w-8 h-8 rounded-full bg-gray-100 dark:bg-white/15 hover:bg-rose-50 dark:hover:bg-rose-500/30 text-gray-600 dark:text-white hover:text-rose-600 border border-gray-200 dark:border-white/25 flex items-center justify-center text-sm font-bold transition-all cursor-pointer shadow-sm">
-          ✕
-        </button>
-      </div>
-    `;
-
+      <div class="eco-repair-actions">
+        ${!isLocked ? '<button type="button" id="btnEditRepOrder" class="eco-repair-button">Edit order</button>' : ''}
+        <button type="button" id="btnCloseDetailModal" class="eco-repair-button" aria-label="Close repair order">✕</button>
+      </div>`;
+    document.getElementById('btnEditRepOrder')?.addEventListener('click', () => window.EcoTrackMaintenance.openEditRepairTaskModal(report.id));
     document.getElementById('btnCloseDetailModal')?.addEventListener('click', closeDetailModal);
     header.querySelectorAll('.btn-goto-parent').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -6797,184 +7057,50 @@
 
     const defectPhotos = Array.from(_defectPhotoSet);
 
+    body.classList.add('eco-repair-body');
     body.innerHTML = `
-      <!-- 1. DEFECT & DIAGNOSTIC BANNER (THE WHY) -->
-      <div class="bg-gradient-to-r from-rose-500/10 via-rose-500/5 to-transparent dark:bg-gradient-to-r dark:from-rose-950/40 dark:to-transparent border-2 border-rose-500/40 rounded-2xl p-4 shadow-sm space-y-3">
-        <div class="flex items-start justify-between gap-3">
-          <div>
-            <div class="flex items-center gap-2">
-              <span class="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-500 text-white shadow-xs">Defect Flagged</span>
-              <span class="text-sm font-black text-gray-900 dark:text-white">${defectComp}</span>
-            </div>
-            <p class="text-xs font-medium text-gray-700 dark:text-gray-300 mt-2 leading-relaxed bg-white/70 dark:bg-slate-900/60 p-3 rounded-xl border border-rose-500/20">
-              ${defectNotes}
-            </p>
+      <section class="eco-repair-panel eco-repair-issue">
+        <div class="eco-repair-section-heading"><h3>Reported issue</h3>${defectPhotos.length ? `<button type="button" id="btnOpenDefectGallery" class="eco-repair-button">View ${defectPhotos.length} ${defectPhotos.length === 1 ? 'photo' : 'photos'}</button>` : ''}</div>
+        <p>${maintenanceDisplayText(defectComp)}</p>
+        <p class="eco-repair-secondary">${maintenanceDisplayText(defectNotes)}</p>
+        ${defectPhotos.length ? `
+          <div id="defectPhotosCompactContainer" class="${window._defectEvidenceExpanded ? 'hidden' : 'flex'} eco-repair-photos">
+            ${defectPhotos.slice(0,4).map((url,i) => `<button type="button" class="defect-evidence-thumbnail" data-idx="${i}" aria-label="View defect photo ${i+1}"><img src="${maintenanceDisplayText(url)}" alt="Defect evidence ${i+1}" loading="lazy"></button>`).join('')}
           </div>
-          <div class="text-right shrink-0">
-            <span class="text-[10px] uppercase font-bold text-gray-400 block">Priority</span>
-            <span class="px-2.5 py-0.5 text-xs font-bold rounded-full ${report.priority === 'Critical' ? 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-400/50' : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-400/50'}">
-              ${report.priority || 'Critical'}
-            </span>
+          <div id="defectPhotosGridContainer" class="${window._defectEvidenceExpanded ? 'grid' : 'hidden'} eco-repair-photos">
+            ${defectPhotos.map((url,i) => `<button type="button" class="defect-evidence-thumbnail" data-idx="${i}" aria-label="View defect photo ${i+1}"><img src="${maintenanceDisplayText(url)}" alt="Defect evidence ${i+1}" loading="lazy"></button>`).join('')}
           </div>
-        </div>
-
-        ${defectPhotos.length > 0 ? `
-          <div class="bg-rose-500/5 dark:bg-rose-950/20 border border-rose-500/30 rounded-2xl p-3 space-y-2">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <span class="text-[10px] uppercase font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5">
-                  <svg class="w-3.5 h-3.5 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                  Defect Proof Evidence
-                </span>
-                <span class="px-2 py-0.5 text-[10px] font-mono font-bold rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-300 border border-rose-500/30">
-                  ${defectPhotos.length} ${defectPhotos.length === 1 ? 'Photo' : 'Photos'}
-                </span>
-              </div>
-              <div class="flex items-center gap-1.5">
-                ${defectPhotos.length > 4 ? `
-                  <button type="button" id="btnToggleDefectPhotosView" class="px-2 py-0.5 text-[10px] font-bold rounded-md bg-white dark:bg-slate-900 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-300 border border-rose-400/40 transition-all flex items-center gap-1 cursor-pointer shadow-2xs" title="Toggle between compact row and full grid">
-                    <span id="txtToggleDefectPhotos">${window._defectEvidenceExpanded ? 'Minimize ▴' : 'Expand All ▾'}</span>
-                  </button>
-                ` : ''}
-                <button type="button" id="btnOpenDefectGallery" class="px-2 py-0.5 text-[10px] font-bold rounded-md bg-rose-600 hover:bg-rose-500 text-white transition-all flex items-center gap-1 cursor-pointer shadow-xs" title="Open Fullscreen Gallery">
-                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"/></svg>
-                  <span>Gallery</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- Minimized Strip View (Default when > 4 photos, saves ~140px vertical space) -->
-            <div id="defectPhotosCompactContainer" class="${(defectPhotos.length > 4 && !window._defectEvidenceExpanded) ? 'flex' : 'hidden'} items-center gap-2 overflow-x-auto eco-slim-scrollbar py-1 pb-1.5">
-              ${defectPhotos.slice(0, 8).map((url, i) => `
-                <div class="defect-evidence-thumbnail w-16 h-16 sm:w-20 sm:h-20 rounded-xl overflow-hidden border-2 border-rose-400/60 shadow-xs cursor-pointer hover:scale-105 hover:border-rose-500 transition-all relative group bg-black/20 shrink-0" data-idx="${i}" title="View proof evidence ${i + 1} of ${defectPhotos.length}">
-                  <img src="${url}" class="w-full h-full object-cover" alt="Defect Photo ${i + 1}" loading="lazy" onerror="window.handlePhotoLoadError ? window.handlePhotoLoadError(this, ${i + 1}) : (this.onerror=null, this.parentElement.innerHTML='<div class=\\'w-full h-full flex items-center justify-center text-[9px] text-rose-400\\'>Photo</div>');">
-                  <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold gap-1">
-                    <span>🔍</span>
-                    <span class="text-[9px]">${i + 1}</span>
-                  </div>
-                  <span class="absolute bottom-1 right-1 px-1 py-0.2 text-[8px] font-mono font-bold rounded bg-black/70 text-white backdrop-blur-xs">${i + 1}</span>
-                </div>
-              `).join('')}
-              ${defectPhotos.length > 8 ? `
-                <div id="btnDefectPhotosMorePill" class="w-16 h-16 sm:w-20 sm:h-20 rounded-xl border-2 border-dashed border-rose-400/60 hover:border-rose-500 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-300 flex flex-col items-center justify-center cursor-pointer transition-all shrink-0 p-1 text-center shadow-xs" title="View all ${defectPhotos.length} photos">
-                  <span class="text-xs font-black">+${defectPhotos.length - 8}</span>
-                  <span class="text-[9px] font-bold">More</span>
-                </div>
-              ` : ''}
-            </div>
-
-            <!-- Expanded Grid View -->
-            <div id="defectPhotosGridContainer" class="${(defectPhotos.length <= 4 || window._defectEvidenceExpanded) ? 'grid' : 'hidden'} grid-cols-4 sm:grid-cols-6 gap-2">
-              ${defectPhotos.map((url, i) => `
-                <div class="defect-evidence-thumbnail w-full aspect-square rounded-xl overflow-hidden border-2 border-rose-400/60 shadow-xs cursor-pointer hover:scale-105 hover:border-rose-500 transition-all relative group bg-black/20" data-idx="${i}" title="View proof evidence ${i + 1} of ${defectPhotos.length}">
-                  <img src="${url}" class="w-full h-full object-cover" alt="Defect Photo ${i + 1}" loading="lazy" onerror="window.handlePhotoLoadError ? window.handlePhotoLoadError(this, ${i + 1}) : (this.onerror=null, this.parentElement.innerHTML='<div class=\\'w-full h-full flex items-center justify-center text-[9px] text-rose-400\\'>Photo</div>');">
-                  <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-xs font-bold gap-1">
-                    <span>🔍</span>
-                    <span class="text-[9px]">${i + 1}</span>
-                  </div>
-                  <span class="absolute bottom-1 right-1 px-1 py-0.2 text-[8px] font-mono font-bold rounded bg-black/70 text-white backdrop-blur-xs">${i + 1}</span>
-                </div>
-              `).join('')}
-            </div>
-          </div>
+          ${defectPhotos.length > 4 ? `<button type="button" id="btnToggleDefectPhotosView" class="eco-repair-link"><span id="txtToggleDefectPhotos">${window._defectEvidenceExpanded ? 'Show fewer photos' : 'Show all photos'}</span></button>` : ''}
         ` : ''}
-      </div>
-
+      </section>
       <!-- 2. TARGET UNIT & ASSIGNMENT STRIP (THE WHERE) -->
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-        <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-xs">
-          <span class="text-[10px] text-gray-400 font-bold uppercase block">Unit</span>
-          <span class="text-xs font-bold text-gray-900 dark:text-white truncate block">${report.airconId}</span>
-          <span class="text-[10px] text-gray-500 dark:text-gray-400 block truncate">📍 ${report.room}</span>
-        </div>
-        <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-xs">
-          <span class="text-[10px] text-gray-400 font-bold uppercase block">Aircon Type</span>
-          <span class="text-xs font-bold text-rose-600 dark:text-rose-400 truncate block">${report.airconType || aircon.brand || 'Split Type'}</span>
-          <span class="text-[10px] text-gray-500 dark:text-gray-400 block truncate">${aircon.state || 'Operational'}</span>
-        </div>
-        <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-xs">
-          <span class="text-[10px] text-gray-400 font-bold uppercase block">Assigned Specialist</span>
-          <span class="text-xs font-bold text-gray-900 dark:text-white truncate block">${report.staffName || 'Unassigned'}</span>
-          <span class="text-[10px] text-rose-500 font-semibold block truncate">Due: ${report.dueDate || 'ASAP'}</span>
-        </div>
+      <div class="eco-repair-metadata">
+        <div class="eco-repair-panel"><span class="eco-repair-label">AC device</span><strong>${maintenanceDisplayText(equipment.controllerName)}</strong><p>${maintenanceDisplayText(equipment.location)}</p></div>
+        <div class="eco-repair-panel"><span class="eco-repair-label">Aircon type</span><strong>${maintenanceDisplayText(equipment.airconType)}</strong><p>${maintenanceDisplayText(aircon.state || 'Unavailable')}</p></div>
+        <div class="eco-repair-panel"><span class="eco-repair-label">Assigned technician</span><strong>${maintenanceDisplayText(report.staffName || 'Unassigned')}</strong><p>Due ${maintenanceDisplayText(report.dueDate || 'ASAP')}</p></div>
       </div>
-
       <!-- 3. REMEDIATION CHECKLIST STEPS (THE HOW) -->
-      <div class="bg-white dark:bg-[#0c1426] border-2 border-rose-500/30 rounded-2xl p-4 shadow-sm space-y-3">
-        <div class="flex items-center justify-between">
-          <div>
-            <h3 class="text-xs font-black uppercase tracking-wider text-gray-800 dark:text-gray-200 flex items-center gap-2">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" class="text-rose-500"><polyline points="9 11 12 14 22 4"></polyline><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
-              Step-by-Step Remediation Checklist
-            </h3>
-            <p class="text-[11px] text-gray-500 dark:text-gray-400">Click any step status pill to update completion progress</p>
-          </div>
-          <span class="px-2.5 py-1 text-xs font-mono font-bold rounded-lg ${allDone ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'}">
-            ${completedTasks}/${totalTasks} (${pct}%)
-          </span>
-        </div>
-
-        <!-- Progress Bar -->
-        <div class="w-full bg-gray-200 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
-          <div class="h-full bg-gradient-to-r from-rose-500 to-emerald-500 rounded-full transition-all duration-300" style="width: ${pct}%"></div>
-        </div>
-
-        <!-- Steps List -->
-        <div class="space-y-2 pt-1">
-          ${(report.tasks || []).map((t, idx) => {
-            const isDone = t.status === 'Completed' || t.repaired;
-            const isInProg = t.status === 'In Progress';
-            return `
-              <div class="remediation-step-item group flex items-center justify-between gap-3 p-3 bg-gray-50 dark:bg-slate-900/90 hover:bg-rose-50/40 dark:hover:bg-slate-800/80 border border-gray-200 dark:border-white/10 hover:border-rose-500/40 rounded-xl transition-all cursor-pointer shadow-xs" data-step-id="${t.id}" data-step-name="${encodeURIComponent(t.name)}" title="Click to view step details & verify">
-                <div class="flex items-center gap-2.5 min-w-0">
-                  <span class="checklist-step-badge w-6 h-6 rounded-md ${isDone ? 'badge-emerald bg-emerald-500 text-white' : (isInProg ? 'badge-cyan bg-cyan-600 text-white' : 'badge-rose bg-rose-600 text-white')} font-black text-xs flex items-center justify-center shrink-0 shadow-xs">
-                    ${isDone ? '✓' : (idx + 1)}
-                  </span>
-                  <div class="min-w-0">
-                    <div class="flex items-center gap-2">
-                      <span class="text-xs font-bold text-gray-800 dark:text-white group-hover:text-rose-600 dark:group-hover:text-rose-400 transition-colors block truncate ${isDone ? 'line-through text-gray-400 dark:text-gray-500' : ''}">${t.name}</span>
-                      ${t.verified ? `<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[9px] font-bold rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/40 shrink-0">✓ Verified</span>` : ''}
-                    </div>
-                    ${t.notes ? `<span class="text-[10px] text-gray-500 block truncate">${t.notes}</span>` : ''}
-                  </div>
-                </div>
-                <div class="flex items-center gap-2 shrink-0">
-                  <button type="button" class="btn-rep-cycle-step px-3 py-1 rounded-full text-xs font-bold shrink-0 cursor-pointer transition-all shadow-xs ${isDone ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-400' : (isInProg ? 'bg-cyan-100 dark:bg-cyan-950/80 text-cyan-800 dark:text-cyan-300 border border-cyan-400 animate-pulse' : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-slate-700')}" data-step-id="${t.id}" title="Toggle status">
-                    ${isDone ? 'Completed ✓' : (isInProg ? 'In Progress ⏳' : 'Not Started')}
-                  </button>
-                  <svg class="w-4 h-4 text-gray-400 group-hover:text-rose-500 group-hover:translate-x-0.5 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
-                </div>
-              </div>
-            `;
+      <section class="eco-repair-panel">
+        <div class="eco-repair-section-heading"><h3>Repair checklist</h3><span>${completedTasks} of ${totalTasks} done · ${pct}%</span></div>
+        <div class="eco-repair-progress" role="progressbar" aria-label="Repair checklist" aria-valuemin="0" aria-valuemax="${totalTasks || 1}" aria-valuenow="${completedTasks}"><div style="width:${pct}%"></div></div>
+        <div class="eco-repair-steps">
+          ${(report.tasks || []).map((t,idx) => {
+            const done = isMaintenanceTaskComplete(t);
+            return `<div class="remediation-step-item eco-repair-step" role="button" tabindex="0" data-step-id="${maintenanceDisplayText(t.id)}" data-step-name="${encodeURIComponent(t.name)}" aria-label="View ${maintenanceDisplayText(t.name)}">
+              <span class="eco-repair-step-index" data-done="${done}">${done ? '✓' : idx+1}</span>
+              <div class="eco-repair-step-copy"><strong>${maintenanceDisplayText(t.name)}</strong>${t.notes ? `<p>${maintenanceDisplayText(t.notes)}</p>` : ''}</div>
+              <button type="button" class="btn-rep-cycle-step eco-repair-status" data-tone="${done ? 'success' : 'info'}" data-step-id="${maintenanceDisplayText(t.id)}" aria-label="Change status of ${maintenanceDisplayText(t.name)}" ${isLocked ? 'disabled' : ''}><span class="eco-repair-status" data-tone="${done ? 'success' : 'info'}">${done ? 'Done' : maintenanceDisplayText(t.status || 'Not Started')}</span></button>
+              <span aria-hidden="true">›</span>
+            </div>`;
           }).join('')}
         </div>
-      </div>
+      </section>
+      <footer class="eco-repair-footer">
+        <p role="status">${phase === 'Completed' ? 'Repair approved by administrator.' : phase === 'For Verification' ? 'Submitted by technician. Waiting for administrator verification.' : allDone ? 'Checklist complete. Awaiting technician submission.' : 'Save each step, then submit the completed repair from the mobile app.'}</p>
+        ${phase === 'For Verification' && allDone ? '<button type="button" id="btnVerifyRepOrder" class="eco-repair-button eco-repair-primary">Verify repair</button>' : `<span class="eco-repair-status" data-tone="${phaseTone}">${maintenanceDisplayText(phase)}</span>`}
+      </footer>`;
 
-      <!-- 4. ACTION BAR & VERIFICATION -->
-      <div class="flex items-center justify-between pt-2">
-        <span class="text-xs font-medium text-gray-500 dark:text-gray-400">
-          ${allDone ? '🎉 All repair steps completed! Ready to verify and close order.' : 'Work in progress. Update steps as repairs conclude.'}
-        </span>
-        <div class="flex items-center gap-2">
-          ${(report.status === 'Completed' || report.status === 'Verified' || report.verified) ? `
-            <div class="px-4 py-2 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-400 font-bold text-xs flex items-center gap-2 select-none shadow-xs">
-              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>Completed</span>
-            </div>
-          ` : (!allDone ? `
-            <button type="button" disabled class="px-5 py-2 rounded-xl bg-cyan-50 dark:bg-cyan-950/50 text-cyan-700 dark:text-cyan-300 border border-cyan-400/50 font-bold text-xs cursor-default flex items-center gap-2 select-none shadow-xs">
-              <span class="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></span>
-              <span>In Progress</span>
-            </button>
-          ` : `
-            <button type="button" id="btnVerifyRepOrder" class="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md shadow-emerald-600/30 border border-emerald-400 transition-all cursor-pointer flex items-center gap-1.5">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              <span>Verify Report</span>
-            </button>
-          `)}
-        </div>
-      </div>
-    `;
+    body.querySelectorAll('.remediation-step-item').forEach(row => row.addEventListener('keydown', event => { if (event.target === row && ['Enter', ' '].includes(event.key)) { event.preventDefault(); row.click(); } }));
 
     // Click step row to open detail modal
     body.querySelectorAll('.remediation-step-item').forEach((item, idx) => {
@@ -7033,125 +7159,26 @@
       openImageLightbox(defectPhotos, `Defect Evidence Gallery (1 of ${defectPhotos.length})`, 0);
     });
 
-    document.getElementById('btnVerifyRepOrder')?.addEventListener('click', async () => {
+    document.getElementById('btnVerifyRepOrder')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget;
+      if (button.disabled) return;
       const reports = getReports();
-      const r = findReportById(reports, report.id);
-      if (r) {
-        r.status = 'Completed';
-        r.verified = true;
-        if (Array.isArray(r.tasks)) {
-          r.tasks.forEach(t => {
-            t.status = 'Completed';
-            t.verified = true;
-            if (!t.verifiedAt) t.verifiedAt = new Date().toISOString();
-          });
-        }
-        safeTimelineUnshift(r.timeline, {
-          title: 'Repair report verified and signed off by supervisor',
-          time: 'Just now',
-          done: true,
-          by: 'Supervisor'
-        });
-
-        try { await saveReports(reports, r, false); }
-        catch { return; }
-
-        // Synchronize and update the linked parent maintenance report
-        const pId = r.parentReportId || r.parent_report_id || r.linkedParentId;
-        let parentRep = pId ? findReportById(reports, pId) : null;
-        if (!parentRep && r.airconId) {
-          parentRep = reports.find(pr => pr && pr.id !== r.id && (pr.id === pId || pr.linkedRepairId === r.id || (Array.isArray(pr.tasks) && pr.tasks.some(t => t.linkedRepairId === r.id))));
-        }
-
-        if (parentRep) {
-          if (Array.isArray(parentRep.tasks)) {
-            // Strictly target ONLY the parent task linked to this specific repair order
-            let targetParentTask = parentRep.tasks.find(pt => pt.linkedRepairId && String(pt.linkedRepairId).trim().toLowerCase() === String(r.id).trim().toLowerCase());
-            if (!targetParentTask && (r.parentTaskId !== undefined && r.parentTaskId !== null)) {
-              targetParentTask = parentRep.tasks.find(pt => String(pt.id) === String(r.parentTaskId));
-            }
-            if (!targetParentTask && r.parentTaskName) {
-              targetParentTask = parentRep.tasks.find(pt => String(pt.name || '').trim().toLowerCase() === String(r.parentTaskName).trim().toLowerCase());
-            }
-            if (!targetParentTask && r.issue?.component) {
-              targetParentTask = parentRep.tasks.find(pt => String(pt.name || '').trim().toLowerCase() === String(r.issue.component).trim().toLowerCase());
-            }
-
-            if (targetParentTask) {
-              targetParentTask.status = 'Completed';
-              targetParentTask.repaired = true;
-              targetParentTask.verified = true;
-              targetParentTask.linkedRepairId = r.id;
-              targetParentTask.updated = 'Just now';
-              if (!targetParentTask.verifiedAt) targetParentTask.verifiedAt = new Date().toISOString();
-            }
-          }
-
-          // Check if there are remaining unfinished tasks or child repairs
-          const hasRemainingNeedsRepair = Array.isArray(parentRep.tasks) && parentRep.tasks.some(pt => pt.status === 'Needs Repair' && !pt.repaired);
-          const hasRemainingUnderRepair = Array.isArray(parentRep.tasks) && parentRep.tasks.some(pt => {
-            const cr = getRepairReportForTask(parentRep, pt, reports);
-            if (cr && String(cr.id).toLowerCase() !== String(r.id).toLowerCase() && !isRepairReportDone(cr)) return true;
-            return pt.status === 'Under Repair' && !pt.repaired;
-          });
-          const allParentDone = Array.isArray(parentRep.tasks) && parentRep.tasks.length > 0 && parentRep.tasks.every(pt => {
-            const cr = getRepairReportForTask(parentRep, pt, reports);
-            if (cr && String(cr.id).toLowerCase() !== String(r.id).toLowerCase() && !isRepairReportDone(cr)) return false;
-            return pt.status === 'Completed' || pt.repaired;
-          });
-          const allParentVerified = allParentDone && parentRep.tasks.every(pt => pt.verified);
-
-          if (hasRemainingNeedsRepair) {
-            parentRep.status = 'Needs Repair';
-            parentRep.verified = false;
-            if (parentRep.issue) {
-              parentRep.issue.repaired = false;
-              parentRep.issue.status = 'Needs Repair';
-            }
-          } else if (hasRemainingUnderRepair) {
-            parentRep.status = 'Under Repair';
-            parentRep.verified = false;
-            if (parentRep.issue) {
-              parentRep.issue.repaired = false;
-              parentRep.issue.status = 'Under Repair';
-            }
-          } else if (allParentVerified) {
-            parentRep.status = 'Completed';
-            parentRep.verified = true;
-            if (parentRep.issue) {
-              parentRep.issue.repaired = true;
-              parentRep.issue.status = 'Repaired';
-            }
-          } else if (allParentDone) {
-            parentRep.status = 'For Verification';
-            if (parentRep.issue) {
-              parentRep.issue.repaired = true;
-              parentRep.issue.status = 'Repaired';
-            }
-          }
-
-          safeTimelineUnshift(parentRep.timeline, {
-            title: `Repair ${r.id} verified by Supervisor${hasRemainingUnderRepair ? ' (other repairs still in progress)' : ''}`,
-            time: 'Just now',
-            done: true,
-            by: 'Supervisor'
-          });
-
-          try {
-            await saveReports(reports, parentRep, false);
-          } catch (pErr) {
-            console.warn('[btnVerifyRepOrder] Parent report save notice:', pErr);
-            return;
-          }
-        }
-
-
-        closeDetailModal();
-        showToast('Report Verified', `Repair order ${r.id} verified and maintenance marked Completed!`, 'success');
+      const current = findReportById(reports, report.id);
+      if (!current || !isReportSubmittedForVerification(current) || !current.tasks?.length || !current.tasks.every(isMaintenanceTaskComplete)) return;
+      const approved = JSON.parse(JSON.stringify(current));
+      approved.status = 'Completed';
+      approved.verified = true;
+      approved.tasks.forEach(task => { task.status = 'Completed'; task.verified = true; });
+      button.disabled = true;
+      button.textContent = 'Verifying…';
+      try {
+        await saveReports(reports, approved, false);
+        renderDetailModalContent();
         refreshPageReportsView();
-        window.dispatchEvent(new Event('storage'));
-        window.dispatchEvent(new CustomEvent('ecotrack:reports-updated', { detail: _reportsCache }));
-        broadcastMaintenanceChange('REPAIR_VERIFIED');
+        showToast('Repair verified', `Repair order ${current.id} approved. The linked maintenance task has been updated.`, 'success');
+      } catch (_) {
+        button.disabled = false;
+        button.textContent = 'Verify repair';
       }
     });
   }
@@ -7185,7 +7212,8 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && modal && !modal.classList.contains('hidden')) {
+      if (e.key === 'Escape' && modal && !modal.classList.contains('hidden') &&
+          !document.getElementById('deleteReportModal')?.open) {
         closeDetailModal();
       }
     });
@@ -7199,16 +7227,8 @@
       return;
     }
 
-    const aircons = getAirconsDatabase();
-    const aircon = (aircons && aircons.length > 0)
-      ? (aircons.find(a => a.id === report.airconId || a.id === report.aircon_name || a.id === report.aircon_id) || aircons[0])
-      : {
-        id: report.airconId || 'node-1',
-        room: report.room || 'Main Campus',
-        brand: 'Split Type (Inverter)',
-        model: report.airconId || 'AC Unit',
-        state: 'Operational'
-      };
+    const aircon = findMaintenanceAircon(report) || {};
+    const equipment = maintenanceReportEquipment(report, aircon);
 
     const isRepReport = isActualRepairTask(report);
     
@@ -7219,6 +7239,8 @@
     }
 
 
+
+    document.getElementById('ecoDetailModalBody')?.classList.remove('eco-repair-body');
 
     // Locate child corrective repair reports
     const childRepairs = getChildRepairReportsFor(report, reports);
@@ -7234,9 +7256,9 @@
             t.repaired = true;
             t.verified = true;
             if (!t.verifiedAt) t.verifiedAt = new Date().toISOString();
-          } else if (tDone) {
-            t.status = 'Completed';
-            t.repaired = true;
+          } else if (isReportSubmittedForVerification(tRepair)) {
+            t.status = 'For Verification';
+            t.repaired = false;
             t.verified = false;
           } else {
             t.status = 'Under Repair';
@@ -7257,8 +7279,8 @@
     }
 
     const completedChildRepairs = childRepairs.filter(cr => isRepairReportDone(cr));
-    const activeChildRepairs = childRepairs.filter(cr => !isRepairReportDone(cr));
-    const isAllRepairsDone = childRepairs.length > 0 ? (activeChildRepairs.length === 0) : Boolean(report.issue?.repaired);
+    const activeChildRepairs = childRepairs.filter(cr => !isRepairReportDone(cr) && !isReportSubmittedForVerification(cr));
+    const isAllRepairsDone = childRepairs.length > 0 ? completedChildRepairs.length === childRepairs.length : !report.tasks?.some(t => t.linkedRepairId) && Boolean(report.issue?.repaired);
     const isAllRepairsVerified = childRepairs.length > 0 ? (childRepairs.length === completedChildRepairs.filter(cr => isRepairReportVerified(cr)).length) : Boolean(report.verified);
 
     const repairReport = activeChildRepairs[0] || completedChildRepairs[0] || getRepairReportFor(report, reports);
@@ -7270,7 +7292,7 @@
     const inProgressTasks = report.tasks ? report.tasks.filter(t => t.status === 'In Progress').length : 0;
     const notStartedTasks = report.tasks ? report.tasks.filter(t => t.status === 'Not Started').length : 0;
     const needsRepairTasks = isRepReport ? 0 : (report.tasks ? report.tasks.filter(t => t.status === 'Needs Repair' && !t.repaired).length : 0);
-    const underRepairTasks = isRepReport ? 0 : (report.tasks ? report.tasks.filter(t => (t.status === 'Under Repair' || (t.linkedRepairId && !isRepairReportDone(getRepairReportForTask(report, t, reports)))) && !t.repaired).length : 0);
+    const underRepairTasks = isRepReport ? 0 : (report.tasks ? report.tasks.filter(t => (t.status === 'Under Repair' || (t.linkedRepairId && !isRepairReportDone(getRepairReportForTask(report, t, reports)) && !isReportSubmittedForVerification(getRepairReportForTask(report, t, reports)))) && !t.repaired).length : 0);
 
     const hasActiveIssue = !isRepReport && Boolean(report.issue && !report.issue.repaired && !isRepairDone && report.issue.status !== 'Under Repair' && !repairReport);
     const hasNeedsRepair = !isRepReport && (needsRepairTasks > 0 || hasActiveIssue);
@@ -7299,7 +7321,7 @@
       }
     } else if (report.status === 'Closed') {
       report.status = 'Closed';
-    } else if (report.status === 'Completed' || report.status === 'Verified' || (report.verified && isAllTasksCompleted)) {
+    } else if (report.status === 'Completed' || report.status === 'Verified') {
       if (isAllTasksCompleted) {
         report.status = 'Completed';
         report.verified = true;
@@ -7307,15 +7329,15 @@
         report.status = 'In Progress';
       }
     } else if (isAllTasksCompleted || report.status === 'For Verification' || report.status === 'Awaiting Admin Verification') {
-      report.status = 'For Verification';
+      report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
     } else if (isRepReport) {
       report.status = 'In Progress';
     } else {
       report.status = 'In Progress';
     }
 
-    const isVerified = (report.status === 'Completed' || report.status === 'Verified' || Boolean(report.verified && isAllTasksCompleted)) && activeChildRepairs.length === 0 && underRepairTasks === 0;
-    const isReadyForVerification = !isVerified && !hasNeedsRepair && (report.status === 'For Verification' || (isAllTasksCompleted && !report.verified));
+    const isVerified = (report.status === 'Completed' || report.status === 'Verified') && activeChildRepairs.length === 0 && underRepairTasks === 0;
+    const isReadyForVerification = !isVerified && !hasNeedsRepair && isReportSubmittedForVerification(report);
 
     const repairTask = report.tasks ? (report.tasks.find(t => t.status === 'Needs Repair' && !t.repaired) || report.tasks.find(t => t.status === 'Under Repair') || report.tasks.find(t => t.repaired)) : null;
     const repairComponentName = report.issue?.component || repairTask?.name || (repairReport?.tasks?.[1]?.name ? repairReport.tasks[1].name.replace(/^Component Disassembly & Diagnostic Check:\s*/i, '') : 'Defect Component');
@@ -7326,36 +7348,34 @@
     const staffList = getStaffList();
     const assignedStaffMember = staffList.find(s => s.name === report.staffName || s.name === report.staff_name);
 
+    const detailBadge = (label, tone = 'neutral') =>
+      `<span class="eco-repair-status eco-maintenance-pill" data-tone="${tone}">${maintenanceDisplayText(label)}</span>`;
+
     // Render Header
     const header = document.getElementById('ecoDetailModalHeader');
     if (header) {
       if (header.parentElement) {
-        header.parentElement.className = "bg-white dark:bg-[#0c1328] border-2 border-gray-200 dark:border-[#10b981]/50 rounded-3xl w-full max-w-[980px] max-h-[90vh] shadow-2xl flex flex-col overflow-hidden text-gray-800 dark:text-gray-100 transition-colors";
+        header.parentElement.className = "eco-maintenance-report-dialog bg-white dark:bg-[#0c1328] border-2 border-gray-200 dark:border-[#10b981]/50 rounded-3xl w-full max-w-[980px] max-h-[90vh] shadow-2xl flex flex-col overflow-hidden text-gray-800 dark:text-gray-100 transition-colors";
       }
-      header.className = "bg-white dark:bg-gradient-to-r dark:from-[#0b291d] dark:to-[#081a14] px-6 py-4 border-b border-gray-200 dark:border-[#10b981]/30 flex items-center justify-between shrink-0 transition-colors";
-      let statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-gray-100 dark:bg-slate-800 text-gray-800 dark:text-gray-300 border border-gray-300 dark:border-slate-700 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-gray-600 dark:bg-gray-400 shrink-0"></span>${report.status}</span>`;
-      if ((report.status === 'Completed' || report.status === 'Verified' || isVerified) && activeChildRepairs.length === 0 && underRepairTasks === 0) {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-900 dark:text-emerald-300 border border-emerald-400 dark:border-emerald-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 shrink-0"></span>Completed ✓</span>`;
-      } else if (report.status === 'For Verification' || isReadyForVerification || report.status === 'Awaiting Admin Verification') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-purple-100 dark:bg-purple-950/80 text-purple-900 dark:text-purple-200 border border-purple-400 dark:border-purple-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-purple-600 dark:bg-purple-400 animate-pulse shrink-0"></span>For Verification</span>`;
-      } else if (report.status === 'In Progress') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-cyan-100 dark:bg-cyan-950/80 text-cyan-900 dark:text-cyan-300 border border-cyan-400 dark:border-cyan-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-cyan-600 dark:bg-cyan-400 animate-pulse shrink-0"></span>In Progress</span>`;
-      } else if (report.status === 'Pending') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-amber-100 dark:bg-amber-950/80 text-amber-900 dark:text-amber-300 border border-amber-400 dark:border-amber-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-amber-600 dark:bg-amber-400 shrink-0"></span>Pending</span>`;
-
-      } else if (report.status === 'Completed') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-900 dark:text-emerald-300 border border-emerald-400 dark:border-emerald-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 shrink-0"></span>Completed</span>`;
-      } else if (report.status === 'Needs Repair') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-extrabold rounded-full bg-rose-100 dark:bg-rose-950/90 text-rose-900 dark:text-rose-300 border border-rose-400 dark:border-rose-500/70 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-rose-600 dark:bg-rose-500 shrink-0"></span>Needs Repair</span>`;
-      } else if (report.status === 'Under Repair') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-extrabold rounded-full bg-cyan-100 dark:bg-cyan-950/90 text-cyan-900 dark:text-cyan-300 border border-cyan-400 dark:border-cyan-400/70 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shrink-0"></span>Under Repair</span>`;
-      } else if (report.status === 'Assigned') {
-        statusBadge = `<span class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-full bg-sky-100 dark:bg-sky-950/80 text-sky-900 dark:text-sky-300 border border-sky-400 dark:border-sky-400/60 whitespace-nowrap shadow-sm"><span class="w-1.5 h-1.5 rounded-full bg-sky-600 dark:bg-sky-400 shrink-0"></span>Assigned</span>`;
-      }
+      header.className = "bg-white dark:bg-gradient-to-r dark:from-[#0b291d] dark:to-[#081a14] px-6 py-4 border-b border-gray-200 dark:border-[#10b981]/30 flex items-center justify-between flex-wrap gap-3 shrink-0 transition-colors";
+      const badgePhase = maintenanceReportPhase(report);
+      const statusLabel = badgePhase === 'Ready to submit' ? badgePhase : report.status;
+      const statusTone = {
+        'Completed': 'success',
+        'Verified': 'success',
+        'For Verification': 'warning',
+        'Awaiting Admin Verification': 'warning',
+        'Ready to submit': 'warning',
+        'In Progress': 'info',
+        'Under Repair': 'info',
+        'Assigned': 'info',
+        'Needs Repair': 'danger'
+      }[statusLabel];
+      const statusBadge = detailBadge(statusLabel === 'Completed' && isVerified ? 'Completed ✓' : statusLabel, statusTone);
 
       header.innerHTML = `
-        <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-500/20 border border-emerald-500/30 dark:border-emerald-400/50 flex items-center justify-center text-[#10b981] dark:text-emerald-300 shadow-sm">
+        <div class="flex min-w-0 items-start gap-3">
+          <div class="w-10 h-10 shrink-0 rounded-xl bg-emerald-50 dark:bg-emerald-500/20 border border-emerald-500/30 dark:border-emerald-400/50 flex items-center justify-center text-[#10b981] dark:text-emerald-300 shadow-sm">
             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
               <polyline points="14 2 14 8 20 8"></polyline>
@@ -7364,16 +7384,15 @@
           <div>
             <div class="flex items-center flex-wrap gap-2">
               <h2 class="text-lg font-bold text-[#18392B] dark:text-white tracking-tight">Maintenance Report</h2>
-              <span class="font-mono font-black text-[#10b981] dark:text-cyan-400">${report.id}</span>
+              ${detailBadge(report.id)}
               ${statusBadge}
-              ${isRepairDone ? `
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-extrabold rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-400 dark:border-emerald-500/60 whitespace-nowrap shadow-xs">
-                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-600 dark:bg-emerald-400 shrink-0"></span>
-                  Repaired ✓
-                </span>
-              ` : ''}
+              ${isRepairDone ? detailBadge('Repaired ✓', 'success') : ''}
             </div>
-            <p class="text-xs font-medium text-gray-500 dark:text-gray-400">${report.airconId} — ${report.room} • Created on ${report.createdDate} • Last updated ${formatMaintenanceUpdateTime(report.updated || report.updated_at, 'Not updated yet')}</p>
+            <p class="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs font-medium text-gray-500 dark:text-gray-400">
+              <span>${maintenanceDisplayText(equipment.controllerName)} — ${maintenanceDisplayText(equipment.location)}</span>
+              <span>Created on ${maintenanceDisplayText(report.createdDate)}</span>
+              <span>Last updated ${maintenanceDisplayText(formatMaintenanceUpdateTime(report.updated || report.updated_at, 'Not updated yet'))}</span>
+            </p>
           </div>
         </div>
         <div class="flex items-center gap-2">
@@ -7396,20 +7415,18 @@
         </div>
       `;
       document.getElementById('btnCloseDetailModal')?.addEventListener('click', closeDetailModal);
-      document.getElementById('btnDetailEditReport')?.addEventListener('click', () => {
+      document.getElementById('btnDetailEditReport')?.addEventListener('click', (event) => {
         const targetId = report.id;
         closeDetailModal();
         if (isActualRepairTask(report)) {
           openEditRepairTaskModal(targetId);
         } else {
-          openEditReportModal(targetId);
+          openEditReportModal(targetId, event.currentTarget);
         }
       });
-      document.getElementById('btnDetailDeleteReport')?.addEventListener('click', () => {
-        if (confirm(`Are you sure you want to permanently delete report ${report.id}?`)) {
-          closeDetailModal();
-          deleteReports([report.id]);
-        }
+      document.getElementById('btnDetailDeleteReport')?.addEventListener('click', async () => {
+        const deletedIds = await promptDeleteReports([report.id]);
+        if (deletedIds.includes(String(report.id)) && currentDetailId === report.id) closeDetailModal();
       });
     }
 
@@ -7420,14 +7437,14 @@
         <!-- META OVERVIEW -->
         <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm">
-            <span class="text-[10px] text-gray-500 dark:text-gray-400 font-bold uppercase block">AC Control Name</span>
-            <span class="text-xs font-bold text-gray-800 dark:text-white truncate block">${report.airconId}</span>
-            <span class="text-[10px] text-gray-500 dark:text-gray-400 block truncate">📍 ${report.room}</span>
+            <span class="text-[10px] text-gray-500 dark:text-gray-400 font-bold uppercase block">${maintenanceDeviceLabel()} Name</span>
+            <span class="text-xs font-bold text-gray-800 dark:text-white truncate block">${maintenanceDisplayText(equipment.controllerName)}</span>
+            <span class="text-[10px] text-gray-500 dark:text-gray-400 block truncate">📍 ${maintenanceDisplayText(equipment.location)}</span>
           </div>
           <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm">
             <span class="text-[10px] text-gray-500 dark:text-gray-400 font-bold uppercase block">Type of Aircon</span>
-            <span class="text-xs font-bold text-[#18392B] dark:text-cyan-300 truncate block">${report.airconType || report.aircon_type || aircon.brand || 'Split Type (Inverter)'}</span>
-            <span class="text-[10px] text-gray-500 dark:text-gray-400 block truncate">${aircon.model || 'AC Unit'}</span>
+            <span class="text-xs font-bold text-[#18392B] dark:text-cyan-300 truncate block">${maintenanceDisplayText(equipment.airconType)}</span>
+            <span class="text-[10px] text-gray-500 dark:text-gray-400 block truncate">${maintenanceDisplayText(equipment.airconName)}</span>
           </div>
           <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm">
             <span class="text-[10px] text-gray-500 dark:text-gray-400 font-bold uppercase block">Maintenance Type</span>
@@ -7435,10 +7452,11 @@
           </div>
           <div class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm">
             <span class="text-[10px] text-gray-500 dark:text-gray-400 font-bold uppercase block mb-1">Priority</span>
-            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-bold ${report.priority === 'Critical' ? 'bg-rose-50 dark:bg-rose-950/70 text-rose-700 dark:text-rose-300 border border-rose-400/50' : (report.priority === 'High' ? 'bg-amber-50 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 border border-amber-400/50' : (report.priority === 'Medium' ? 'bg-sky-50 dark:bg-sky-950/70 text-sky-800 dark:text-sky-300 border border-sky-400/50' : 'bg-emerald-50 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 border border-emerald-400/50'))}">
-              <span class="w-1.5 h-1.5 rounded-full ${report.priority === 'Critical' ? 'bg-rose-500' : (report.priority === 'High' ? 'bg-amber-500' : (report.priority === 'Medium' ? 'bg-sky-500' : 'bg-emerald-500'))} shrink-0"></span>
-              ${report.priority}
-            </span>
+            ${detailBadge(report.priority, {
+              Critical: 'danger',
+              High: 'warning',
+              Medium: 'info'
+            }[report.priority])}
           </div>
           <div class="col-span-2 sm:col-span-1 bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm flex items-center gap-2.5">
             ${(() => {
@@ -7463,8 +7481,13 @@
           </div>
         </div>
 
+        <section aria-label="Scope / Description" class="bg-white dark:bg-slate-900/80 border border-gray-200 dark:border-emerald-500/30 rounded-2xl p-4 shadow-sm">
+          <h4 class="text-xs font-bold text-[#18392B] dark:text-cyan-300 uppercase tracking-wider mb-2">Scope / Description</h4>
+          <p class="text-sm text-gray-800 dark:text-gray-100 leading-relaxed whitespace-pre-wrap break-words">${maintenanceDisplayText(report.description || 'No description provided.')}</p>
+        </section>
+
         <!-- PROGRESS SECTION -->
-        <div class="bg-white dark:bg-[#081a14] border-2 border-emerald-500/30 dark:border-[#10b981]/40 rounded-2xl p-4 shadow-sm">
+        <div class="eco-maintenance-panel rounded-2xl p-4">
           <div class="flex items-center justify-between mb-2">
             <div>
               <h4 class="text-xs font-bold text-[#18392B] dark:text-cyan-300 uppercase tracking-wider">Maintenance Progress</h4>
@@ -7475,56 +7498,35 @@
           <div class="w-full bg-gray-200 dark:bg-slate-900 rounded-full h-3 overflow-hidden border border-gray-300 dark:border-[#10b981]/30 mb-3">
             <div class="h-full bg-gradient-to-r from-[#10b981] via-teal-400 to-cyan-400 rounded-full transition-all duration-300" style="width: ${pct}%"></div>
           </div>
-          <div class="${isRepReport ? 'grid grid-cols-3 gap-2 text-xs' : 'grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs'}">
-            <div class="bg-emerald-50 dark:bg-slate-950/80 border border-emerald-500/30 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
-              <span class="text-emerald-700 dark:text-emerald-300 font-semibold">Completed</span>
-              <span class="font-bold font-mono text-emerald-600 dark:text-emerald-400">${completedTasks}</span>
-            </div>
-            <div class="bg-cyan-50 dark:bg-slate-950/80 border border-cyan-500/30 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
-              <span class="text-cyan-700 dark:text-cyan-300 font-semibold">In Progress</span>
-              <span class="font-bold font-mono text-cyan-600 dark:text-cyan-400">${inProgressTasks}</span>
-            </div>
-            <div class="bg-gray-100 dark:bg-slate-950/80 border border-gray-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 flex items-center justify-between">
-              <span class="text-gray-600 dark:text-slate-400 font-semibold">Not Started</span>
-              <span class="font-bold font-mono text-gray-600 dark:text-slate-400">${notStartedTasks}</span>
-            </div>
-            ${!isRepReport ? `
-            <div class="${needsRepairTasks > 0 ? 'bg-rose-50 dark:bg-slate-950/80 border border-rose-500/30' : 'bg-gray-100 dark:bg-slate-950/80 border border-gray-300 dark:border-slate-700'} rounded-lg px-2.5 py-1.5 flex items-center justify-between">
-              <span class="${needsRepairTasks > 0 ? 'text-rose-700 dark:text-rose-400' : 'text-gray-600 dark:text-slate-400'} font-semibold">Needs Repair</span>
-              <span class="font-bold font-mono ${needsRepairTasks > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-gray-600 dark:text-slate-400'}">${needsRepairTasks}</span>
-            </div>
-            ` : ''}
+          <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+            ${[
+              ['Completed', completedTasks, 'success'],
+              ['In Progress', inProgressTasks, 'info'],
+              ['Not Started', notStartedTasks, 'neutral'],
+              ['Needs Repair', needsRepairTasks, needsRepairTasks > 0 ? 'danger' : 'neutral']
+            ].map(([label, count, tone]) => `
+              <div class="eco-maintenance-count" data-tone="${tone}">
+                <span>${label}</span><strong>${count}</strong>
+              </div>
+            `).join('')}
           </div>
         </div>
 
         <!-- CONDITIONAL: REPAIR STATUS / DEFECT BANNER -->
         ${isRepairDone ? `
-          <div class="bg-emerald-50/90 dark:bg-emerald-950/30 border-2 border-emerald-500/60 dark:border-emerald-400/60 rounded-2xl p-4 shadow-sm transition-all">
-            <div class="flex items-center justify-between mb-2">
-              <div class="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-black text-xs uppercase tracking-wider">
-                <span class="w-5 h-5 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center font-bold text-xs shadow-xs">✓</span>
-                <span>Corrective Repair Completed • Already Repaired</span>
-              </div>
-              <div class="flex items-center gap-1.5">
-                <span class="px-2.5 py-0.5 text-[10px] font-mono font-bold rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 border border-emerald-400/50">
-                  ${childRepairs.length > 1 ? `All ${childRepairs.length} Repairs Done` : `Repair Task: ${repairReport?.id || ''}`}
-                </span>
-                ${isRepairVerified ? `
-                  <span class="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-600 text-white shadow-xs">
-                    Completed
-                  </span>
-                ` : ''}
+          <div class="eco-maintenance-panel eco-maintenance-repaired-summary rounded-2xl p-4">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+              <h4 class="text-xs font-bold">Corrective Repair Completed • Already Repaired</h4>
+              <div class="flex flex-wrap items-center gap-1.5">
+                ${childRepairs.length > 1 ? detailBadge(`All ${childRepairs.length} Repairs Done`, 'success') :
+                  (repairReport ? detailBadge(`Repair Task: ${repairReport.id}`) : '')}
+                ${isRepairVerified ? detailBadge('Completed', 'success') : ''}
               </div>
             </div>
-            <div class="bg-white/95 dark:bg-slate-950/80 border border-emerald-300 dark:border-emerald-500/40 rounded-xl p-3 text-xs mb-3 shadow-sm">
-              <div class="flex items-center justify-between mb-1.5">
-                <span class="font-black text-gray-800 dark:text-white text-sm flex items-center gap-1.5">
-                  <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-                  ${repairComponentName}
-                </span>
-                <span class="px-2.5 py-0.5 text-[10px] font-black rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/50 uppercase tracking-wide">
-                  ALREADY REPAIRED ✓
-                </span>
+            <div class="eco-maintenance-inset rounded-xl p-3 text-xs mb-3">
+              <div class="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                <span class="text-sm font-semibold">${maintenanceDisplayText(repairComponentName)}</span>
+                ${detailBadge('Already Repaired ✓', 'success')}
               </div>
               <p class="text-gray-600 dark:text-gray-300 font-medium leading-relaxed">
                 All defect repairs have been successfully completed and resolved${childRepairs.length > 1 ? ` (${childRepairs.map(c => c.id).join(', ')})` : (repairReport ? ` via corrective repair task <strong class="text-emerald-700 dark:text-emerald-300 font-mono">${repairReport.id}</strong>` : '')}.
@@ -7537,30 +7539,28 @@
             </div>
             <div class="flex items-center justify-between flex-wrap gap-2 pt-0.5">
               ${repairReport ? `
-                <button type="button" class="btn-detail-view-repair px-3.5 py-1.5 bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-slate-800 text-emerald-800 dark:text-emerald-300 font-bold text-xs rounded-xl border border-emerald-500/40 cursor-pointer shadow-xs transition-all flex items-center gap-1.5" data-repair-id="${repairReport.id}">
+                <button type="button" class="btn-detail-view-repair eco-maintenance-link px-3.5 py-1.5 font-semibold text-xs rounded-xl cursor-pointer transition-colors flex items-center gap-1.5" data-repair-id="${repairReport.id}">
                   <svg class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                   <span>View Repair Task ${repairReport.id}</span>
                 </button>
               ` : '<span></span>'}
               <div class="flex items-center gap-2">
-                <button type="button" class="btn-verify-repaired-task px-4 py-2 ${matchedRepairedTask?.verified ? 'bg-emerald-600 text-white' : 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950'} font-black text-xs rounded-xl border-0 cursor-pointer uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center gap-1.5" data-report-id="${report.id}" data-task-name="${encodeURIComponent(repairComponentName)}">
-                  <svg class="w-4 h-4 ${matchedRepairedTask?.verified ? 'text-white' : 'text-slate-950'}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+                <button type="button" ${isReportSubmittedForVerification(report) || matchedRepairedTask?.verified ? '' : 'disabled'} class="eco-repair-button btn-verify-repaired-task ${matchedRepairedTask?.verified ? 'eco-maintenance-verified-action' : 'eco-primary-action'} flex items-center gap-1.5" data-report-id="${report.id}" data-task-name="${encodeURIComponent(repairComponentName)}">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
                   <span>${matchedRepairedTask?.verified ? 'Repaired & Verified' : 'Verify Repair'}</span>
                 </button>
               </div>
             </div>
           </div>
         ` : (activeChildRepairs.length > 0 ? `
-          <div class="bg-cyan-50/90 dark:bg-cyan-950/30 border-2 border-cyan-500/60 dark:border-cyan-400/60 rounded-2xl p-4 shadow-sm transition-all">
+          <div class="eco-maintenance-panel rounded-2xl p-4">
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2 text-cyan-800 dark:text-cyan-300 font-black text-xs uppercase tracking-wider">
                 <span class="w-5 h-5 rounded-full bg-cyan-500 text-slate-950 flex items-center justify-center font-bold text-xs shadow-xs animate-pulse">⚙</span>
                 <span>Corrective Repair In Progress • ${completedChildRepairs.length} of ${childRepairs.length} Repaired</span>
               </div>
               <div class="flex items-center gap-1.5">
-                <span class="px-2.5 py-0.5 text-[10px] font-mono font-bold rounded-full bg-cyan-100 dark:bg-cyan-900/60 text-cyan-800 dark:text-cyan-200 border border-cyan-400/50">
-                  ${activeChildRepairs.length} Active Repair${activeChildRepairs.length > 1 ? 's' : ''}
-                </span>
+                ${detailBadge(`${activeChildRepairs.length} Active Repair${activeChildRepairs.length > 1 ? 's' : ''}`, 'info')}
               </div>
             </div>
             <div class="bg-white/95 dark:bg-slate-950/80 border border-cyan-300 dark:border-cyan-500/40 rounded-xl p-3 text-xs mb-3 shadow-sm">
@@ -7587,62 +7587,47 @@
 
         <!-- CHECKLIST TASKS -->
         <div class="bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-2xl p-4 shadow-sm">
-          <div class="flex items-center justify-between mb-2.5">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-2.5">
             <div>
               <h4 class="text-xs font-bold text-[#18392B] dark:text-cyan-300 uppercase tracking-wider">Checklist Status & Notes</h4>
               <span class="text-[10px] text-gray-500 dark:text-gray-400">Click item to view details & verify</span>
             </div>
-            <span class="text-[10px] font-mono ${hasNeedsRepair ? 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border border-rose-500/20' : (underRepairTasks > 0 ? 'text-cyan-600 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-950/40 border border-cyan-500/20' : 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-500/20')} px-2 py-0.5 rounded-full">
-              ${completedTasks}/${totalTasks} Done${!isRepReport && needsRepairTasks > 0 ? ` • ${needsRepairTasks} Repair Needed` : ''}${!isRepReport && underRepairTasks > 0 ? ` • ${underRepairTasks} Under Repair` : ''}
-            </span>
+            ${detailBadge(
+              `${completedTasks}/${totalTasks} Done${needsRepairTasks > 0 ? ` • ${needsRepairTasks} Repair Needed` : ''}${underRepairTasks > 0 ? ` • ${underRepairTasks} Under Repair` : ''}`,
+              hasNeedsRepair ? 'danger' : underRepairTasks > 0 ? 'info' : isAllTasksCompleted ? 'success' : 'neutral'
+            )}
           </div>
           <div class="space-y-2 max-h-[220px] overflow-y-auto pr-1.5 eco-slim-scrollbar" id="detailModalChecklistContainer">
             ${report.tasks.map((task, idx) => {
           const tChildRepair = getRepairReportForTask(report, task, reports);
           const taskLinkedId = task.linkedRepairId || (tChildRepair && tChildRepair.id) || null;
-          const isChildActive = Boolean(tChildRepair && !isRepairReportDone(tChildRepair));
+          const isChildActive = Boolean(tChildRepair && !isRepairReportDone(tChildRepair) && !isReportSubmittedForVerification(tChildRepair));
 
-          let isTaskRepairDone = false;
-          let isTaskRepairVerified = false;
-          if (tChildRepair) {
-            if (isRepairReportVerified(tChildRepair)) {
-              isTaskRepairDone = true;
-              isTaskRepairVerified = true;
-            } else if (isRepairReportDone(tChildRepair)) {
-              isTaskRepairDone = true;
-              isTaskRepairVerified = false;
-            } else {
-              isTaskRepairDone = false;
-              isTaskRepairVerified = false;
-              task.status = 'Under Repair';
-              task.repaired = false;
-              task.verified = false;
-            }
-          } else {
-            isTaskRepairDone = Boolean(task.repaired);
-            isTaskRepairVerified = Boolean(task.repaired && task.verified);
-          }
+          let isTaskRepairDone = tChildRepair ? isRepairReportDone(tChildRepair) : Boolean(task.repaired);
+          let isTaskRepairVerified = tChildRepair ? isRepairReportVerified(tChildRepair) : Boolean(task.repaired && task.verified);
+          const isTaskRepairSubmitted = tChildRepair ? isReportSubmittedForVerification(tChildRepair) : task.status === 'For Verification';
 
-          let badge = `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-slate-700 shrink-0 select-none pointer-events-none">⚪ Not Started</span>`;
-          if (isChildActive || (task.status === 'Under Repair' && taskLinkedId)) {
-            badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-cyan-100 dark:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-400/40 shrink-0 select-none pointer-events-none"><span>🔵 Under Repair</span>${taskLinkedId ? `<span class="text-[9px] font-mono opacity-80">(${taskLinkedId})</span>` : ''}</span>`;
+          let badge = detailBadge('Not Started');
+          const repairReference = taskLinkedId ? ` (${taskLinkedId})` : '';
+          if (isTaskRepairSubmitted) {
+            badge = detailBadge('Repair for verification', 'warning');
+          } else if (isChildActive || (task.status === 'Under Repair' && taskLinkedId)) {
+            badge = detailBadge(`Under Repair${repairReference}`, 'info');
           } else if (isTaskRepairVerified) {
-            badge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/40 shrink-0 select-none pointer-events-none"><span>🟢 Repaired</span>${taskLinkedId ? `<span class="text-[9px] font-mono opacity-80">(${taskLinkedId})</span>` : ''}</span>`;
+            badge = detailBadge(`Repaired${repairReference}`, 'success');
           } else if (isTaskRepairDone) {
-            badge = `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-100 dark:bg-amber-500/20 text-amber-800 dark:text-amber-300 border border-amber-400/40 shrink-0 select-none pointer-events-none"><span>🟡 Repaired (Pending Sign-off)</span>${taskLinkedId ? `<span class="text-[9px] font-mono opacity-80">(${taskLinkedId})</span>` : ''}</span>`;
+            badge = detailBadge(`Repaired (Pending Sign-off)${repairReference}`, 'warning');
           } else if (task.status === 'Completed') {
-            badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border border-emerald-400/40 shrink-0 select-none pointer-events-none">🟢 Completed</span>`;
+            badge = detailBadge('Completed', 'success');
           } else if (task.status === 'In Progress') {
-            badge = `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-cyan-100 dark:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-400/40 shrink-0 select-none pointer-events-none">🟠 In Progress</span>`;
+            badge = detailBadge('In Progress', 'info');
           } else if (task.status === 'Needs Repair') {
-            badge = !isRepReport
-              ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-rose-100 dark:bg-rose-500/20 text-rose-800 dark:text-rose-300 border border-rose-400/40 shrink-0 select-none pointer-events-none">🔴 Needs Repair</span>`
-              : `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 text-[10px] font-bold rounded-full bg-cyan-100 dark:bg-cyan-500/20 text-cyan-800 dark:text-cyan-300 border border-cyan-400/40 shrink-0 select-none pointer-events-none"><span>🔵 In Progress</span></span>`;
+            badge = detailBadge('Needs Repair', 'danger');
           }
 
           const isTaskActuallyDone = !isChildActive && (isTaskRepairVerified || isTaskRepairDone || task.status === 'Completed');
           const verifiedBadge = (!isChildActive && (isTaskRepairVerified || (task.verified && task.status === 'Completed'))) ? `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+            <span class="eco-repair-status eco-maintenance-pill" data-tone="success">
               <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
               Verified
             </span>
@@ -7654,16 +7639,16 @@
           const hasTaskPhoto = task.status !== 'Not Started' && taskPhotoCount > 0;
 
           const photoBadge = hasTaskPhoto ? `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-bold rounded-full bg-sky-500/15 text-sky-600 dark:text-sky-400 border border-sky-500/30">
+            <span class="eco-repair-status eco-maintenance-pill" data-tone="info">
               <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><circle cx="12" cy="13" r="3"/></svg>
               ${taskPhotoCount > 1 ? `${taskPhotoCount} Photos` : 'Photo'}
             </span>
           ` : '';
 
-          const canQuickVerify = !isRepReport && !isChildActive && isTaskRepairDone && !isTaskRepairVerified;
+          const canQuickVerify = isReportSubmittedForVerification(report) && !isRepReport && !isChildActive && isTaskRepairDone && !isTaskRepairVerified;
 
           return `
-                <div class="checklist-task-item group bg-gray-50 dark:bg-slate-950/70 hover:bg-emerald-50/50 dark:hover:bg-slate-800/80 border border-gray-200 dark:border-white/10 hover:border-emerald-500/40 rounded-xl p-2.5 flex items-center justify-between gap-2 text-xs shadow-sm cursor-pointer transition-all" data-task-id="${task.id}" data-task-name="${encodeURIComponent(task.name)}" title="Click to view details & verify">
+                <div class="checklist-task-item eco-maintenance-panel group rounded-xl p-2.5 flex flex-wrap items-center justify-between gap-2 text-xs cursor-pointer transition-colors" data-task-id="${task.id}" data-task-name="${encodeURIComponent(task.name)}" title="Click to view details & verify">
                   <div class="flex-1 min-w-0">
                     <div class="flex items-center flex-wrap gap-2 mb-0.5">
                       <span class="checklist-step-badge w-5 h-5 rounded-md ${isTaskActuallyDone ? 'badge-emerald bg-emerald-500 text-white' : (isChildActive || task.status === 'Under Repair' ? 'badge-cyan bg-cyan-600 text-white' : (task.status === 'Needs Repair' ? 'badge-rose bg-rose-600 text-white' : (task.status === 'In Progress' ? 'badge-cyan bg-cyan-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200')))} font-black text-[10px] flex items-center justify-center shrink-0 shadow-xs mr-1">${idx + 1}</span>
@@ -7682,7 +7667,7 @@
                       </button>
                     ` : ''}
                     ${taskLinkedId ? `
-                      <button type="button" class="btn-view-task-repair px-2 py-1 text-[10px] font-bold rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-700 dark:text-cyan-300 border border-cyan-500/30 flex items-center gap-1 cursor-pointer transition-all z-10" data-repair-id="${taskLinkedId}" title="View repair task ${taskLinkedId}">
+                      <button type="button" class="btn-view-task-repair eco-maintenance-link px-2 py-1 text-[11px] font-semibold rounded-lg flex items-center gap-1 cursor-pointer transition-colors z-10" data-repair-id="${taskLinkedId}" title="View repair task ${taskLinkedId}">
                         <span>${taskLinkedId}</span>
                         <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
                       </button>
@@ -7698,19 +7683,15 @@
           <!-- CONDITIONAL: VERIFICATION (AT THE BOTTOM OF THE CHECKLIST STATUS NOTE CONTAINER) -->
           ${isReadyForVerification ? `
             <div class="mt-4 pt-3.5 border-t border-gray-100 dark:border-white/10">
-              <div class="bg-amber-50/80 dark:bg-amber-950/30 border-2 border-amber-500/60 dark:border-amber-400/50 rounded-2xl p-4 shadow-sm">
-                <div class="flex items-center justify-between mb-2">
-                  <div class="flex items-center gap-2">
-                    <span class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping"></span>
-                    <span class="text-xs font-black text-amber-800 dark:text-amber-300 uppercase tracking-wider">
-                      Completed — Awaiting Admin Verification
-                    </span>
-                  </div>
-                  <span class="font-mono text-xs font-bold text-amber-900 dark:text-amber-200 bg-amber-200/60 dark:bg-amber-900/60 px-2.5 py-0.5 rounded-full border border-amber-400/40">
-                    ${completedTasks}/${totalTasks} Tasks Done
-                  </span>
+              <div class="eco-maintenance-panel eco-maintenance-review rounded-2xl p-4">
+                <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <h4 class="flex items-center gap-2 text-sm font-semibold">
+                    <span class="eco-maintenance-review-dot" aria-hidden="true"></span>
+                    Completed — Awaiting Admin Verification
+                  </h4>
+                  ${detailBadge(`${completedTasks}/${totalTasks} Tasks Done`, 'success')}
                 </div>
-                <p class="text-xs text-amber-950/80 dark:text-amber-200/90 font-medium mb-3 bg-white/80 dark:bg-slate-950/70 p-3 rounded-xl border border-amber-400/30 leading-relaxed">
+                <p class="eco-maintenance-inset eco-maintenance-review-copy text-xs font-medium mb-3 p-3 rounded-xl leading-relaxed">
                   Technician has completed all checklist tasks. Administrator review and verification is required to finalize this maintenance report.
                 </p>
                 <div class="flex items-center justify-between gap-2 flex-wrap pt-1">
@@ -7719,8 +7700,8 @@
                   </div>
                   <div class="flex items-center gap-2">
                     
-                    <button type="button" class="btn-detail-verify px-5 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs rounded-xl border-0 cursor-pointer uppercase tracking-wider shadow-md hover:shadow-lg transition-all flex items-center gap-1.5" data-id="${report.id}">
-                      <svg class="w-4 h-4 text-slate-950" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+                    <button type="button" class="eco-repair-button eco-primary-action btn-detail-verify flex items-center gap-1.5" data-id="${report.id}">
+                      <svg class="w-4 h-4" aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
                       <span>Verify Maintenance</span>
                     </button>
                   </div>
@@ -7729,7 +7710,7 @@
             </div>
           ` : (isVerified ? `
             <div class="mt-4 pt-3.5 border-t border-gray-100 dark:border-white/10">
-              <div class="bg-emerald-50/80 dark:bg-emerald-950/30 border-2 border-emerald-500/60 dark:border-emerald-400/60 rounded-2xl p-4 shadow-sm">
+              <div class="eco-maintenance-panel rounded-2xl p-4">
                 <div class="flex items-center justify-between mb-2">
                   <div class="flex items-center gap-2">
                     <span class="w-6 h-6 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center font-bold text-xs shadow-sm">✓</span>
@@ -7740,9 +7721,7 @@
                       <span class="text-[10px] text-emerald-600 dark:text-emerald-400">All ${totalTasks} checklist items inspected & verified</span>
                     </div>
                   </div>
-                  <span class="font-mono text-[11px] font-bold text-emerald-800 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/60 px-3 py-1 rounded-full border border-emerald-400/50 flex items-center gap-1">
-                    <span>Verified</span> ✓
-                  </span>
+                  ${detailBadge('Verified ✓', 'success')}
                 </div>
                 <div class="bg-white/80 dark:bg-slate-950/70 p-3 rounded-xl border border-emerald-500/30 text-xs text-gray-700 dark:text-gray-200">
                   <p class="font-medium text-emerald-900 dark:text-emerald-200 italic mb-1">
@@ -7760,22 +7739,24 @@
 
         <!-- TIMELINE & HISTORY -->
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div class="bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm flex flex-col">
-            <div class="flex items-center justify-between mb-2">
-              <h5 class="text-[11px] font-bold text-[#18392B] dark:text-cyan-300 uppercase">Activity Timeline</h5>
-              ${report.timeline && report.timeline.length > 0 ? `<span class="text-[10px] text-gray-400 font-mono">${report.timeline.length} events</span>` : ''}
+          <div class="eco-maintenance-panel eco-maintenance-timeline min-w-0 rounded-xl p-3">
+            <div class="flex items-center justify-between gap-2 mb-2">
+              <h5 class="text-xs font-semibold">Activity Timeline</h5>
+              ${report.timeline?.length ? detailBadge(`${report.timeline.length} events`) : ''}
             </div>
-            <div class="space-y-1.5 text-[11px] max-h-44 overflow-y-auto pr-1.5 eco-slim-scrollbar">
-              ${report.timeline && report.timeline.length > 0 ? report.timeline.map(t => `
-                <div class="flex items-center justify-between text-gray-700 dark:text-gray-300 py-0.5 hover:bg-gray-50 dark:hover:bg-slate-800/40 rounded px-1 -mx-1 transition-colors">
-                  <span class="flex items-center gap-1.5 min-w-0 pr-2">
-                    <span class="w-1.5 h-1.5 rounded-full shrink-0 ${t.done ? 'bg-emerald-500' : 'bg-gray-400 dark:bg-gray-600'}"></span>
-                    <span class="truncate">${t.title}</span>
+            <ul class="eco-maintenance-events max-h-44 overflow-y-auto pr-1.5" aria-label="Activity timeline events">
+              ${report.timeline?.length ? report.timeline.map(event => `
+                <li class="eco-maintenance-event">
+                  <span class="eco-maintenance-event-dot" data-done="${Boolean(event.done)}" aria-hidden="true"></span>
+                  <span>${maintenanceDisplayText(event.title)}</span>
+                  <span class="eco-maintenance-event-time">
+                    ${Number.isFinite(Date.parse(event.time))
+                      ? `<time datetime="${maintenanceDisplayText(event.time)}">${maintenanceDisplayText(formatMaintenanceUpdateTime(event.time))}</time>`
+                      : maintenanceDisplayText(event.time || 'Time unavailable')}
                   </span>
-                  <span class="text-[10px] text-gray-400 font-mono shrink-0 whitespace-nowrap">${t.time}</span>
-                </div>
-              `).join('') : '<p class="text-gray-400 italic text-center py-2">No activity recorded yet.</p>'}
-            </div>
+                </li>
+              `).join('') : '<li class="text-xs text-gray-500">No activity recorded yet.</li>'}
+            </ul>
           </div>
 
           <div class="bg-white dark:bg-slate-900/70 border border-gray-200 dark:border-white/10 rounded-xl p-3 shadow-sm flex flex-col">
@@ -7877,7 +7858,7 @@
               report.issue.status = 'Repaired';
             }
           } else if (allParentDone) {
-            report.status = 'For Verification';
+            report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
             if (report.issue) {
               report.issue.repaired = true;
               report.issue.status = 'Repaired';
@@ -7989,7 +7970,7 @@
               parentRep.issue.status = 'Repaired';
             }
           } else if (allParentDone) {
-            parentRep.status = 'For Verification';
+            parentRep.status = isReportSubmittedForVerification(parentRep) ? 'For Verification' : 'In Progress';
             if (parentRep.issue) {
               parentRep.issue.repaired = true;
               parentRep.issue.status = 'Repaired';
@@ -8100,7 +8081,7 @@
               report.issue.status = 'Repaired';
             }
           } else if (allParentDone) {
-            report.status = 'For Verification';
+            report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
             if (report.issue) {
               report.issue.repaired = true;
               report.issue.status = 'Repaired';
@@ -8180,15 +8161,118 @@
     }, 3500);
   }
 
+  function promptDeleteReports(reportIds, { bulk = false } = {}) {
+    if (reportIds.length === 0 || document.getElementById('deleteReportModal')) return Promise.resolve([]);
+
+    const count = reportIds.length;
+    const report = !bulk && getReports().find(item => String(item.id) === String(reportIds[0]));
+    const equipment = report && maintenanceReportEquipment(report);
+    const target = bulk
+      ? `${count} selected maintenance report${count === 1 ? '' : 's'}`
+      : '"' + reportIds[0] + (equipment ? ' (' + equipment.controllerName + ' - ' + equipment.location + ')' : '') + '"';
+
+    const dialog = document.createElement('dialog');
+    dialog.id = 'deleteReportModal';
+    dialog.className = 'eco-confirm-dialog eco-report-delete';
+    dialog.dataset.danger = 'true';
+    dialog.setAttribute('role', 'alertdialog');
+    dialog.setAttribute('aria-labelledby', 'deleteReportModalTitle');
+    dialog.setAttribute('aria-describedby', 'deleteReportModalSubtitle deleteReportModalMessage');
+    dialog.innerHTML = `
+      <div class="eco-confirm-dialog__card">
+        <div class="eco-report-delete__header">
+          <div class="eco-confirm-dialog__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6m4-6v6"/>
+            </svg>
+          </div>
+          <div>
+            <h2 id="deleteReportModalTitle"></h2>
+            <p id="deleteReportModalSubtitle"></p>
+          </div>
+        </div>
+        <p id="deleteReportModalMessage">
+          Are you sure you want to delete <span></span><strong id="deleteReportTargetName"></strong>? This action cannot be undone.
+        </p>
+        <progress class="eco-report-delete__progress" aria-label="Deleting maintenance reports" hidden></progress>
+        <p class="eco-report-delete__error" role="alert" hidden></p>
+        <div class="eco-report-delete__actions">
+          <button id="cancelDeleteReportBtn" type="button" autofocus>Cancel</button>
+          <button id="confirmDeleteReportBtn" class="eco-confirm-dialog__confirm" type="button"></button>
+        </div>
+      </div>
+    `;
+    dialog.querySelector('#deleteReportModalTitle').textContent = bulk ? 'Delete Selected Reports' : 'Delete Report';
+    dialog.querySelector('#deleteReportModalSubtitle').textContent = bulk
+      ? `Permanently delete ${count} maintenance report${count === 1 ? '' : 's'}`
+      : 'Permanently delete activity';
+    dialog.querySelector('#deleteReportModalMessage span').textContent = bulk ? '' : 'maintenance report ';
+    dialog.querySelector('#deleteReportTargetName').textContent = target;
+
+    const cancel = dialog.querySelector('#cancelDeleteReportBtn');
+    const confirm = dialog.querySelector('#confirmDeleteReportBtn');
+    const progress = dialog.querySelector('progress');
+    const error = dialog.querySelector('.eco-report-delete__error');
+    confirm.textContent = bulk ? `Delete (${count}) ${count === 1 ? 'Report' : 'Reports'}` : 'Delete Report';
+    let pendingIds = reportIds;
+    const deletedIds = new Set();
+
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        resolve([...deletedIds]);
+      }, { once: true });
+      dialog.addEventListener('cancel', event => {
+        if (confirm.disabled) event.preventDefault();
+      });
+      dialog.addEventListener('click', event => {
+        if (event.target === dialog && !confirm.disabled) dialog.close();
+      });
+      cancel.addEventListener('click', () => dialog.close());
+      confirm.addEventListener('click', async () => {
+        if (confirm.disabled) return;
+        confirm.disabled = cancel.disabled = true;
+        confirm.textContent = 'Deleting…';
+        error.hidden = true;
+        progress.hidden = false;
+        try {
+          const result = await deleteReportsWithResult(pendingIds);
+          result.deletedIds.forEach(id => deletedIds.add(id));
+          pendingIds = result.remainingIds;
+          if (pendingIds.length === 0) {
+            dialog.close();
+            return;
+          }
+          error.textContent = result.error || 'Some reports could not be deleted. Try again to delete the remaining reports.';
+        } catch (failure) {
+          console.error('[EcoTrack Maintenance] Could not delete reports:', failure);
+          error.textContent = 'Deletion could not be completed. Try again.';
+        }
+        progress.hidden = true;
+        error.hidden = false;
+        confirm.disabled = cancel.disabled = false;
+        confirm.textContent = 'Retry Deletion';
+        cancel.focus({ preventScroll: true });
+      });
+      document.body.appendChild(dialog);
+      dialog.showModal();
+    });
+  }
+
   // Delete Multiple Reports
   async function deleteReports(reportIds) {
+    const { deletedIds, remainingIds } = await deleteReportsWithResult(reportIds);
+    return deletedIds.length > 0 && remainingIds.length === 0;
+  }
+
+  async function deleteReportsWithResult(reportIds) {
     const raw = reportIds && typeof reportIds === 'object' && !Array.isArray(reportIds)
       ? (reportIds.ids ?? reportIds.report_ids ?? reportIds.id) : reportIds;
     const entries = Array.isArray(raw) ? raw.flat(Infinity) : [raw];
     const ids = [...new Set(entries
       .filter(id => typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id)))
       .map(id => String(id).trim()).filter(Boolean))];
-    if (ids.length === 0) return false;
+    if (ids.length === 0) return { deletedIds: [], remainingIds: [] };
 
     // Include dependent repair reports, removing children before parents.
     const allReports = getReports();
@@ -8197,9 +8281,11 @@
     do {
       added = false;
       allReports.forEach(r => {
-        if (idSet.has(r.parent_report_id || r.parentReportId) && !idSet.has(r.id)) {
-          idSet.add(r.id);
-          ids.unshift(r.id);
+        const id = String(r.id ?? '');
+        const parentId = String(r.parent_report_id || r.parentReportId || '');
+        if (id && idSet.has(parentId) && !idSet.has(id)) {
+          idSet.add(id);
+          ids.unshift(id);
           added = true;
         }
       });
@@ -8230,10 +8316,6 @@
           const result = await window.electron.invoke('maintenance-delete-reports', ids);
           if (result?.success && Array.isArray(result.data) && result.data.length) {
             deletedRows = result.data;
-          } else if (result?.error && String(result.error).includes('No maintenance reports were deleted')) {
-            // Target reports do not exist in the remote database (e.g. mock/test records, already removed, or uncommitted local drafts).
-            // Confirm their deletion locally so the user is never trapped with undeletable ghost records.
-            deletedRows = ids.map(id => ({ id }));
           } else {
             deletionError = new Error(result?.error || 'No reports were deleted');
           }
@@ -8284,15 +8366,21 @@
           }
         }, 2000);
       }
-      return false;
+      return { deletedIds: [], remainingIds: ids, error: error.message };
     }
-    const reports = getReports().filter(r => !idSet.has(r.id)).map(r => {
-      if (idSet.has(r.linked_repair_id || r.linkedRepairId)) {
+    // Ignore reports returned by reads that started before the confirmed deletion.
+    reportWriteRevision += 1;
+    for (const id of idSet) {
+      reportVersions.delete(id);
+      confirmedReportWrites.set(id, { revision: reportWriteRevision, record: null });
+    }
+    const reports = getReports().filter(r => !idSet.has(String(r.id))).map(r => {
+      if (idSet.has(String(r.linked_repair_id || r.linkedRepairId || ''))) {
         r.linked_repair_id = null;
         r.linkedRepairId = null;
       }
       (r.tasks || []).forEach(task => {
-        if (idSet.has(task.linkedRepairId)) task.linkedRepairId = null;
+        if (idSet.has(String(task.linkedRepairId ?? ''))) task.linkedRepairId = null;
       });
       return r;
     });
@@ -8309,8 +8397,13 @@
 
     const deletedIds = [...idSet];
     const msg = deletedIds.length === 1 ? `Report ${deletedIds[0]} was successfully deleted.` : `${deletedIds.length} maintenance reports were successfully deleted.`;
-    showToast(deletedIds.length === 1 ? 'Report Deleted' : 'Reports Deleted', msg, 'warning');
-    return ids.every(id => idSet.has(id));
+    const remainingIds = ids.filter(id => !idSet.has(id));
+    if (remainingIds.length) {
+      showToast('Deletion Incomplete', 'Some reports could not be deleted.', 'warning');
+    } else {
+      showToast(deletedIds.length === 1 ? 'Report Deleted' : 'Reports Deleted', msg, 'warning');
+    }
+    return { deletedIds, remainingIds };
   }
 
   // Delete Single Report
@@ -8421,7 +8514,7 @@
     } else {
       report.issue = null;
       if (allVerified) report.status = 'Completed';
-      else if (allDone) report.status = 'For Verification';
+      else if (allDone) report.status = isReportSubmittedForVerification(report) ? 'For Verification' : 'In Progress';
       else if (report.tasks.some(t => t.status === 'In Progress' || t.status === 'Completed')) report.status = 'In Progress';
       else report.status = 'Pending';
     }
@@ -8450,7 +8543,11 @@
     generateNextReportId: generateNextReportId,
     deleteReport: deleteReport,
     deleteReports: deleteReports,
-    getReports: getReports,
+    promptDeleteReports: promptDeleteReports,
+    getReports: () => {const reports=getReports();if(window.EcoTrackMode?.mode!=='monitoring')return reports;const identities=new Set(getAirconsDatabase().flatMap(ac=>[ac.nodeId,ac.id]).filter(Boolean));return reports.filter(report=>[report.aircon_id,report.nodeId,report.airconId].some(id=>identities.has(id)));},
+    deviceLabel:maintenanceDeviceLabel,
+    resolveReportEquipment: maintenanceReportEquipment,
+    reportPhase: maintenanceReportPhase,
     fetchReports: fetchReportsFromSupabase,
     refreshReports: fetchReportsFromSupabase,
     invalidateCache: invalidateReportsCache,
@@ -8459,6 +8556,8 @@
     getAircons: () => AIRCONS_DATABASE,
     resolveStaffAvatar: resolveStaffAvatar,
     resolveStaffLocation: resolveStaffLocation,
+    resolveStaffHierarchy: resolveStaffHierarchy,
+    setLocationHierarchy: updateStaffLocationHierarchy,
     getAirconsForStaff: getAirconsForStaff,
     formatAcLocation: formatAcLocation,
     getStaffBuilding: getStaffBuilding,

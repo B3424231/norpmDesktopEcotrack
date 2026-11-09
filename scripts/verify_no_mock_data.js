@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const vm = require('node:vm');
 
 console.log('━━━ AUDITING CODEBASE: ZERO MOCK DATA INTEGRITY ━━━\n');
 
@@ -63,28 +64,57 @@ test(
   'Still contains hardcoded mock maintenance reports'
 );
 
-// 4. telemetry-new.js
-const telemPath = path.join(__dirname, '../public/js/telemetry-new.js');
-const telemCode = fs.readFileSync(telemPath, 'utf8');
+// Current telemetry, analytics and energy pages share the sensor workspace.
+const sensorPath = path.join(__dirname, '../public/js/sensor-workspace.js');
+const sensorCode = fs.readFileSync(sensorPath, 'utf8');
 test(
-  'telemetry-new.js: EcoTrackDataLayer fallback removed',
-  !telemCode.includes('EcoTrackDataLayer'),
-  'Still contains fallback to EcoTrackDataLayer'
-);
-
-// 5. analytics.js
-const analyticsPath = path.join(__dirname, '../public/js/analytics.js');
-const analyticsCode = fs.readFileSync(analyticsPath, 'utf8');
-test(
-  'analytics.js: EcoTrackDataLayer fallbacks removed',
-  !analyticsCode.includes('EcoTrackDataLayer'),
-  'Still contains fallbacks to EcoTrackDataLayer'
+  'sensor-workspace.js: No legacy mock data layer or generator',
+  !/EcoTrackDataLayer|MockDataGenerator|MockPocketBase|generateMockData|loadMockMessages/.test(sensorCode),
+  'The active sensor workspace contains a legacy mock data provider'
 );
 test(
-  'analytics.js: Random mock compliance scores removed',
-  !analyticsCode.includes('Mock compliance'),
-  'Still uses Math.random() mock compliance'
+  'sensor-workspace.js: No random telemetry, compliance or demo cadence',
+  !/Math\s*\.\s*random\s*\(|UI_CADENCE_MS|lastUIUpdateMap|Mock compliance/.test(sensorCode),
+  'The active telemetry/analytics renderer contains a fabricated reading or demo cadence source'
 );
+test(
+  'sensor-workspace.js: Observations come from the local monitoring API',
+  sensorCode.includes("'/api/monitoring'") && sensorCode.includes("request('/devices'") &&
+    sensorCode.includes("request('/analytics?'") && sensorCode.includes("request('/telemetry?'") &&
+    sensorCode.includes("request('/energy?'") && sensorCode.includes('nodes = data.items') &&
+    sensorCode.includes('history = rows?.items || []'),
+  'The current telemetry, analytics and energy views no longer use recorded monitoring responses'
+);
+// Exercise the real formatting/power helpers so missing values cannot silently become
+// plausible readings, and requested/online state cannot become confirmed AC power.
+try {
+  const declaration = name => {
+    const match = sensorCode.match(new RegExp('^  const ' + name + ' =[^\\r\\n]+;', 'm'));
+    if (!match) throw new Error('Missing current sensor helper: ' + name);
+    return match[0];
+  };
+  const context = vm.createContext({});
+  vm.runInContext(['esc','num','rotationValue','stamp','badge','state'].map(declaration).join('\n') +
+    '\nthis.currentSensor = {num,rotationValue,stamp,state};', context);
+  const sensor = context.currentSensor;
+  test('sensor-workspace.js: Missing measurements use a dash and real zero stays zero',
+    [null,undefined,NaN,Infinity,'23'].every(value => sensor.num(value) === '—') &&
+      /^0(?:\.0+)?$/.test(sensor.num(0)),
+    'A missing/invalid measurement is presented as a number or a valid zero is discarded');
+  test('sensor-workspace.js: Faulty rotation stays null and absent timestamps stay unrecorded',
+    sensor.rotationValue(null) === null && sensor.rotationValue({rotation_rpm:120,rotation_quality:'fault'}) === null &&
+      sensor.rotationValue({rotation_rpm:-1}) === null && sensor.rotationValue({rotation_rpm:0,rotation_quality:'ok'}) === 0 &&
+      sensor.stamp(null) === 'No reading' && sensor.stamp('invalid') === 'No reading',
+    'Faulty/missing measurements or dates are replaced with fabricated observations');
+  const unknown = [null,{}, {status:'online',desired_state:{power:true}}].map(value => sensor.state(value));
+  test('sensor-workspace.js: AC power requires explicit fresh feedback',
+    unknown.every(value => value.includes('Not reported') && !value.includes('Confirmed ON')) &&
+      sensor.state({ac_on:true}).includes('Confirmed ON') && sensor.state({ac_on:false}).includes('Confirmed OFF') &&
+      sensor.state({ac_on:true},false).includes('No recent feedback'),
+    'Missing/stale AC feedback, connectivity or requested power is displayed as confirmed operation');
+} catch (error) {
+  test('sensor-workspace.js: Current measurement helpers can be verified', false, error.message);
+}
 
 // 6. notifications.js
 const notifPath = path.join(__dirname, '../public/js/notifications.js');
@@ -110,29 +140,33 @@ test(
 );
 
 // 8. HTML files script tags
-const htmlFiles = [
-  'login.html', 'telemetry.html', 'analytics.html',
-  'scheduler.html', 'rules.html', 'staff.html',
-  'Notification.html', 'logs.html'
-];
-htmlFiles.forEach(file => {
-  const htmlPath = path.join(__dirname, '../public', file);
+const publicRoot = path.join(__dirname, '../public');
+function desktopHtmlFiles(directory) {
+  return fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const file = path.join(directory, entry.name);
+    return entry.isDirectory() && entry.name !== 'vendor' ? desktopHtmlFiles(file) :
+      entry.isFile() && /\.html$/i.test(entry.name) ? [file] : [];
+  });
+}
+const htmlFiles = desktopHtmlFiles(publicRoot).sort();
+test('Desktop HTML audit discovers current application pages',
+  ['telemetry.html','analytics.html','sensor-logs.html','control.html','nodes.html','profile.html'].every(file => htmlFiles.includes(path.join(publicRoot,file))),
+  'A current application page is missing from the audit');
+htmlFiles.forEach(htmlPath => {
+  const file = path.relative(publicRoot, htmlPath);
   const htmlCode = fs.readFileSync(htmlPath, 'utf8');
+  const scripts = [...htmlCode.matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>/gi)].map(match => match[1]);
   test(
-    `${file}: Does not include data-schemas.js or data-logic.js`,
-    !htmlCode.includes('data-schemas.js') && !htmlCode.includes('data-logic.js'),
-    'Still includes mock data scripts'
+    `${file}: Does not load a mock data provider`,
+    !scripts.some(src => /(?:^|\/)(?:data-schemas|data-logic|mock-data|mock-data-generator)\.js(?:[?#]|$)/i.test(src)),
+    'Still loads a legacy mock data provider script'
   );
 });
-
-// 9. renderer.js
-const rendererPath = path.join(__dirname, '../public/renderer.js');
-const rendererCode = fs.readFileSync(rendererPath, 'utf8');
-test(
-  'renderer.js: Cleared of legacy mock data generator',
-  !rendererCode.includes('generateMockData'),
-  'Still contains generateMockData'
-);
+for (const file of ['telemetry.html','analytics.html','sensor-logs.html']) {
+  test(`${file}: Loads the current recorded-data workspace`,
+    /<script\b[^>]*\bsrc=["'][^"']*\/sensor-workspace\.js(?:[?][^"']*)?["']/i.test(fs.readFileSync(path.join(publicRoot,file),'utf8')),
+    'The active sensor page no longer loads the audited workspace renderer');
+}
 
 // 10. staff.js & staff.html (Registered Maintenance Staff)
 const staffJsPath = path.join(__dirname, '../public/js/staff.js');
@@ -149,12 +183,6 @@ test(
   'staff.html: Detail modal cleared of Carlos Rivera placeholder',
   !staffHtmlCode.includes('Carlos Rivera') && !staffHtmlCode.includes('carlos@ecotrack.local'),
   'Still contains Carlos Rivera in staff.html modal'
-);
-
-test(
-  'telemetry-new.js: Visual demo simulator loop removed',
-  !telemCode.includes('UI_CADENCE_MS') && !telemCode.includes('lastUIUpdateMap'),
-  'Still contains fake telemetry generator loop'
 );
 
 // 5. node-sync.js

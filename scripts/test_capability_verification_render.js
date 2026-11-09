@@ -1,6 +1,6 @@
 const {app,BrowserWindow,ipcMain}=require('electron'),fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {PGlite}=require('../scratch/cloud-db-test-runtime/node_modules/@electric-sql/pglite');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'reports/multi-brand-capabilities'),read=f=>fs.readFileSync(path.join(root,f),'utf8');
+const root=path.resolve(__dirname,'..'),out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root,'reports/multi-brand-capabilities'),read=f=>fs.readFileSync(path.join(root,f),'utf8');
 app.setPath('userData',path.join(root,'scratch/capability-verification-electron'));app.disableHardwareAcceleration();app.on('window-all-closed',()=>{});
 app.whenReady().then(async()=>{
  const db=new PGlite(),previous=read('scripts/test_cloud_hardware_database.js');await db.exec(previous.slice(previous.indexOf(' await db.exec(`')+16,previous.indexOf('`);')));

@@ -17,6 +17,7 @@ spec.loader.exec_module(backend)
 class DatabaseCleanupTests(unittest.TestCase):
     def setUp(self):
         self.api = backend.app.test_client()
+        self.api.environ_base['HTTP_AUTHORIZATION'] = 'Bearer ' + backend.monitoring_service.admin_token
         with closing(backend.get_db_connection()) as conn:
             conn.execute('DELETE FROM telemetry'); conn.commit()
         for row in [{'id': 'a', 'node_id': 'db-a', 'sensor_name': 'node-a', 'battery': 3.7},
@@ -62,8 +63,9 @@ class DatabaseCleanupTests(unittest.TestCase):
 
     def test_missing_measurements_are_unknown(self):
         row = self.api.get('/api/telemetry/c').get_json()
-        for field in ['temperature', 'pressure', 'battery', 'rssi', 'ac_on']:
+        for field in ['temperature', 'rotation_rpm', 'battery', 'rssi', 'ac_on']:
             self.assertIsNone(row[field])
+        self.assertNotIn('pressure', row, 'The retired pressure field is absent from current telemetry outputs')
         self.assertEqual(self.api.patch('/api/telemetry/b', json={'battery': None, 'ac_on': False}).status_code, 200)
         self.assertIsNone(self.api.get('/api/telemetry/b').get_json()['battery'])
         self.assertEqual(self.api.get('/api/telemetry/b').get_json()['ac_on'], 0)

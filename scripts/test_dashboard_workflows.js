@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8').replace(/\r\n/g, '\n');
 const section = (file, start, end) => {
   const source = read(file);
   const first = source.indexOf(start);
@@ -66,13 +66,20 @@ async function main() {
   shared.saveViolationToAuditHistory({ ...violation, id: 'v2', content: '__INBOX_DISMISSED__|||Temperature went above 30°C' });
   assert.equal(shared.getStoredViolationAuditHistory()[0].is_dismissed_from_inbox, true);
 
-  const logs = environment({ globalNodeRecords: [{ id: 'n1', interval_val: 30, interval_unit: 'Seconds' }, { name: 'n2', interval_val: 5, interval_unit: 'Minutes' }] });
-  vm.runInContext(section('public/js/logs.js', 'function getConfirmedAcOnState(', '// Helper: Calculate previous period'), logs);
-  const heartbeat = id => ({ nodeId: id, status: 'online', acOn: true, temperature: 24, created: '2026-10-02T10:00:00Z' });
-  const runtime = logs.calculateRuntimeFromLogs([heartbeat('n1'), heartbeat('n2'), heartbeat('unknown')]);
-  assert.equal(runtime.nodeRuntimes.n1, 30 / 3600);
-  assert.equal(runtime.nodeRuntimes.n2, 5 / 60);
-  assert.equal(runtime.nodeRuntimes.unknown, 30 / 3600);
+  const snapshots = { innerHTML: '' };
+  const sensorStats = environment({ $: () => snapshots,
+    num: (value, digits = 1) => Number.isFinite(value) ? value.toFixed(digits) : 'Unavailable',
+    stat: (label, value, note) => `${label}: ${value} (${note})`, stats: { sample_count: 3, confirmed_state_count: 0, confirmed_unit_hours: 0, observed_unit_hours: 2 } });
+  vm.runInContext(read('public/js/airflow-pressure.js'),sensorStats);
+  vm.runInContext(section('public/js/sensor-workspace.js','  function airflowAverage(','  function historicalAirflow('),sensorStats);
+  vm.runInContext(section('public/js/sensor-workspace.js', '  function renderStats()', '  function tariff()'), sensorStats);
+  sensorStats.renderStats();
+  assert(snapshots.innerHTML.includes('Confirmed Operation: Unknown'), 'Connectivity and sample counts do not imply confirmed AC-on runtime');
+  sensorStats.stats = { ...sensorStats.stats, confirmed_state_count: 3, confirmed_unit_hours: 0 };
+  sensorStats.renderStats();
+  assert(snapshots.innerHTML.includes('Confirmed Operation: 0 h'), 'Confirmed OFF feedback retains a real zero runtime');
+  sensorStats.stats.confirmed_unit_hours = 2;
+  sensorStats.renderStats(); assert(snapshots.innerHTML.includes('Confirmed Operation: 2 h'));
 
   let database = client(q => q.operation === 'update' ? { data: [{ id: 'canonical' }] } : { data: q.field === 'id' ? null : { id: 'canonical' } });
   let result = await ipcHandler('node-update-schedule', database)(null, { id: 'stale', name: 'node-4', wakeTime: '08:00', sleepTime: '18:00', intervalVal: 30, intervalUnit: 'Seconds' });
@@ -96,27 +103,27 @@ async function main() {
   const scheduler = environment({ fetch: async () => { hardwareCalls++; return { json: async () => ({}) }; } });
   scheduler.window.EcoToast = { success: text => toasts.push(['success', text]), error: text => toasts.push(['error', text]) };
   scheduler.window.EcoDataBus = { invalidate() { refreshes++; } };
-  scheduler.window.electron = { invoke: async () => ({ success: false, error: 'Permission denied' }) };
-  scheduler.document.getElementById = id => ({ value: id.startsWith('wake-') ? '08:00' : id.startsWith('sleep-') ? '18:00' : id.startsWith('interval-val-') ? '30' : 'Seconds' });
+  scheduler.window.EcoTrackHardwareCloud = { describe: () => 'offline', listStatus: async () => [], request: async () => { throw Error('Permission denied'); } };
+  scheduler.document.getElementById = id => ({ classList: {toggle(){}}, value: id.startsWith('wake-') ? '08:00' : id.startsWith('sleep-') ? '18:00' : id.startsWith('interval-val-') ? '30' : 'Seconds' });
   vm.runInContext(read('public/js/scheduler.js'), scheduler);
   vm.runInContext("savedRooms = { r1: { name: 'Room A', nodes: [{ id: 'node-4', pb_id: 'canonical' }] } };", scheduler);
   await scheduler.applyNodeSchedule('node-4');
   assert.equal(toasts[0][0], 'error');
   assert.equal(refreshes, 0);
   assert.equal(hardwareCalls, 0);
-  scheduler.window.electron.invoke = async () => ({ success: true, data: [{ id: 'canonical' }] });
+  scheduler.window.EcoTrackHardwareCloud.request = async () => ({ id: 'command-1', node_id: 'canonical' });
   await scheduler.applyNodeSchedule('node-4');
   assert.equal(toasts.at(-1)[0], 'success');
   assert(refreshes > 0);
-  assert.equal(hardwareCalls, 1);
+  assert.equal(hardwareCalls, 0, 'Schedules use cloud commands without direct LAN writes');
   let schedulerData = { buildingRecords: [{ id: 'b1', name: 'Campus' }], floorRecords: [], roomRecords: [{ id: 'r1', name: 'Room A', building_id: 'b1' }], nodeRecords: [{ id: 'canonical', name: 'node-4', room_id: 'r1', wake_time: '06:00', sleep_time: '22:00', interval_val: 15, interval_unit: 'Minutes' }] };
   scheduler.window.ensureLocationHierarchy = shared.window.ensureLocationHierarchy;
   scheduler.window.EcoDataBus.getCached = () => schedulerData;
   scheduler.window.EcoDataBus.query = async () => schedulerData;
   scheduler.document.getElementById = () => null;
   await scheduler.loadSchedulerWithSWR(true);
-  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].wakeTime", scheduler), '08:00');
-  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].intervalVal", scheduler), 30);
+  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].wakeTime", scheduler), '06:00');
+  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].intervalVal", scheduler), 15);
   schedulerData = { buildingRecords: [], floorRecords: [], roomRecords: [], nodeRecords: [] };
   await scheduler.loadSchedulerWithSWR(true);
   assert.equal(vm.runInContext('Object.keys(savedRooms).length', scheduler), 0);
@@ -179,6 +186,6 @@ async function main() {
   reports = [{ id: 'm3', status: 'Completed', timeline: [{ title: 'submitted for admin verification' }, { title: 'Report verified by Admin' }] }];
   await poll.checkMaintenanceVerificationSubmissions();
   assert.equal(alerts.length, 2);
-  console.log('Dashboard workflow regressions passed: hierarchy, audit retention, reporting intervals, schedule writes, reference linkage, report editing, restoration, and verification polling.');
+  console.log('Dashboard workflow regressions passed: hierarchy, audit retention, confirmed sensor runtime presentation, schedule writes, reference linkage, report editing, restoration, and verification polling.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

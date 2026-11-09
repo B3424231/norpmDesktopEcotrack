@@ -1,0 +1,87 @@
+---
+title: EcoTrack - Accounts and locations
+config:
+  theme: base
+  look: classic
+  layout: dagre
+  er:
+    useMaxWidth: false
+    diagramPadding: 24
+    titleTopMargin: 12
+    entityPadding: 9
+    minEntityWidth: 215
+    minEntityHeight: 55
+    nodeSpacing: 42
+    rankSpacing: 58
+    fontSize: 24
+  themeVariables:
+    fontFamily: Arial
+    fontSize: 24px
+    lineColor: "#334155"
+    primaryTextColor: "#111827"
+    edgeLabelBackground: "#ffffff"
+---
+erDiagram
+    direction TB
+
+    AUTH_USERS["AUTH.USERS"] {
+        uuid id PK
+        varchar email
+    }
+    ADMINISTRATORS {
+        text id PK
+        uuid auth_user_id FK, UK
+        text username UK
+        text email UK
+        text role
+        boolean is_active
+    }
+    STAFF["STAFF - MOBILE"] {
+        text id PK
+        uuid auth_user_id FK, UK
+        text room_id
+        text name
+        text role
+        text assignment_scope
+        text status
+    }
+    BUILDINGS {
+        text id PK
+        text admin_id FK
+        text name
+    }
+    FLOORS {
+        text id PK
+        text building_id FK
+        text name
+    }
+    ROOMS {
+        text id PK
+        text floor_id FK
+        text admin_id FK
+        text name
+        integer node_limit
+    }
+
+    AUTH_USERS |o..o| ADMINISTRATORS : authenticates
+    AUTH_USERS |o..o| STAFF : authenticates
+    ADMINISTRATORS |o..o{ BUILDINGS : manages
+    BUILDINGS |o..o{ FLOORS : contains
+    FLOORS |o..o{ ROOMS : contains
+    ADMINISTRATORS |o..o{ ROOMS : owns
+    ROOMS |o..o{ STAFF : assigns_REF
+
+    classDef auth fill:#fce7f3,stroke:#ec4899,color:#111827
+    classDef location fill:#ccfbf1,stroke:#14b8a6,color:#111827
+    classDef device fill:#dcfce7,stroke:#22c55e,color:#111827
+    classDef rule fill:#ffedd5,stroke:#f97316,color:#111827
+    classDef junction fill:#fef9c3,stroke:#eab308,color:#111827
+    classDef alert fill:#e0f2fe,stroke:#0ea5e9,color:#111827
+    classDef readings fill:#fee2e2,stroke:#ef4444,color:#111827
+    classDef maintenance fill:#ede9fe,stroke:#8b5cf6,color:#111827
+    class AUTH_USERS auth
+    class ADMINISTRATORS auth
+    class STAFF auth
+    class BUILDINGS location
+    class FLOORS location
+    class ROOMS location

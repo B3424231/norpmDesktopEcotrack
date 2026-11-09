@@ -1,0 +1,275 @@
+[
+  {
+    "project": "desktop",
+    "path": "backend/app.py",
+    "bytes": 56000,
+    "mtime": 1791623079.7375438,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ac-off-recording/before/backend/app.py",
+    "bytes": 53555,
+    "mtime": 1791622163.380594,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/analytics-reset/hardcoded-candidates-after.json",
+    "bytes": 25581,
+    "mtime": 1791465360.0207033,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/analytics-reset/hardcoded-candidates.json",
+    "bytes": 36894,
+    "mtime": 1791464287.9959857,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/database-audit/column-references.json",
+    "bytes": 13075544,
+    "mtime": 1791460933.69172,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/database-audit/table-references.json",
+    "bytes": 298333,
+    "mtime": 1791460856.6437132,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ir-latency/before/scripts/test_ir_realtime_database.js",
+    "bytes": 9035,
+    "mtime": 1791568233.2103307,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ir-transmitter/before/scripts/test_cloud_hardware_database.js",
+    "bytes": 11868,
+    "mtime": 1791538956.4556546,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/mobile-home-registration/before/scripts/test-database-contracts.cjs",
+    "bytes": 46322,
+    "mtime": 1791714106.6919892,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/verification.stderr.log",
+    "bytes": 2015,
+    "mtime": 1791578353.0765817,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/backend/app.py",
+    "bytes": 53555,
+    "mtime": 1791622168.226555,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/generate_aircon_names_migration.py",
+    "bytes": 2972,
+    "mtime": 1791578007.7511523,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/test_ac_recording_database.js",
+    "bytes": 7087,
+    "mtime": 1791622951.7781868,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/test_capability_verification_render.js",
+    "bytes": 9735,
+    "mtime": 1791577172.6886265,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/scripts/test_multi_brand_database.js",
+    "bytes": 8127,
+    "mtime": 1791575878.0388794,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/implementation-provenance/update_controller_details_layout.py.txt",
+    "bytes": 4758,
+    "mtime": 1791575593.9635458,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/normal-control-ui/before/scripts/test_capability_verification_render.js",
+    "bytes": 12147,
+    "mtime": 1791613888.1674984,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/registration-modal/before/scripts/test_controller_registration_database.js",
+    "bytes": 7842,
+    "mtime": 1791571956.9911797,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/remote-power/before/scripts/test_command_retention.js",
+    "bytes": 10054,
+    "mtime": 1791557897.360107,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scratch/inspect_schema_tables.js",
+    "bytes": 634,
+    "mtime": 1790603151.2193913,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scratch/cloud-db-test-runtime/node_modules/@electric-sql/pglite/dist/live/index.cjs",
+    "bytes": 21357,
+    "mtime": 1791470120.0791504,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scratch/cloud-db-test-runtime/node_modules/@electric-sql/pglite/dist/live/index.js",
+    "bytes": 11231,
+    "mtime": 1791470120.4095824,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/generate_ac_capabilities.py",
+    "bytes": 7251,
+    "mtime": 1791577917.0416317,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/generate_aircon_names_migration.py",
+    "bytes": 7026,
+    "mtime": 1791578240.931047,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_ac_recording_database.js",
+    "bytes": 7928,
+    "mtime": 1791623079.7375438,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_capability_verification_render.js",
+    "bytes": 11001,
+    "mtime": 1791614185.2277942,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_cloud_hardware_database.js",
+    "bytes": 13865,
+    "mtime": 1791538956.4556546,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_command_retention.js",
+    "bytes": 10925,
+    "mtime": 1791557968.1998768,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_controller_registration_database.js",
+    "bytes": 8227,
+    "mtime": 1791573544.4630919,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_database_cleanup.py",
+    "bytes": 4974,
+    "mtime": 1791462548.3943245,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_ir_realtime_database.js",
+    "bytes": 9369,
+    "mtime": 1791568829.1137717,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_multi_brand_database.js",
+    "bytes": 11057,
+    "mtime": 1791579293.0475798,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/test_supabase_delivery_safety.js",
+    "bytes": 5757,
+    "mtime": 1791610949.3195877,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/verify_maintenance_supabase.js",
+    "bytes": 3781,
+    "mtime": 1787993403.8732736,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "mobile",
+    "path": "scratch/purge-telemetry-cutoff.py",
+    "bytes": 6917,
+    "mtime": 1791048932.3711088,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "mobile",
+    "path": "scratch/aircon-state/desktop/backend/app.py",
+    "bytes": 43276,
+    "mtime": 1791042780.8390684,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "mobile",
+    "path": "scratch/backend-audit/secure-storage-sql.cjs",
+    "bytes": 4919,
+    "mtime": 1790778033.8030176,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "mobile",
+    "path": "scripts/test-database-contracts.cjs",
+    "bytes": 47140,
+    "mtime": 1791714106.709924,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  },
+  {
+    "project": "mobile",
+    "path": "scripts/test-mobile-hardware-read-policy.cjs",
+    "bytes": 6329,
+    "mtime": 1791713248.3360064,
+    "reason": "Contains SQL statement text; retain conservatively with Supabase queries"
+  }
+]

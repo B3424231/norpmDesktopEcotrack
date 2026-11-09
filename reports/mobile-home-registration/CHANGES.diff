@@ -1,0 +1,2305 @@
+--- before/.easignore
++++ after/.easignore
+@@ -10,7 +10,7 @@
+ node_modules/
+ 
+ # Version control and IDE
+-.git/
++.git
+ .vscode/
+ .idea/
+ .claude/
+--- before/scripts/download-mobile-home-apk.cjs
++++ after/scripts/download-mobile-home-apk.cjs
+@@ -0,0 +1,10 @@
++const fs=require('node:fs'),{Readable}=require('node:stream'),{pipeline}=require('node:stream/promises');
++(async()=>{
++ const s=JSON.parse(fs.readFileSync('artifacts/mobile-home-eas-status.json','utf8'));
++ if(s.status!=='FINISHED'||!s.artifacts?.buildUrl)throw Error('The Expo build is not ready');
++ const r=await fetch(s.artifacts.buildUrl,{signal:AbortSignal.timeout(180000)});
++ if(!r.ok)throw Error('APK download failed: '+r.status);
++ const file='artifacts/EcoTrack-mobile-home-registration-20261011.apk';
++ await pipeline(Readable.fromWeb(r.body),fs.createWriteStream(file));
++ console.log(JSON.stringify({file,bytes:fs.statSync(file).size}));
++})().catch(e=>{console.error(e.message);process.exitCode=1});
+--- before/scripts/render-mobile-home-fixtures.cjs
++++ after/scripts/render-mobile-home-fixtures.cjs
+@@ -0,0 +1,43 @@
++const fs=require('fs'),path=require('path'),vm=require('vm'),ts=require('typescript'),React=require('react'),Web=require('react-native-web'),SSR=require('react-dom/server');
++const out=path.resolve('artifacts/mobile-home-visual');fs.mkdirSync(out,{recursive:true});
++let theme='dark',scale=1;
++const palettes={dark:{text:'#f1f5f9',textSecondary:'#94a3b8',emerald:'#10b981'},light:{text:'#0f172a',textSecondary:'#64748b',emerald:'#10b981'}};
++const cache=new Map();
++function load(file){
++ file=path.resolve(file);if(cache.has(file))return cache.get(file).exports;
++ const module={exports:{}};cache.set(file,module);
++ const code=ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React,esModuleInterop:true}}).outputText;
++ const req=name=>{
++  if(name==='react')return React;
++  if(name==='react-native')return Web;
++  if(name==='react-native-safe-area-context')return {SafeAreaView:({children,style})=>React.createElement(Web.View,{style},children)};
++  if(name==='expo-router')return {router:{push(){}}};
++  if(name==='@/context/settings-context')return {useSettings:()=>({effectiveTheme:theme,colors:palettes[theme],formatTemperatureDisplay:n=>n.toFixed(1)+' °C'})};
++  if(name.includes('themed-text'))return {ThemedText:({style,children,...rest})=>{
++   const s=Web.StyleSheet.flatten([{fontSize:16,lineHeight:24,fontWeight:500},style])||{};
++   return React.createElement(Web.Text,{...rest,style:{...s,fontSize:s.fontSize*scale,lineHeight:s.lineHeight*scale}},children);
++  }};
++  if(name.includes('app-icon'))return {AppIcon:({size=14,color='#10b981'})=>React.createElement(Web.View,{style:{width:size,height:size,borderRadius:4,borderWidth:2,borderColor:color}})};
++  if(name.includes('location-icon'))return {LocationIcon:({size=14,color='#10b981'})=>React.createElement(Web.View,{style:{width:size,height:size,borderRadius:8,borderWidth:2,borderColor:color}})};
++  if(name==='@/services/controller-display')return load('src/services/controller-display.ts');
++  throw Error('Unexpected visual dependency '+name);
++ };
++ vm.runInNewContext(code,{module,exports:module.exports,require:req,console,Date});return module.exports;
++}
++const Card=load('src/components/sensor-card.tsx').AcControllerCard,Detail=load('src/components/sensor-detail-sheet.tsx').AcControllerDetailSheet,Steps=load('src/components/controller-registration-steps.tsx').ControllerRegistrationSteps;
++const item={id:'node-fixture',name:'Ac Controller 1',connectionState:'online',powerSetting:'off',operatingMode:'heat',fanMode:'auto',setpoint:16,status:'optimal',statusLabel:'Online',building:'IC building',floor:'Floor 1',room:'Room 1',location:'Room 1',associatedAc:'TCL Split Type (Inverter)',acType:'Split Type (Inverter)',model:'ESP32-S3 IR controller',serialNumber:'esp32s3-9cd20604a7ac',lastSeen:'2026-10-11T09:50:00Z',specialFunctions:['Vertical swing','Horizontal swing','Turbo'],battery:'â€”'};
++let n=0;const files=[];
++for(const variant of [{theme:'dark',width:390,scale:1},{theme:'light',width:390,scale:1},{theme:'dark',width:320,scale:1.35},{theme:'light',width:320,scale:1.35}]){
++ theme=variant.theme;scale=variant.scale;
++ for(const kind of ['card','details','registration']){
++  const component=()=>React.createElement(Web.View,{style:{width:variant.width,height:844,backgroundColor:theme==='dark'?'#0b0f19':'#eefbf4',position:'relative',padding:kind==='details'?0:16}},
++   kind==='card'?React.createElement(Card,{controller:item,onPress(){}}):kind==='details'?React.createElement(Detail,{visible:true,controller:item,onClose(){},slideAnim:new Web.Animated.Value(0)}):
++   React.createElement(Web.View,null,['find','wifi','naming'].map(phase=>React.createElement(Web.View,{key:phase,style:{marginBottom:22}},React.createElement(Web.Text,{style:{color:palettes[theme].text}},'Step '+(phase==='find'?1:phase==='wifi'?2:3)+' of 3'),React.createElement(Steps,{phase})))));
++  const key='fixture'+(++n);Web.AppRegistry.registerComponent(key,()=>component);const app=Web.AppRegistry.getApplication(key);
++  const html=SSR.renderToStaticMarkup(app.element),css=SSR.renderToStaticMarkup(app.getStyleElement());
++  const filename=[kind,theme,variant.width,'font'+variant.scale].join('-')+'.html';files.push(filename);
++  fs.writeFileSync(path.join(out,filename),'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mobile UI fixture</title>'+css+'<style>html,body{margin:0;background:#64748b}#root{width:'+variant.width+'px;height:844px;position:relative;margin:auto;overflow:hidden}</style><div id="root">'+html+'</div>');
++ }
++}
++fs.writeFileSync(path.join(out,'index.html'),'<h1>Mobile UI fixtures â€” no live account data</h1>'+files.map(x=>'<p><a href="'+x+'">'+x+'</a></p>').join(''));
++console.log(JSON.stringify({fixtures:files.length,output:out,notes:'Real component JSX and React Native Web styles; fixture data, stub icons and safe-area wrapper. Physical phone behavior untested.'}));
+--- before/scripts/test-database-contracts.cjs
++++ after/scripts/test-database-contracts.cjs
+@@ -36,6 +36,9 @@
+ create table public.nodes(id text primary key,name text,room_id text,aircon_type text,brand text,mac_address text,ip_address text,wifi_ssid text,protocol_name text,status text,install_date text,wake_time text,sleep_time text,interval_val numeric,interval_unit text,created timestamptz,updated timestamptz);
+ create table public.aircons(id text primary key default gen_random_uuid()::text,asset_tag text unique,brand text,model text,aircon_type text,room_id text,node_id text,protocol text,protocol_name text,status text,created_at timestamptz default now(),updated_at timestamptz default now());
+ create table public.telemetry(id text primary key,node_id text,temperature numeric,status text,created timestamptz default clock_timestamp());
++-- Hardware is an installed prerequisite of the assigned-room status policy.
++create table public.ecotrack_device_state(node_id text primary key references public.nodes(id),device_id text,last_seen timestamptz,latest_ir jsonb);
++alter table public.ecotrack_device_state enable row level security;
+ create table public.maintenance_reports(id text primary key,staff_name text,aircon_id text,aircon_name text,aircon_type text,room_id text,room_name text,due_date text,description text,type text,priority text,status text,tasks jsonb,issue jsonb,timeline jsonb default '[]',parent_report_id text,linked_repair_id text,verification_remarks text,created timestamptz default now(),updated timestamptz default now());
+ create table public.mobile_notifications(id text primary key,staff_id text,staff_name text default 'All Staff',title text not null,message text not null,type text not null default 'task_reminder',priority text not null default 'medium',category text not null default 'maintenance',related_report_id text,aircon_id text,aircon_name text,location text,due_date text,is_read boolean default false,is_snoozed boolean default false,snooze_until timestamptz,created_at timestamptz default now(),updated_at timestamptz default now());
+ create table public.notifications(id text primary key,content text,type text,created timestamptz,read boolean default false);
+--- before/scripts/test-mobile-hardware-read-policy.cjs
++++ after/scripts/test-mobile-hardware-read-policy.cjs
+@@ -0,0 +1,42 @@
++const {test,before,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs');
++const {PGlite}=require('@electric-sql/pglite');let db;
++const alice='00000000-0000-4000-8000-000000000001',bob='00000000-0000-4000-8000-000000000002',admin='00000000-0000-4000-8000-000000000003',outsider='00000000-0000-4000-8000-000000000004';
++before(async()=>{
++ db=new PGlite();await db.exec("\n CREATE ROLE authenticated NOLOGIN; CREATE ROLE anon NOLOGIN; CREATE SCHEMA auth;\n CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;\n CREATE TABLE public.staff(id text primary key,auth_user_id uuid,room_id text,is_archived boolean default false,force_logout boolean default false,status text default 'active');\n CREATE TABLE public.administrators(auth_user_id uuid,is_active boolean default true);\n CREATE TABLE public.nodes(id text primary key,room_id text);\n CREATE TABLE public.ecotrack_device_state(node_id text primary key references public.nodes(id),device_id text,last_seen timestamptz,latest_ir jsonb);\n CREATE TABLE public.ecotrack_device_commands(id text primary key,node_id text);\n CREATE FUNCTION public.ecotrack_staff_id() RETURNS text LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$ SELECT s.id FROM public.staff s WHERE s.auth_user_id=auth.uid() AND NOT s.is_archived AND NOT s.force_logout AND lower(s.status) NOT IN ('archived','deactivated','disabled') LIMIT 1 $$;\n CREATE FUNCTION public.ecotrack_is_admin() RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$ SELECT EXISTS(SELECT 1 FROM public.administrators a WHERE a.auth_user_id=auth.uid() AND a.is_active) $$;\n CREATE FUNCTION public.ecotrack_can_access_room(p_room_id text) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path='' AS $$ SELECT auth.uid() IS NOT NULL AND (public.ecotrack_is_admin() OR EXISTS(SELECT 1 FROM public.staff s WHERE s.id=public.ecotrack_staff_id() AND s.room_id=p_room_id)) $$;\n ALTER TABLE public.nodes ENABLE ROW LEVEL SECURITY;\n ALTER TABLE public.ecotrack_device_state ENABLE ROW LEVEL SECURITY;\n ALTER TABLE public.ecotrack_device_commands ENABLE ROW LEVEL SECURITY;\n GRANT USAGE ON SCHEMA public,auth TO authenticated,anon;\n GRANT SELECT ON public.nodes,public.ecotrack_device_state,public.ecotrack_device_commands TO authenticated;\n CREATE POLICY node_read ON public.nodes FOR SELECT TO authenticated USING(public.ecotrack_can_access_room(room_id));\n CREATE POLICY ecotrack_device_state_admin_read ON public.ecotrack_device_state FOR SELECT TO authenticated USING(public.ecotrack_is_admin());\n CREATE POLICY ecotrack_device_commands_admin_read ON public.ecotrack_device_commands FOR SELECT TO authenticated USING(public.ecotrack_is_admin());\n INSERT INTO public.staff VALUES('s1','00000000-0000-4000-8000-000000000001','r1',false,false,'active'),('s2','00000000-0000-4000-8000-000000000002','r2',false,false,'active');\n INSERT INTO public.administrators VALUES('00000000-0000-4000-8000-000000000003',true);\n INSERT INTO public.nodes VALUES('n1','r1'),('n2','r2'),('n3',null);\n INSERT INTO public.ecotrack_device_state VALUES('n1','esp32s3-111111111111',now(),'{\"state\":{\"power\":false}}'),('n2','esp32s3-222222222222',now(),'{}'),('n3','esp32s3-333333333333',now(),'{}');\n INSERT INTO public.ecotrack_device_commands VALUES('command1','n1');\n");
++ const sql=fs.readFileSync('supabase/migrations/202610110001_assigned_staff_hardware_read.sql','utf8');
++ await db.exec(sql);await db.exec(sql);
++});
++after(async()=>db.close());
++async function owner(sql){await db.exec('reset role');return db.exec(sql);}
++async function asUser(id,sql){await db.exec('reset role');await db.query("select set_config('request.jwt.claim.sub',$1,false)",[id||'']);await db.exec(id?'set role authenticated':'set role anon');return db.query(sql);}
++test('staff sees only current-room hardware, including heartbeat and remote OFF',async()=>{
++ const a=await asUser(alice,'select * from public.ecotrack_device_state order by node_id');
++ assert.deepEqual(a.rows.map(x=>x.node_id),['n1']);assert.equal(a.rows[0].latest_ir.state.power,false);assert.ok(a.rows[0].last_seen);
++ assert.deepEqual((await asUser(bob,'select node_id from public.ecotrack_device_state')).rows.map(x=>x.node_id),['n2']);
++});
++test('cross-room direct reads and unlinked accounts return no status',async()=>{
++ assert.equal((await asUser(alice,"select * from public.ecotrack_device_state where node_id='n2'")).rows.length,0);
++ assert.equal((await asUser(outsider,'select * from public.ecotrack_device_state')).rows.length,0);
++});
++test('admin keeps all reads and anonymous users are denied',async()=>{
++ assert.equal((await asUser(admin,'select * from public.ecotrack_device_state')).rows.length,3);
++ await assert.rejects(asUser(null,'select * from public.ecotrack_device_state'),e=>e.code==='42501');
++});
++test('reassignment immediately revokes old room and allows new room',async()=>{
++ await owner("update public.staff set room_id='r2' where id='s1'");
++ assert.deepEqual((await asUser(alice,'select node_id from public.ecotrack_device_state')).rows.map(x=>x.node_id),['n2']);
++ await owner("update public.staff set room_id='r1' where id='s1'");
++});
++test('unassigned, archived, forced-logout and disabled staff cannot read status',async()=>{
++ for(const update of ["room_id=null","is_archived=true","force_logout=true","status='disabled'"]){
++  await owner("update public.staff set "+update+" where id='s1'");
++  assert.equal((await asUser(alice,'select * from public.ecotrack_device_state')).rows.length,0);
++  await owner("update public.staff set room_id='r1',is_archived=false,force_logout=false,status='active' where id='s1'");
++ }
++});
++test('status stays read-only and commands stay administrator-only',async()=>{
++ await assert.rejects(asUser(alice,"update public.ecotrack_device_state set last_seen=now() where node_id='n1'"),e=>e.code==='42501');
++ await assert.rejects(asUser(alice,"insert into public.ecotrack_device_commands values('bad','n1')"),e=>e.code==='42501');
++ assert.equal((await asUser(alice,'select * from public.ecotrack_device_commands')).rows.length,0);
++ assert.equal((await asUser(admin,'select * from public.ecotrack_device_commands')).rows.length,1);
++});
+--- before/scripts/test-mobile-home-state.cjs
++++ after/scripts/test-mobile-home-state.cjs
+@@ -50,7 +50,7 @@
+ });
+ test('visible registration has exactly three stages while mapping existing asynchronous phases correctly',()=>{
+  const ts=require('typescript'),source=fs.readFileSync('src/components/controller-registration-steps.tsx','utf8'),module={exports:{}};
+- vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText,{module,exports:module.exports,require:()=>({})});
++ vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText,{module,exports:module.exports,require:name=>name==='react-native'?{StyleSheet:{create:x=>x}}:{}});
+  for(const [phase,step] of [['find',1],['connecting',1],['wifi',2],['verifying',2],['naming',3],['success',3]]) assert.equal(module.exports.registrationStep(phase),step);
+  const screen=fs.readFileSync('src/app/index.tsx','utf8');
+  assert.match(screen,/controllers\.find\(item => item\.id === selectedControllerId\)/);
+--- before/scripts/test-render-regressions.cjs
++++ after/scripts/test-render-regressions.cjs
+@@ -18,7 +18,14 @@
+     '@/context/settings-context': { useSettings() { hooks.push('settings'); return settings; } } };
+   const module = { exports: {} };
+   vm.runInNewContext(ts.transpileModule(fs.readFileSync(file, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, esModuleInterop: true } }).outputText,
+-    { module, exports: module.exports, require: name => mocks[name] || {} });
++    { module, exports: module.exports, require: name => {
++      if (name === '@/services/controller-display') {
++        const helper = { exports: {} };
++        vm.runInNewContext(ts.transpileModule(fs.readFileSync('src/services/controller-display.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { module: helper, exports: helper.exports });
++        return helper.exports;
++      }
++      return mocks[name] || {};
++    } });
+   return { exports: module.exports, render(component, props) { hooks = []; const result = component(props); return { result, hooks: [...hooks] }; } };
+ }
+ 
+--- before/scripts/verify-mobile-home-apk.py
++++ after/scripts/verify-mobile-home-apk.py
+@@ -0,0 +1,24 @@
++import pathlib,zipfile,hashlib,json,struct
++root=pathlib.Path.cwd(); status=json.loads((root/'artifacts/mobile-home-eas-status.json').read_text(encoding='utf-8'))
++assert status['status']=='FINISHED',status['status']
++apk=root/'artifacts/EcoTrack-mobile-home-registration-20261011.apk'
++raw=apk.read_bytes()
++with zipfile.ZipFile(apk) as z:
++ assert z.testzip() is None,'Corrupt APK member'
++ names=z.namelist(); assert 'AndroidManifest.xml' in names and 'classes.dex' in names
++ manifest=z.read('AndroidManifest.xml')
++ def contains(value): return value.encode() in manifest or value.encode('utf-16le') in manifest
++ assert contains('com.ecotrack.app'),'Unexpected package'
++ permissions=['android.permission.BLUETOOTH_SCAN','android.permission.BLUETOOTH_CONNECT','android.permission.ACCESS_FINE_LOCATION']
++ assert all(contains(p) for p in permissions),'Missing setup permission'
++ bundle=z.read('assets/index.android.bundle')
++ labels=['Register AC Controller Device','Controller Details & Deployment','Target setpoint','Blower fan','Status unavailable']
++ assert all(x.encode() in bundle for x in labels),'Missing updated mobile labels'
++ assert b'AC Remote Controls' not in bundle,'Removed control page still included'
++ abis=sorted(set(x.split('/')[1] for x in names if x.startswith('lib/') and x.endswith('.so')))
++eocd=raw.rfind(b'PK\x05\x06');assert eocd>=0
++central=struct.unpack_from('<I',raw,eocd+16)[0]
++assert raw[central-16:central]==b'APK Sig Block 42','Signing block missing'
++out={'buildId':status['id'],'status':status['status'],'completedAt':status.get('completedAt'),'artifact':status['artifacts']['buildUrl'],'file':str(apk),'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'package':'com.ecotrack.app','zipIntegrity':'passed','signingBlockPresent':True,'cryptographicSignatureVerification':'not performed','permissionsPresent':permissions,'architectures':abis,'updatedLabelsPresent':labels,'removedAirconControlLabelAbsent':True}
++(root/'artifacts/mobile-home-apk-verification.json').write_text(json.dumps(out,indent=2),encoding='utf-8')
++print(json.dumps(out))
+--- before/src/app/devices.tsx
++++ after/src/app/devices.tsx
+@@ -24,6 +24,7 @@
+ import { ThemedText } from '@/components/themed-text';
+ import { FloatingBottomNavbar } from '@/components/floating-navbar';
+ import { AppIcon } from '@/components/app-icon';
++import { ControllerRegistrationSteps, registrationStep } from '@/components/controller-registration-steps';
+ import { LocationIcon } from '@/components/location-icon';
+ import { useSettings } from '@/context/settings-context';
+ import { CloudHardware } from '@/services/cloud-hardware';
+@@ -1054,8 +1055,8 @@
+             </View>
+           </View>
+ 
+-          {/* Add AC Controller Button */}
+-          <Pressable
++          {/* Cloud setup requires an administrator; staff can view assigned devices. */}
++          {userType === 'admin' && <Pressable
+             onPress={handleStartAddDevice}
+             style={({ pressed }) => [
+               styles.inlineAddBtn,
+@@ -1063,8 +1064,8 @@
+             ]}
+           >
+             <AppIcon name="devices" size={16} color="#ffffff" />
+-            <ThemedText style={styles.inlineAddBtnText}>+ Add AC Controller</ThemedText>
+-          </Pressable>
++            <ThemedText style={styles.inlineAddBtnText}>+ Register AC Controller</ThemedText>
++          </Pressable>}
+ 
+           {/* Search & Filter Bar */}
+           <View style={styles.searchFilterContainer}>
+@@ -1291,76 +1292,17 @@
+               {/* Modal Header */}
+               <View style={[styles.modalHeader, isDark && styles.modalHeaderDark]}>
+                 <ThemedText style={[styles.modalTitle, isDark && styles.textWhite]}>
+-                  Add AC Controller Device
++                  Register AC Controller Device
+                 </ThemedText>
+                 <Pressable hitSlop={12} onPress={handleCloseAddModal}>
+                   <ThemedText style={styles.closeModalText}>Cancel</ThemedText>
+                 </Pressable>
+               </View>
+ 
+-              {/* Step Progress Bar */}
+-              {addStep !== 'success' && (
+-                <View style={styles.stepProgressBar}>
+-                  <View style={styles.stepNodesRow}>
+-                    {(['find', 'connecting', 'wifi', 'verifying', 'naming'] as AddStep[]).map((st, idx) => {
+-                      const stepNum = idx + 1;
+-                      const isPassed =
+-                        (addStep === 'connecting' && idx < 1) ||
+-                        (addStep === 'wifi' && idx < 2) ||
+-                        (addStep === 'verifying' && idx < 3) ||
+-                        (addStep === 'naming' && idx < 4);
+-                      const isCurrent = addStep === st;
+-
+-                      return (
+-                        <React.Fragment key={st}>
+-                          <View style={styles.stepNodeContainer}>
+-                            <View
+-                              style={[
+-                                styles.stepNodeCircle,
+-                                isCurrent
+-                                  ? styles.stepNodeCircleCurrent
+-                                  : isPassed
+-                                  ? styles.stepNodeCirclePassed
+-                                  : isDark
+-                                  ? styles.stepNodeCircleFutureDark
+-                                  : styles.stepNodeCircleFutureLight,
+-                              ]}
+-                            >
+-                              <ThemedText
+-                                style={[
+-                                  styles.stepNodeText,
+-                                  isCurrent || isPassed ? styles.textWhite : { color: '#94a3b8' },
+-                                ]}
+-                              >
+-                                {isPassed ? '✓' : stepNum}
+-                              </ThemedText>
+-                            </View>
+-                            <ThemedText style={styles.stepNodeLabel}>
+-                              {st === 'find'
+-                                ? 'Find'
+-                                : st === 'connecting'
+-                                ? 'BLE'
+-                                : st === 'wifi'
+-                                ? 'Wi-Fi'
+-                                : st === 'verifying'
+-                                ? 'Verify'
+-                                : 'Aircon'}
+-                            </ThemedText>
+-                          </View>
+-                          {idx < 4 && (
+-                            <View
+-                              style={[
+-                                styles.stepConnectorLine,
+-                                isPassed ? styles.stepLineActive : (isDark ? styles.stepLineDark : styles.stepLineLight),
+-                              ]}
+-                            />
+-                          )}
+-                        </React.Fragment>
+-                      );
+-                    })}
+-                  </View>
+-                </View>
+-              )}
++              {addStep !== 'success' && <View>
++                <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Step {registrationStep(addStep)} of 3: {registrationStep(addStep) === 1 ? 'Bluetooth BLE Discovery' : registrationStep(addStep) === 2 ? 'Wi-Fi Setup' : 'Controller Details & Deployment'}</ThemedText>
++                <ControllerRegistrationSteps phase={addStep} />
++              </View>}
+ 
+               <ScrollView keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={styles.modalScrollBody} showsVerticalScrollIndicator={false}>
+                 {/* STEP 1: FIND DEVICE */}
+@@ -1371,7 +1313,7 @@
+                         <AppIcon name="bluetooth" size={28} color="#10b981" />
+                       </Animated.View>
+                       <ThemedText style={[styles.wizardTitle, isDark && styles.textWhite]}>
+-                        Find your ESP32-S3 Node
++                        Find your ESP32-S3 AC Controller
+                       </ThemedText>
+                       <ThemedText style={styles.wizardSubtitle}>
+                         Make sure your EcoTrack ESP32-S3 AC controller device is powered on and Bluetooth is enabled on your phone.
+@@ -1393,7 +1335,7 @@
+                           <ThemedText style={{ color: '#10b981', fontWeight: '700' }}>Scanning for ESP32 beacons...</ThemedText>
+                         </View>
+                       ) : (
+-                        <ThemedText style={{ color: '#10b981', fontWeight: '700' }}>⟳ Search for BLE Nodes</ThemedText>
++                        <ThemedText style={{ color: '#10b981', fontWeight: '700' }}>Connect Nearby ESP32</ThemedText>
+                       )}
+                     </Pressable>
+ 
+@@ -1914,7 +1856,7 @@
+                         <AppIcon name="edit" size={24} color="#10b981" />
+                       </View>
+                       <ThemedText style={[styles.wizardTitle, isDark && styles.textWhite]}>
+-                        Aircon & Node Registration
++                        Controller Details & Deployment
+                       </ThemedText>
+                       <ThemedText style={styles.wizardSubtitle}>
+                         Name the controller, choose its air conditioner, and verify the cloud connection.
+--- before/src/app/index.tsx
++++ after/src/app/index.tsx
+@@ -1,5 +1,7 @@
+ import { useState, useRef, useEffect, useCallback } from 'react';
+ import { createReadScope } from '@/services/query-utils';
++import { applyHomeControllerState, mergeHomeControllerFetch } from '@/services/home-controller-state';
++import type { CloudDeviceState } from '@/services/cloud-hardware';
+ import { createRefreshCoordinator, type RefreshCoordinator } from '@/services/refresh-coordinator';
+ 
+ import {
+@@ -54,7 +56,7 @@
+   const { effectiveTheme, colors, settings, triggerHaptic } = useSettings();
+   const theme = effectiveTheme;
+ 
+-  const pulseAnim = useRef(new Animated.Value(1)).current;
++  const [pulseAnim] = useState(() => new Animated.Value(1));
+ 
+   // Supabase live AC controllers and room assignment state
+   const [controllers, setControllers] = useState<AcControllerData[]>([]);
+@@ -76,7 +78,7 @@
+     }
+     const scope = createReadScope();
+     try {
+-      const resolved = await resolveWorkerAssignment(userEmail || userPhone || userName, scope);
++      const resolved = await resolveWorkerAssignment(userId || userEmail || userPhone || userName, scope);
+       scope.assertSuccessful();
+       const [controllerData, roomData] = resolved.isAssigned && resolved.roomId
+         ? await Promise.all([fetchLiveAcControllers(resolved.roomId, scope), fetchActiveRoom(resolved.roomId, scope)])
+@@ -86,7 +88,7 @@
+       snapshotUser.current = fetchUser;
+       setAssignmentInfo(resolved);
+       setUserAssignment(resolved.assignmentText);
+-      setControllers(controllerData || []);
++      setControllers(current => mergeHomeControllerFetch(controllerData || [], current));
+       setActiveRoom(roomData);
+       setFetchError(null);
+     } catch (err) {
+@@ -95,18 +97,23 @@
+     } finally {
+       if (isCurrent()) { setLoading(false); setRefreshing(false); }
+     }
+-  }, [fetchUser, userEmail, userPhone, userName, setUserAssignment]);
++  }, [fetchUser, userId, userEmail, userPhone, userName, setUserAssignment]);
+ 
+   useEffect(() => {
+     const refresh = createRefreshCoordinator(fetchControllers);
+     refreshRef.current = refresh;
+     void refresh.refresh();
+-    const unsubscribe = settings.autoSyncEnabled ? subscribeToNodes(() => refresh.schedule()) : () => {};
++    const unsubscribe = settings.autoSyncEnabled ? subscribeToNodes((row?: CloudDeviceState) => {
++      if (row) setControllers(current => current.map(item => applyHomeControllerState(item, row)));
++      else refresh.schedule();
++    }) : () => {};
++    const heartbeatTimer = settings.autoSyncEnabled ? setInterval(() => setControllers(current => current.map(item => applyHomeControllerState(item))), 15000) : null;
+     const intervalId = settings.autoSyncEnabled ? setInterval(() => { void refresh.refresh(); }, settings.syncFrequency * 1000) : null;
+     return () => {
+       refresh.dispose();
+       if (refreshRef.current === refresh) refreshRef.current = null;
+       unsubscribe();
++      if (heartbeatTimer) clearInterval(heartbeatTimer);
+       if (intervalId) clearInterval(intervalId);
+     };
+   }, [fetchControllers, settings.autoSyncEnabled, settings.syncFrequency]);
+@@ -117,7 +124,7 @@
+   };
+ 
+   useEffect(() => {
+-    Animated.loop(
++    const animation = Animated.loop(
+       Animated.sequence([
+         Animated.timing(pulseAnim, {
+           toValue: 1.4,
+@@ -130,8 +137,10 @@
+           useNativeDriver: true,
+         }),
+       ])
+-    ).start();
+-  }, []);
++    );
++    animation.start();
++    return () => animation.stop();
++  }, [pulseAnim]);
+ 
+   const getAvatarSource = (avatar: string, uri: string | null) => {
+     if (avatar === 'custom' && uri) {
+@@ -143,12 +152,14 @@
+   };
+ 
+   // States
+-  const [selectedController, setSelectedController] = useState<AcControllerData | null>(null);
++  const [selectedControllerId, setSelectedControllerId] = useState<string | null>(null);
++  const selectedController = controllers.find(item => item.id === selectedControllerId) || null;
+   const [bottomSheetVisible, setBottomSheetVisible] = useState(false);
+-  const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
++  const detailsVisible = bottomSheetVisible && selectedController !== null;
++  const [slideAnim] = useState(() => new Animated.Value(SCREEN_HEIGHT));
+ 
+   const openDetails = (item: AcControllerData) => {
+-    setSelectedController(item);
++    setSelectedControllerId(item.id);
+     setBottomSheetVisible(true);
+     Animated.spring(slideAnim, {
+       toValue: 0,
+@@ -166,7 +177,7 @@
+       useNativeDriver: true,
+     }).start(() => {
+       setBottomSheetVisible(false);
+-      setSelectedController(null);
++      setSelectedControllerId(null);
+     });
+   };
+ 
+@@ -356,7 +367,7 @@
+                 ]}>
+                   <View style={[
+                     styles.livePulseDot,
+-                    !settings.autoSyncEnabled && { backgroundColor: '#94a3b8' },
++                    (!settings.autoSyncEnabled || !controllers.some(item => item.connectionState === 'online')) && { backgroundColor: '#94a3b8' },
+                   ]} />
+                 </View>
+               </View>
+@@ -409,13 +420,13 @@
+ 
+       {/* Slide-up Bottom Sheet Modal */}
+       <AcControllerDetailSheet
+-        visible={bottomSheetVisible}
++        visible={detailsVisible}
+         controller={selectedController}
+         onClose={closeDetails}
+         slideAnim={slideAnim}
+       />
+ 
+-      {!bottomSheetVisible && <FloatingBottomNavbar currentPage="home" />}
++      {!detailsVisible && <FloatingBottomNavbar currentPage="home" />}
+     </LinearGradient>
+   );
+ }
+--- before/src/components/controller-registration-steps.tsx
++++ after/src/components/controller-registration-steps.tsx
+@@ -0,0 +1,33 @@
++import React from 'react';
++import { StyleSheet, View } from 'react-native';
++import { ThemedText } from './themed-text';
++import { useSettings } from '@/context/settings-context';
++
++export type RegistrationPhase = 'find' | 'connecting' | 'wifi' | 'verifying' | 'naming' | 'success';
++export function registrationStep(phase: RegistrationPhase): number {
++  return phase === 'find' || phase === 'connecting' ? 1 : phase === 'wifi' || phase === 'verifying' ? 2 : 3;
++}
++export function ControllerRegistrationSteps({ phase }: { phase: RegistrationPhase }) {
++  const { colors } = useSettings();
++  const current = registrationStep(phase);
++  return <View style={styles.steps}>
++    {['Bluetooth', 'Wi-Fi', 'Details'].map((label, index) => {
++      const number = index + 1, passed = number < current || phase === 'success', active = number === current;
++      return <View key={label} style={[styles.step, active && styles.active]} accessibilityLabel={`Step ${number} of 3: ${label}`} accessibilityState={{ selected: active }}>
++        <View style={[styles.number, (active || passed) && styles.numberActive]}>
++          <ThemedText style={[styles.numberText, (active || passed) && { color: '#ffffff' }]}>{passed ? '✓' : number}</ThemedText>
++        </View>
++        <ThemedText style={[styles.label, { color: active || passed ? colors.emerald : colors.textSecondary }]}>{label}</ThemedText>
++      </View>;
++    })}
++  </View>;
++}
++const styles = StyleSheet.create({
++  steps: { flexDirection: 'row', gap: 6, paddingVertical: 10, marginBottom: 10 },
++  step: { flex: 1, minWidth: 0, alignItems: 'center', gap: 6, paddingVertical: 10, borderRadius: 12, borderWidth: 1, borderColor: 'transparent' },
++  active: { borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)' },
++  number: { width: 25, height: 25, borderRadius: 13, backgroundColor: 'rgba(148,163,184,0.14)', justifyContent: 'center', alignItems: 'center' },
++  numberActive: { backgroundColor: '#10b981' },
++  numberText: { fontSize: 12, lineHeight: 18, fontWeight: '800', color: '#94a3b8' },
++  label: { fontSize: 12, lineHeight: 18, fontWeight: '700', textAlign: 'center', flexShrink: 1 },
++});
+--- before/src/components/sensor-card.tsx
++++ after/src/components/sensor-card.tsx
+@@ -1,617 +1,110 @@
+ import React from 'react';
+-import { StyleSheet, View, Pressable, Platform } from 'react-native';
+-import { SymbolView } from 'expo-symbols';
++import { StyleSheet, View, Pressable } from 'react-native';
++import { router } from 'expo-router';
+ import { ThemedText } from './themed-text';
+-import { Spacing } from '@/constants/theme';
+-import { Image } from 'expo-image';
+-import { router } from 'expo-router';
++import { AppIcon } from './app-icon';
++import { LocationIcon } from './location-icon';
+ import { useSettings } from '@/context/settings-context';
+-import { LocationIcon } from './location-icon';
+-import { AppIcon } from './app-icon';
++import { batteryReading, controllerConnection, controllerPower } from '@/services/controller-display';
++import type { SensorData } from '@/services/supabase';
+ 
+-import { 
+-  ICON_LOCATION, 
+-  ICON_TEMPERATURE, 
+-  ICON_AIRCONSTATE, 
+-  ICON_CHECKLIST, 
+-  ICON_CHEVRON_RIGHT,
+-  getColoredSvgUri,
+-} from '@/constants/custom-icons';
+-
+-const ICON_BATTERY = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTBiOTgxIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHJlY3QgeD0iMiIgeT0iNyIgd2lkdGg9IjE2IiBoZWlnaHQ9IjEwIiByeD0iMiIgcnk9IjIiLz48cGF0aCBkPSJNMjIgMTF2MmExIDEgMCAwIDEtMSAxIi8+PC9zdmc+';
+-
+-export interface AcControllerData {
+-  id: string;
+-  name: string;
+-  value: string;
+-  status: 'optimal' | 'warning' | 'critical';
+-  statusLabel: string;
+-  details: string;
+-  location: string;
+-  aircon?: string;
+-  ventTemp?: string;
+-  pressure?: string;
+-  battery?: string;
+-  building?: string;
+-  floor?: string;
+-  room?: string;
+-  sensorName?: string;
+-  acType?: string;
+-  acId?: string; // e.g. AC-002, AC-105, AC-088
+-  activeReportId?: string; // e.g. MR-2026-001, MR-2026-002
+-  maintenanceStatus?: string; // e.g. 'Checklist Due', 'In Progress', 'Completed'
+-  maintenancePriority?: 'High' | 'Medium' | 'Low';
+-  wakeTime?: string;
+-  sleepTime?: string;
+-  interval?: string;
+-  rssi?: number | null;
+-  signalStrengthLabel?: string;
+-  signalStrengthDbm?: string;
+-  airconState?: string;
+-  updatedTime?: string;
+-  roomId?: string | null;
+-  isAssignedToRoom?: boolean;
+-  // Admin Desktop Parity
+-  brand?: string;
+-  airconBrand?: string;
+-  associatedAc?: string;
+-  model?: string;
+-  serialNumber?: string;
+-  pirOccupancy?: string;
+-  dailySchedule?: string;
+-}
+-
+-export type SensorData = AcControllerData;
+-
++export type AcControllerData = SensorData;
++export type SensorDataLegacy = AcControllerData;
++export type { SensorData };
+ export interface AcControllerCardProps {
+   controller?: AcControllerData;
+-  sensor?: AcControllerData; // backward compatibility
++  sensor?: AcControllerData;
+   onPress: () => void;
+   onViewChecklist?: (controller: AcControllerData) => void;
+ }
+-
+ export function AcControllerCard({ controller, sensor, onPress, onViewChecklist }: AcControllerCardProps) {
+   const item = controller || sensor;
+   const { effectiveTheme, formatTemperatureDisplay, colors } = useSettings();
+   const isDark = effectiveTheme === 'dark';
+-
+-  // Dynamically formatted temperature based on user settings (°C or °F)
+-  const ventTemp = item?.ventTemp;
+-  const displayTemp = React.useMemo(() => {
+-    if (!ventTemp || ventTemp === 'N/A') return 'N/A';
+-    const match = ventTemp.match(/-?\d+(\.\d+)?/);
+-    if (match) {
+-      return formatTemperatureDisplay(parseFloat(match[0]));
+-    }
+-    return ventTemp;
+-  }, [ventTemp, formatTemperatureDisplay]);
+-
+-  // Battery status color coding
+-  const batteryNum = parseInt(item?.battery || '100', 10);
+-  const batteryColor = batteryNum >= 80 ? '#10b981' : batteryNum >= 40 ? '#f59e0b' : '#ef4444';
+-  const batteryBg = batteryNum >= 80 ? 'rgba(16, 185, 129, 0.1)' : batteryNum >= 40 ? 'rgba(245, 158, 11, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+-
+-  // Memoized dynamically colored SVG URIs for cross-platform rendering
+-  const coloredBatteryUri = React.useMemo(() => getColoredSvgUri(ICON_BATTERY, batteryColor), [batteryColor]);
+-  const coloredTempUri = React.useMemo(() => getColoredSvgUri(ICON_TEMPERATURE, '#ef4444'), []);
+-  const coloredAcBoltUri = React.useMemo(() => getColoredSvgUri(ICON_AIRCONSTATE, '#10b981'), []);
+-  const coloredAcCoolingUri = React.useMemo(() => getColoredSvgUri(ICON_AIRCONSTATE, '#06b6d4'), []);
+-
+-  const stateStr = item?.airconState || item?.aircon || 'STANDBY';
+-  const isCooling = stateStr.toUpperCase().includes('COOL') || stateStr.toUpperCase().includes('ACTIVE');
+-  const isFan = stateStr.toUpperCase().includes('FAN');
+-  const stateColor = isCooling ? (isDark ? '#38bdf8' : '#0284c7') : isFan ? '#f59e0b' : colors.text;
+-  const stateIconTintColor = isCooling ? '#06b6d4' : isFan ? '#f59e0b' : '#94a3b8';
+-  const coloredStateUri = React.useMemo(() => getColoredSvgUri(ICON_AIRCONSTATE, stateIconTintColor), [stateIconTintColor]);
+-
++  const measured = React.useMemo(() => {
++    const match = item?.ventTemp?.match(/^-?\d+(\.\d+)?/);
++    return match ? formatTemperatureDisplay(Number(match[0])) : null;
++  }, [item?.ventTemp, formatTemperatureDisplay]);
+   if (!item) return null;
+-
+-  // Status-based subtle dot color
+-  const statusColor = item.status === 'optimal' ? '#10b981' : item.status === 'warning' ? '#f59e0b' : '#ef4444';
+-
+-  const handleChecklistPress = () => {
+-    if (onViewChecklist) {
+-      onViewChecklist(item);
+-    } else {
+-      router.push({
+-        pathname: '/Maintenance',
+-        ...(item.activeReportId ? { params: { reportId: item.activeReportId } } : {}),
+-      } as any);
+-    }
+-  };
+-
+-  const hasActiveMaintenance = Boolean(item.activeReportId && item.maintenanceStatus !== 'No Maintenance Yet');
+-  const hasHighPriority = hasActiveMaintenance && item.maintenancePriority === 'High';
+-  const hasInProgress = hasActiveMaintenance && item.maintenanceStatus === 'In Progress';
+-  const hasForVerification = hasActiveMaintenance && item.maintenanceStatus === 'For Verification';
+-
+-  return (
+-    <View
+-      style={[
+-        styles.cardContainer,
+-        {
+-          backgroundColor: isDark ? '#121826' : '#ffffff',
+-          borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#e2e8f0',
+-        },
+-      ]}
+-    >
+-      {/* Upper Card Body (Clickable to open AC Controller Detail Modal) */}
+-      <Pressable
+-        onPress={onPress}
+-        style={({ pressed }) => [
+-          styles.cardBody,
+-          pressed && styles.bodyPressed,
+-        ]}
+-      >
+-        {/* Top Row: Name and Battery */}
+-        <View style={styles.topRow}>
+-          <View style={styles.titleContainer}>
+-            <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
+-            <ThemedText style={[styles.cardTitle, { color: colors.text }]} numberOfLines={1}>
+-              {item.name}
+-            </ThemedText>
+-          </View>
+-          <View style={[styles.batteryRow, { backgroundColor: batteryBg }]}>
+-            <SymbolView 
+-              name="battery.100" 
+-              tintColor={batteryColor} 
+-              size={15} 
+-              fallback={
+-                <Image
+-                  source={{ uri: coloredBatteryUri }}
+-                  style={{ width: 15, height: 15, tintColor: batteryColor }}
+-                  tintColor={batteryColor}
+-                  contentFit="contain"
+-                />
+-              } 
+-            />
+-            <ThemedText style={[styles.batteryPercentage, { color: batteryColor }]}>
+-              {item.battery || '—'}
+-            </ThemedText>
+-          </View>
++  const connection = controllerConnection(item), battery = batteryReading(item.battery);
++  const target = typeof item.setpoint === 'number' ? formatTemperatureDisplay(item.setpoint) : '—';
++  const location = [item.building, item.floor, item.room].filter(Boolean).join(' • ') || item.location || 'Unassigned';
++  const hasTask = Boolean(item.activeReportId && item.maintenanceStatus !== 'No Maintenance Yet');
++  const openChecklist = () => onViewChecklist ? onViewChecklist(item) : router.push({
++    pathname: '/Maintenance', ...(item.activeReportId ? { params: { reportId: item.activeReportId } } : {}),
++  } as any);
++  const panel = { backgroundColor: isDark ? '#0d1420' : '#f8fafc', borderColor: isDark ? '#243041' : '#e2e8f0' };
++  return <View style={[styles.card, { backgroundColor: isDark ? '#121826' : '#ffffff', borderColor: panel.borderColor }]}>
++    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={'View ' + item.name} style={styles.body}>
++      <View style={styles.heading}>
++        <ThemedText style={[styles.name, { color: colors.text }]}>{item.name}</ThemedText>
++        <View style={[styles.connection, { backgroundColor: connection.color + '15' }]}>
++          <View style={[styles.dot, { backgroundColor: connection.color }]} />
++          <ThemedText style={[styles.connectionText, { color: connection.color }]}>{connection.label}</ThemedText>
+         </View>
+-
+-        {/* Location Row (Highlighted Building, Floor, Room) */}
+-        <View style={[
+-          styles.locationRow, 
+-          { 
+-            backgroundColor: isDark ? 'rgba(16, 185, 129, 0.08)' : '#f8fafc', 
+-            borderColor: isDark ? 'rgba(16, 185, 129, 0.18)' : '#e2e8f0' 
+-          }
+-        ]}>
+-          <LocationIcon size={12} color="#10b981" />
+-          <ThemedText style={[styles.locationText, { color: isDark ? '#a7f3d0' : colors.textSecondary }]}>
+-            {item.building ? `${item.building} • ` : ''}{item.floor ? `${item.floor} • ` : ''}{item.room || item.location || 'Unassigned'}
+-          </ThemedText>
++      </View>
++      <View style={styles.location}>
++        <LocationIcon size={14} color="#10b981" />
++        <ThemedText style={[styles.locationText, { color: colors.textSecondary }]}>{location}</ThemedText>
++      </View>
++      <View style={styles.metrics}>
++        <View style={[styles.metric, panel]}>
++          <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Target setpoint</ThemedText>
++          <ThemedText style={[styles.temperature, { color: colors.text }]}>{target}</ThemedText>
+         </View>
+-
+-        {/* Middle Row: Temperature and AC Controller Model */}
+-        <View style={styles.middleRow}>
+-          {/* Temperature Column */}
+-          <View style={[
+-            styles.metricColumn, 
+-            { 
+-              backgroundColor: isDark ? 'rgba(0, 0, 0, 0.25)' : '#f9fafb', 
+-              borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#f3f4f6' 
+-            }
+-          ]}>
+-            <View style={styles.paramLabelRow}>
+-              <SymbolView 
+-                name="thermometer" 
+-                tintColor="#ef4444" 
+-                size={14} 
+-                fallback={
+-                  <Image
+-                    source={{ uri: coloredTempUri }}
+-                    style={{ width: 14, height: 14, tintColor: '#ef4444' }}
+-                    tintColor="#ef4444"
+-                    contentFit="contain"
+-                  />
+-                } 
+-              />
+-              <ThemedText style={[styles.paramLabel, { color: colors.textSecondary }]}>Temperature</ThemedText>
+-            </View>
+-            <ThemedText style={[styles.paramValue, { color: colors.text }]}>
+-              {displayTemp}
+-            </ThemedText>
+-          </View>
+-
+-          {/* AC Controller Device Column */}
+-          <View style={[
+-            styles.metricColumn, 
+-            { 
+-              backgroundColor: isDark ? 'rgba(0, 0, 0, 0.25)' : '#f9fafb', 
+-              borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#f3f4f6' 
+-            }
+-          ]}>
+-            <View style={styles.paramLabelRow}>
+-              <SymbolView 
+-                name="bolt.fill" 
+-                tintColor="#10b981" 
+-                size={14} 
+-                fallback={
+-                  <Image
+-                    source={{ uri: coloredAcBoltUri }}
+-                    style={{ width: 14, height: 14, tintColor: '#10b981' }}
+-                    tintColor="#10b981"
+-                    contentFit="contain"
+-                  />
+-                } 
+-              />
+-              <ThemedText style={[styles.paramLabel, { color: colors.textSecondary }]} numberOfLines={1}>AC Controller</ThemedText>
+-            </View>
+-            <ThemedText style={[styles.paramValue, { color: colors.text, fontSize: 13 }]} numberOfLines={1}>
+-              {item.associatedAc || (item.brand ? `${item.brand} ${item.acType || ''}`.trim() : (item.acId || item.aircon || item.acType || '—'))}
+-            </ThemedText>
+-          </View>
++        <View style={[styles.metric, panel]}>
++          <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Air conditioner</ThemedText>
++          <ThemedText style={[styles.value, { color: colors.text }]}>{item.associatedAc || item.acType || '—'}</ThemedText>
+         </View>
+-
+-        {/* Aircon State Row */}
+-        <View style={[
+-          styles.bottomRow, 
+-          { 
+-            backgroundColor: isDark ? 'rgba(0, 0, 0, 0.25)' : '#f9fafb', 
+-            borderColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#f3f4f6' 
+-          }
+-        ]}>
+-          <View style={styles.paramLabelRowCent}>
+-            <SymbolView 
+-              name={isCooling ? "snowflake" : isFan ? "wind" : "power"} 
+-              tintColor={stateIconTintColor} 
+-              size={14} 
+-              fallback={
+-                <Image
+-                  source={{ uri: coloredStateUri }}
+-                  style={{ width: 14, height: 14, tintColor: stateIconTintColor }}
+-                  tintColor={stateIconTintColor}
+-                  contentFit="contain"
+-                />
+-              } 
+-            />
+-            <ThemedText style={[styles.paramLabelCent, { color: colors.textSecondary }]}>Aircon State</ThemedText>
+-          </View>
+-          <ThemedText style={[styles.paramValueCent, { color: stateColor, fontWeight: '700' }]}>
+-            {stateStr}
+-          </ThemedText>
+-        </View>
+-      </Pressable>
+-
+-      {/* In-Card Separator */}
+-      <View style={[styles.cardSeparator, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.06)' : '#f3f4f6' }]} />
+-
+-      {/* Inside-the-Card "View Checklist Maintenance" Action Bar */}
+-      <Pressable
+-        onPress={handleChecklistPress}
+-        style={({ pressed }) => [
+-          styles.checklistButton,
+-          hasActiveMaintenance
+-            ? {
+-                backgroundColor: isDark ? '#064e3b' : '#f0fdf4',
+-                borderColor: isDark ? '#059669' : '#bbf7d0',
+-              }
+-            : {
+-                backgroundColor: isDark ? 'rgba(0, 0, 0, 0.2)' : '#f8fafc',
+-                borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#e2e8f0',
+-              },
+-          pressed && styles.checklistButtonPressed,
+-        ]}
+-      >
+-        <View style={styles.checklistLeftGroup}>
+-          <View
+-            style={[
+-              styles.checklistIconCircle,
+-              {
+-                backgroundColor: hasActiveMaintenance
+-                  ? (isDark ? '#0b291d' : '#ecfdf5')
+-                  : (isDark ? '#112217' : '#f1f5f9'),
+-              },
+-            ]}
+-          >
+-            <AppIcon
+-              name="checklist"
+-              size={16}
+-              color={hasActiveMaintenance ? '#10b981' : '#059669'}
+-              style={styles.checklistIcon}
+-            />
+-          </View>
+-          <View style={styles.checklistTextCol}>
+-            <ThemedText
+-              style={[
+-                styles.checklistBtnTitle,
+-                { color: hasActiveMaintenance ? (isDark ? '#34d399' : '#047857') : (isDark ? '#e2e8f0' : '#1e293b') },
+-              ]}
+-              numberOfLines={1}
+-            >
+-              {hasActiveMaintenance ? 'Active Maintenance Task' : 'Maintenance Checklist'}
+-            </ThemedText>
+-            <ThemedText
+-              style={[
+-                styles.checklistGuideText,
+-                { color: hasActiveMaintenance ? (isDark ? '#6ee7b7' : '#059669') : (isDark ? '#94a3b8' : '#64748b') },
+-              ]}
+-              numberOfLines={1}
+-            >
+-              {item.activeReportId ? `Task ID: ${item.activeReportId}` : 'Routine service & inspections'}
+-            </ThemedText>
+-          </View>
+-        </View>
+-
+-        {/* Right Tag + Arrow */}
+-        <View style={styles.checklistRightGroup}>
+-          {hasActiveMaintenance ? (
+-            <View
+-              style={[
+-                styles.maintenanceTag,
+-                hasForVerification
+-                  ? (isDark ? styles.maintenanceTagVerificationDark : styles.maintenanceTagVerification)
+-                  : hasHighPriority
+-                  ? styles.maintenanceTagDanger
+-                  : hasInProgress
+-                  ? styles.maintenanceTagWarning
+-                  : styles.maintenanceTagSuccess,
+-              ]}
+-            >
+-              <ThemedText
+-                style={[
+-                  styles.maintenanceTagText,
+-                  hasForVerification
+-                    ? (isDark ? styles.maintenanceTagTextVerificationDark : styles.maintenanceTagTextVerification)
+-                    : hasHighPriority
+-                    ? styles.maintenanceTagTextDanger
+-                    : hasInProgress
+-                    ? styles.maintenanceTagTextWarning
+-                    : styles.maintenanceTagTextSuccess,
+-                ]}
+-              >
+-                {hasForVerification
+-                  ? 'Verification'
+-                  : hasHighPriority
+-                  ? 'High Priority'
+-                  : hasInProgress
+-                  ? 'In Progress'
+-                  : 'Checklist Due'}
+-              </ThemedText>
+-            </View>
+-          ) : (
+-            <ThemedText style={{ fontSize: 11, color: isDark ? '#94a3b8' : '#64748b', fontWeight: '600' }}>
+-              Inspect
+-            </ThemedText>
+-          )}
+-          <AppIcon
+-            name="chevron-right"
+-            size={14}
+-            color={isDark ? '#6ee7b7' : '#059669'}
+-            style={styles.checklistChevron}
+-          />
+-        </View>
+-      </Pressable>
+-    </View>
+-  );
++      </View>
++      <View style={[styles.statePanel, panel]}>
++        {[
++          ['Power', controllerPower(item)],
++          ['Mode', item.operatingMode?.toUpperCase() || '—'],
++          ['Fan', item.fanMode?.toUpperCase() || '—'],
++        ].map(([label, value]) => <View key={label} style={styles.stateCell}>
++          <ThemedText style={[styles.label, { color: colors.textSecondary }]}>{label}</ThemedText>
++          <ThemedText style={[styles.value, { color: colors.text }]}>{value}</ThemedText>
++        </View>)}
++      </View>
++      {!!item.specialFunctions?.length && <ThemedText style={[styles.features, { color: colors.textSecondary }]}>{item.specialFunctions.join(' • ')}</ThemedText>}
++      <View style={styles.readings}>
++        {measured && <ThemedText style={[styles.reading, { color: colors.textSecondary }]}>Temperature: {measured}</ThemedText>}
++        <View style={styles.battery}><AppIcon name="battery" size={13} color={battery.color} /><ThemedText style={[styles.reading, { color: battery.color }]}>{battery.text}</ThemedText></View>
++      </View>
++    </Pressable>
++    <Pressable accessibilityRole="button" onPress={openChecklist} style={[styles.checklist, { borderTopColor: panel.borderColor }]}>
++      <AppIcon name="checklist" size={20} color="#10b981" />
++      <View style={{ flex: 1, minWidth: 0 }}>
++        <ThemedText style={[styles.checklistTitle, { color: colors.text }]}>Maintenance Checklist</ThemedText>
++        <ThemedText style={[styles.reading, { color: colors.textSecondary }]}>{hasTask ? item.maintenanceStatus : 'Routine service & inspections'}</ThemedText>
++      </View>
++      <AppIcon name="chevron-right" size={17} color="#10b981" />
++    </Pressable>
++  </View>;
+ }
+-
+ export const SensorCard = AcControllerCard;
+-
+ const styles = StyleSheet.create({
+-  cardContainer: {
+-    borderRadius: 18,
+-    borderWidth: 1,
+-    overflow: 'hidden',
+-    marginBottom: Spacing.four,
+-    ...Platform.select({
+-      ios: {
+-        shadowColor: '#000000',
+-        shadowOffset: { width: 0, height: 4 },
+-        shadowOpacity: 0.08,
+-        shadowRadius: 10,
+-      },
+-      android: {
+-        elevation: 3,
+-      },
+-    }),
+-  },
+-  cardBody: {
+-    padding: Spacing.four,
+-  },
+-  bodyPressed: {
+-    opacity: 0.92,
+-  },
+-  topRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    justifyContent: 'space-between',
+-    marginBottom: Spacing.two,
+-  },
+-  titleContainer: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    flex: 1,
+-    marginRight: 8,
+-    gap: 8,
+-  },
+-  statusDot: {
+-    width: 8,
+-    height: 8,
+-    borderRadius: 4,
+-  },
+-  cardTitle: {
+-    fontSize: 15,
+-    fontWeight: '800',
+-    flex: 1,
+-    letterSpacing: -0.2,
+-  },
+-  batteryRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 5,
+-    paddingHorizontal: 8,
+-    paddingVertical: 3,
+-    borderRadius: 8,
+-  },
+-  batteryPercentage: {
+-    fontSize: 11,
+-    fontWeight: '800',
+-  },
+-  locationRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 6,
+-    paddingHorizontal: 10,
+-    paddingVertical: 5,
+-    borderRadius: 8,
+-    borderWidth: 1,
+-    marginBottom: Spacing.three,
+-  },
+-  locationText: {
+-    fontSize: 11.5,
+-    fontWeight: '700',
+-    flex: 1,
+-  },
+-  middleRow: {
+-    flexDirection: 'row',
+-    gap: Spacing.two,
+-    marginBottom: Spacing.two,
+-  },
+-  metricColumn: {
+-    flex: 1,
+-    padding: 10,
+-    borderRadius: 12,
+-    borderWidth: 1,
+-  },
+-  paramLabelRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 5,
+-    marginBottom: 4,
+-  },
+-  paramLabel: {
+-    fontSize: 11,
+-    fontWeight: '600',
+-    flex: 1,
+-  },
+-  paramValue: {
+-    fontSize: 14,
+-    fontWeight: '800',
+-    letterSpacing: -0.2,
+-  },
+-  bottomRow: {
+-    padding: 10,
+-    borderRadius: 12,
+-    borderWidth: 1,
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    justifyContent: 'space-between',
+-  },
+-  paramLabelRowCent: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 6,
+-  },
+-  paramLabelCent: {
+-    fontSize: 11.5,
+-    fontWeight: '600',
+-  },
+-  paramValueCent: {
+-    fontSize: 12.5,
+-    fontWeight: '800',
+-    letterSpacing: 0.1,
+-  },
+-  cardSeparator: {
+-    height: 1,
+-  },
+-  checklistButton: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    justifyContent: 'space-between',
+-    paddingHorizontal: 14,
+-    paddingVertical: 10,
+-    borderTopWidth: 1,
+-  },
+-  checklistButtonPressed: {
+-    opacity: 0.85,
+-    transform: [{ scale: 0.99 }],
+-  },
+-  checklistLeftGroup: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 10,
+-    flex: 1,
+-  },
+-  checklistIconCircle: {
+-    width: 32,
+-    height: 32,
+-    borderRadius: 10,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-  },
+-  checklistIcon: {
+-    width: 16,
+-    height: 16,
+-  },
+-  checklistTextCol: {
+-    flex: 1,
+-  },
+-  checklistBtnTitle: {
+-    fontSize: 12,
+-    fontWeight: '800',
+-    letterSpacing: 0.1,
+-  },
+-  checklistGuideText: {
+-    fontSize: 10.5,
+-    fontWeight: '600',
+-    marginTop: 1,
+-  },
+-  checklistRightGroup: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 6,
+-  },
+-  maintenanceTag: {
+-    paddingHorizontal: 7,
+-    paddingVertical: 3,
+-    borderRadius: 6,
+-    borderWidth: 0.8,
+-  },
+-  maintenanceTagSuccess: {
+-    backgroundColor: '#d1fae5',
+-    borderColor: '#a7f3d0',
+-  },
+-  maintenanceTagWarning: {
+-    backgroundColor: '#fef3c7',
+-    borderColor: '#fde68a',
+-  },
+-  maintenanceTagDanger: {
+-    backgroundColor: '#fee2e2',
+-    borderColor: '#fca5a5',
+-  },
+-  maintenanceTagVerification: {
+-    backgroundColor: '#f3e8ff',
+-    borderColor: '#e9d5ff',
+-  },
+-  maintenanceTagVerificationDark: {
+-    backgroundColor: 'rgba(168, 85, 247, 0.2)',
+-    borderColor: 'rgba(168, 85, 247, 0.45)',
+-  },
+-  maintenanceTagText: {
+-    fontSize: 9.5,
+-    fontWeight: '800',
+-  },
+-  maintenanceTagTextSuccess: {
+-    color: '#059669',
+-  },
+-  maintenanceTagTextWarning: {
+-    color: '#d97706',
+-  },
+-  maintenanceTagTextDanger: {
+-    color: '#dc2626',
+-  },
+-  maintenanceTagTextVerification: {
+-    color: '#9333ea',
+-  },
+-  maintenanceTagTextVerificationDark: {
+-    color: '#c084fc',
+-  },
+-  checklistChevron: {
+-    width: 14,
+-    height: 14,
+-  },
++  card: { borderRadius: 20, borderWidth: 1, overflow: 'hidden', marginBottom: 14, width: '100%' },
++  body: { padding: 16, gap: 12 },
++  heading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
++  name: { flexGrow: 1, flexShrink: 1, minWidth: 0, fontSize: 18, lineHeight: 25, fontWeight: '800' },
++  connection: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 20, maxWidth: '100%' },
++  connectionText: { fontSize: 11, lineHeight: 16, fontWeight: '700', flexShrink: 1 },
++  dot: { height: 6, width: 6, borderRadius: 3 },
++  location: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
++  locationText: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 18 },
++  metrics: { flexDirection: 'row', gap: 8, alignItems: 'stretch' },
++  metric: { flex: 1, minWidth: 0, padding: 11, borderRadius: 12, borderWidth: 1, gap: 4 },
++  label: { fontSize: 11, lineHeight: 16, fontWeight: '600' },
++  temperature: { fontSize: 24, lineHeight: 31, fontWeight: '800' },
++  value: { fontSize: 13, lineHeight: 20, fontWeight: '700', flexShrink: 1 },
++  statePanel: { flexDirection: 'row', flexWrap: 'wrap', borderWidth: 1, borderRadius: 12, padding: 10, gap: 8 },
++  stateCell: { flexGrow: 1, flexBasis: '28%', minWidth: 65, gap: 3 },
++  features: { fontSize: 12, lineHeight: 18 },
++  readings: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
++  reading: { fontSize: 11, lineHeight: 17, flexShrink: 1 },
++  battery: { flexDirection: 'row', alignItems: 'center', gap: 5 },
++  checklist: { flexDirection: 'row', alignItems: 'center', gap: 10, borderTopWidth: 1, padding: 14 },
++  checklistTitle: { fontSize: 13, lineHeight: 19, fontWeight: '700' },
+ });
+--- before/src/components/sensor-detail-sheet.tsx
++++ after/src/components/sensor-detail-sheet.tsx
+@@ -1,863 +1,107 @@
+ import React from 'react';
+-import { StyleSheet, View, Pressable, Platform, Animated, ScrollView, Dimensions } from 'react-native';
+-import { SymbolView } from 'expo-symbols';
++import { StyleSheet, View, Pressable, Animated, ScrollView } from 'react-native';
++import { SafeAreaView } from 'react-native-safe-area-context';
+ import { router } from 'expo-router';
+ import { ThemedText } from './themed-text';
+-import { Spacing } from '@/constants/theme';
+-import { Image } from 'expo-image';
+-import { AcControllerData } from './sensor-card';
++import { AppIcon } from './app-icon';
+ import { useSettings } from '@/context/settings-context';
+-import { LocationIcon } from './location-icon';
+-import { AppIcon } from './app-icon';
+-
+-import { 
+-  ICON_LOCATION, 
+-  ICON_TEMPERATURE, 
+-  ICON_AIRCONSTATE, 
+-  ICON_CHECKLIST, 
+-  ICON_CHEVRON_RIGHT, 
+-  ICON_AIRCONS_NAV, 
+-  ICON_BATTERY 
+-} from '@/constants/custom-icons';
++import { batteryReading, controllerConnection, controllerPower } from '@/services/controller-display';
++import type { AcControllerData } from './sensor-card';
+ 
+ export interface AcControllerDetailSheetProps {
+-  visible: boolean;
+-  controller?: AcControllerData | null;
+-  sensor?: AcControllerData | null; // backward compatibility
+-  onClose: () => void;
+-  slideAnim: Animated.Value;
++  visible: boolean; controller?: AcControllerData | null; sensor?: AcControllerData | null;
++  onClose: () => void; slideAnim: Animated.Value;
+ }
+-
+-// ── Status color palette ───────────────────────────────────────
+-const STATUS_PALETTE = {
+-  optimal: {
+-    primary: '#10b981',
+-    tint: 'rgba(16, 185, 129, 0.12)',
+-    softBg: '#ecfdf5',
+-  },
+-  warning: {
+-    primary: '#f59e0b',
+-    tint: 'rgba(245, 158, 11, 0.12)',
+-    softBg: '#fffbeb',
+-  },
+-  critical: {
+-    primary: '#ef4444',
+-    tint: 'rgba(239, 68, 68, 0.12)',
+-    softBg: '#fef2f2',
+-  },
+-};
+-
+-// ── Diagnostic Metric Card ─────────────────────────────────────
+-function DiagnosticCard({
+-  iconName,
+-  iconFallback,
+-  label,
+-  value,
+-  accentColor,
+-  iconBg,
+-  highlightValueColor,
+-}: {
+-  iconName: string;
+-  iconFallback?: React.ReactNode;
+-  label: string;
+-  value: string;
+-  accentColor: string;
+-  iconBg: string;
+-  highlightValueColor?: string;
+-}) {
+-  const { effectiveTheme, colors } = useSettings();
+-  const isDark = effectiveTheme === 'dark';
+-
+-  return (
+-    <View
+-      style={[
+-        cardStyles.card,
+-        {
+-          backgroundColor: isDark ? 'rgba(0, 0, 0, 0.3)' : '#ffffff',
+-          borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#e2e8f0',
+-        },
+-      ]}
+-    >
+-      <View style={cardStyles.cardHeader}>
+-        <View style={[cardStyles.iconCircle, { backgroundColor: iconBg }]}>
+-          <SymbolView
+-            name={iconName as any}
+-            tintColor={accentColor}
+-            size={17}
+-            fallback={iconFallback}
+-          />
++export function AcControllerDetailSheet({ visible, controller, sensor, onClose, slideAnim }: AcControllerDetailSheetProps) {
++  const { effectiveTheme, colors, formatTemperatureDisplay } = useSettings();
++  const item = controller || sensor;
++  if (!visible || !item) return null;
++  const isDark = effectiveTheme === 'dark', connection = controllerConnection(item), battery = batteryReading(item.battery);
++  const panel = { backgroundColor: isDark ? '#0d1420' : '#f8fafc', borderColor: isDark ? '#243041' : '#e2e8f0' };
++  const location = [item.building, item.floor, item.room].filter(Boolean).join(' • ') || item.location || 'Unassigned';
++  const lastSeen = item.lastSeen && Number.isFinite(Date.parse(item.lastSeen)) ? new Date(item.lastSeen).toLocaleString() : 'Not available';
++  const rows = [
++    ['Controller model', item.model || '—'],
++    ['Hardware ID', item.serialNumber || '—'],
++    ['Last seen', lastSeen],
++    ['Battery', battery.text],
++    ['Wi-Fi signal', typeof item.rssi === 'number' ? item.rssi + ' dBm' : '—'],
++    ['Report interval', item.interval || '—'],
++    ['Wake / sleep', item.dailySchedule || '—'],
++  ];
++  const values = [
++    ['Power', controllerPower(item)], ['Target setpoint', typeof item.setpoint === 'number' ? formatTemperatureDisplay(item.setpoint) : '—'],
++    ['Operating mode', item.operatingMode?.toUpperCase() || '—'], ['Blower fan', item.fanMode?.toUpperCase() || '—'],
++  ];
++  return <View style={[StyleSheet.absoluteFill, { zIndex: 100 }]}>
++    <Pressable accessibilityLabel="Close controller details" style={styles.backdrop} onPress={onClose} />
++    <Animated.View style={[styles.sheet, { backgroundColor: isDark ? '#121826' : '#ffffff', borderColor: panel.borderColor, transform: [{ translateY: slideAnim }] }]}>
++      <View style={styles.grabber} />
++      <View style={styles.header}>
++        <View style={{ flex: 1, minWidth: 0, gap: 6 }}>
++          <ThemedText style={[styles.title, { color: colors.text }]}>{item.name}</ThemedText>
++          <ThemedText style={[styles.location, { color: colors.textSecondary }]}>{location}</ThemedText>
+         </View>
+-        <View style={[cardStyles.dotIndicator, { backgroundColor: accentColor }]} />
++        <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close" hitSlop={12} style={[styles.close, panel]}>
++          <ThemedText style={{ fontSize: 22, lineHeight: 28, color: colors.textSecondary }}>×</ThemedText>
++        </Pressable>
+       </View>
+-      <View style={cardStyles.textContainer}>
+-        <ThemedText style={[cardStyles.label, { color: colors.textSecondary }]}>
+-          {label}
+-        </ThemedText>
+-        <ThemedText
+-          style={[
+-            cardStyles.value,
+-            { color: highlightValueColor || colors.text },
+-          ]}
+-          numberOfLines={1}
+-        >
+-          {value}
+-        </ThemedText>
+-      </View>
+-    </View>
+-  );
+-}
+-
+-const cardStyles = StyleSheet.create({
+-  card: {
+-    flex: 1,
+-    borderRadius: 14,
+-    borderWidth: 1,
+-    padding: 10,
+-    gap: 6,
+-  },
+-  cardHeader: {
+-    flexDirection: 'row',
+-    justifyContent: 'space-between',
+-    alignItems: 'center',
+-  },
+-  iconCircle: {
+-    width: 30,
+-    height: 30,
+-    borderRadius: 9,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-  },
+-  dotIndicator: {
+-    width: 6,
+-    height: 6,
+-    borderRadius: 3,
+-  },
+-  textContainer: {
+-    gap: 2,
+-  },
+-  label: {
+-    fontSize: 10.5,
+-    fontWeight: '600',
+-    letterSpacing: 0.1,
+-  },
+-  value: {
+-    fontSize: 14,
+-    fontWeight: '800',
+-    letterSpacing: -0.2,
+-  },
+-});
+-
+-export function AcControllerDetailSheet({ 
+-  visible, 
+-  controller, 
+-  sensor, 
+-  onClose, 
+-  slideAnim 
+-}: AcControllerDetailSheetProps) {
+-  const item = controller || sensor;
+-  const { effectiveTheme, formatTemperatureDisplay, colors } = useSettings();
+-  const isDark = effectiveTheme === 'dark';
+-
+-  if (!visible || !item) return null;
+-
+-  const displayVentTemp = item.ventTemp && item.ventTemp !== 'N/A'
+-    ? (() => {
+-        const match = item.ventTemp.match(/-?\d+(\.\d+)?/);
+-        return match ? formatTemperatureDisplay(parseFloat(match[0])) : item.ventTemp;
+-      })()
+-    : 'N/A';
+-
+-  const palette = STATUS_PALETTE[item.status] || STATUS_PALETTE.optimal;
+-
+-  const batteryNum = parseInt(item.battery || '100', 10);
+-  const batteryColor = batteryNum >= 80 ? '#10b981' : batteryNum >= 40 ? '#f59e0b' : '#ef4444';
+-  const batteryBg = batteryNum >= 80 ? 'rgba(16, 185, 129, 0.12)' : batteryNum >= 40 ? 'rgba(245, 158, 11, 0.12)' : 'rgba(239, 68, 68, 0.12)';
+-
+-  const hasActiveMaintenance = Boolean(item.activeReportId && item.maintenanceStatus !== 'No Maintenance Yet');
+-
+-  const handleOpenChecklist = () => {
+-    onClose();
+-    router.push({
+-      pathname: '/Maintenance',
+-      ...(item.activeReportId ? { params: { reportId: item.activeReportId } } : {}),
+-    } as any);
+-  };
+-
+-  const airconStateVal = item.airconState || item.aircon || 'STANDBY';
+-  const isStateCooling = airconStateVal.toUpperCase().includes('COOL') || airconStateVal.toUpperCase().includes('ACTIVE');
+-  const isStateFan = airconStateVal.toUpperCase().includes('FAN');
+-
+-  return (
+-    <View style={StyleSheet.absoluteFill}>
+-      {/* Backdrop */}
+-      <Pressable style={styles.backdrop} onPress={onClose} />
+-
+-      {/* Slide-up sheet */}
+-      <Animated.View
+-        style={[
+-          styles.bottomSheet,
+-          {
+-            backgroundColor: isDark ? '#0a1a13' : '#ffffff',
+-            borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#e2e8f0',
+-          },
+-          { transform: [{ translateY: slideAnim }] },
+-        ]}
+-      >
+-        {/* Grabber handle */}
+-        <View style={[styles.grabber, { backgroundColor: isDark ? '#334155' : '#cbd5e1' }]} />
+-
+-        <ScrollView
+-          showsVerticalScrollIndicator={false}
+-          style={{ maxHeight: Dimensions.get('window').height * 0.85 }}
+-          contentContainerStyle={[styles.sheetContent, { paddingBottom: 36 }]}
+-        >
+-          {/* Header Row */}
+-          <View style={styles.sheetHeader}>
+-            <View style={styles.headerTitleCol}>
+-              <View style={styles.headerNameRow}>
+-                <View style={[styles.headerDotPulse, { backgroundColor: palette.tint }]}>
+-                  <View style={[styles.headerDot, { backgroundColor: palette.primary }]} />
+-                </View>
+-                <ThemedText type="subtitle" style={[styles.sheetTitle, { color: colors.text }]} numberOfLines={1}>
+-                  {item.name}
+-                </ThemedText>
+-              </View>
+-
+-              <View style={styles.headerBadgeRow}>
+-                <View
+-                  style={[
+-                    styles.locationBadge,
+-                    {
+-                      backgroundColor: isDark ? 'rgba(16, 185, 129, 0.1)' : '#ecfdf5',
+-                      borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#a7f3d0',
+-                    },
+-                  ]}
+-                >
+-                  <LocationIcon size={12} color="#10b981" />
+-                  <ThemedText
+-                    style={[
+-                      styles.locationBadgeText,
+-                      { color: isDark ? '#34d399' : '#047857' },
+-                    ]}
+-                    numberOfLines={1}
+-                  >
+-                    {item.building ? `${item.building} • ` : ''}
+-                    {item.floor ? `${item.floor} • ` : ''}
+-                    {item.room || item.location}
+-                  </ThemedText>
+-                </View>
+-
+-                {item.statusLabel ? (
+-                  <View
+-                    style={[
+-                      styles.statusPill,
+-                      {
+-                        backgroundColor: palette.tint,
+-                        borderColor: palette.primary + '35',
+-                      },
+-                    ]}
+-                  >
+-                    <ThemedText style={[styles.statusPillText, { color: palette.primary }]}>
+-                      {item.statusLabel.toUpperCase()}
+-                    </ThemedText>
+-                  </View>
+-                ) : null}
+-              </View>
+-            </View>
+-
+-            {/* Close Button */}
+-            <Pressable
+-              onPress={onClose}
+-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+-              style={({ pressed }) => [
+-                styles.closeBtn,
+-                {
+-                  backgroundColor: isDark ? '#112217' : '#f1f5f9',
+-                  borderColor: isDark ? 'rgba(255, 255, 255, 0.1)' : '#e2e8f0',
+-                },
+-                pressed && { opacity: 0.7 },
+-              ]}
+-            >
+-              <ThemedText style={[styles.closeBtnText, { color: colors.textSecondary }]}>✕</ThemedText>
+-            </Pressable>
++      <SafeAreaView edges={['bottom']} style={{ flexShrink: 1 }}>
++        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.body}>
++          <View style={styles.connection}><View style={[styles.dot, { backgroundColor: connection.color }]} /><ThemedText style={[styles.connectionText, { color: connection.color }]}>{connection.label}</ThemedText></View>
++          <View style={[styles.panel, panel]}>
++            <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Air conditioner</ThemedText>
++            <ThemedText style={[styles.value, { color: colors.text }]}>{item.associatedAc || item.acType || '—'}</ThemedText>
+           </View>
+-
+-          {/* AC Controller Appliance details card */}
+-          <View
+-            style={[
+-              styles.acTypeCard,
+-              {
+-                backgroundColor: isDark ? 'rgba(0, 0, 0, 0.25)' : '#f8fafc',
+-                borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#e2e8f0',
+-              },
+-            ]}
+-          >
+-            <View style={styles.acTypeLeft}>
+-              <View
+-                style={[
+-                  styles.acTypeIconSquircle,
+-                  {
+-                    backgroundColor: isDark ? 'rgba(6, 182, 212, 0.15)' : '#e0f2fe',
+-                  },
+-                ]}
+-              >
+-                <AppIcon
+-                  name="snowflake"
+-                  size={20}
+-                  color={isDark ? '#38bdf8' : '#0284c7'}
+-                />
+-              </View>
+-              <View style={styles.acTypeInfo}>
+-                <ThemedText style={[styles.acTypeHeaderLabel, { color: colors.textSecondary }]}>
+-                  ASSOCIATED AIRCON & BRAND
+-                </ThemedText>
+-                <ThemedText style={[styles.acTypeIdSubtitle, { color: isDark ? '#ffffff' : '#0f172a', fontWeight: '800' }]}>
+-                  {item.associatedAc || (item.brand ? `${item.brand} ${item.acType || ''}` : `${item.acId ? `Unit ${item.acId}` : 'Cooling Appliance'}`)}
+-                </ThemedText>
+-              </View>
+-            </View>
+-
+-            <View
+-              style={[
+-                styles.acTypeBadge,
+-                {
+-                  backgroundColor: isDark ? 'rgba(16, 185, 129, 0.15)' : '#ecfdf5',
+-                  borderColor: isDark ? 'rgba(16, 185, 129, 0.4)' : '#a7f3d0',
+-                },
+-              ]}
+-            >
+-              <ThemedText
+-                style={[
+-                  styles.acTypeBadgeText,
+-                  { color: isDark ? '#34d399' : '#059669', fontWeight: '800' },
+-                ]}
+-                numberOfLines={1}
+-              >
+-                {item.brand || '—'}
+-              </ThemedText>
+-            </View>
++          <View style={styles.grid}>
++            {values.map(([label, value]) => <View key={label} style={[styles.metric, panel]}>
++              <ThemedText style={[styles.label, { color: colors.textSecondary }]}>{label}</ThemedText>
++              <ThemedText style={[styles.metricValue, { color: colors.text }]}>{value}</ThemedText>
++            </View>)}
+           </View>
+-
+-          {/* HVAC Diagnostics Grid */}
+-          <View style={styles.diagnosticsSection}>
+-            <View style={styles.sectionHeaderRow}>
+-              <ThemedText style={[styles.sectionLabel, { color: colors.textSecondary }]}>
+-                SYSTEM DIAGNOSTICS
+-              </ThemedText>
+-              <View style={styles.liveIndicator}>
+-                <View style={styles.liveDot} />
+-                <ThemedText style={styles.liveText}>LIVE</ThemedText>
+-              </View>
+-            </View>
+-
+-            <View style={styles.diagnosticsGrid}>
+-              {/* Row 1: Aircon State & Vent Temp */}
+-              <View style={styles.diagnosticsRow}>
+-                <DiagnosticCard
+-                  iconName={isStateCooling ? "snowflake" : isStateFan ? "wind" : "power"}
+-                  iconFallback={<AppIcon name={isStateCooling ? "snowflake" : "aircon"} size={17} color={isStateCooling ? "#06b6d4" : isStateFan ? "#f59e0b" : "#94a3b8"} />}
+-                  label="Aircon State"
+-                  value={airconStateVal}
+-                  accentColor={isStateCooling ? "#06b6d4" : isStateFan ? "#f59e0b" : "#94a3b8"}
+-                  iconBg={isStateCooling ? "rgba(6, 182, 212, 0.12)" : isStateFan ? "rgba(245, 158, 11, 0.12)" : "rgba(148, 163, 184, 0.12)"}
+-                  highlightValueColor={isStateCooling ? (isDark ? '#38bdf8' : '#0284c7') : isStateFan ? '#f59e0b' : undefined}
+-                />
+-                <DiagnosticCard
+-                  iconName="thermometer"
+-                  iconFallback={<AppIcon name="thermometer" size={17} color="#ef4444" />}
+-                  label="Temperature"
+-                  value={displayVentTemp}
+-                  accentColor="#ef4444"
+-                  iconBg="rgba(239, 68, 68, 0.12)"
+-                  highlightValueColor={isDark ? '#fb7185' : '#e11d48'}
+-                />
+-              </View>
+-
+-              {/* Row 2: AC Controller Device & Battery */}
+-              <View style={styles.diagnosticsRow}>
+-                <DiagnosticCard
+-                  iconName="bolt.fill"
+-                  iconFallback={<AppIcon name="bolt" size={17} color="#10b981" />}
+-                  label="Controller Node"
+-                  value={item.name || item.sensorName || item.acId || 'AC Controller'}
+-                  accentColor="#10b981"
+-                  iconBg="rgba(16, 185, 129, 0.12)"
+-                  highlightValueColor={isDark ? '#34d399' : '#059669'}
+-                />
+-                <DiagnosticCard
+-                  iconName="battery.100"
+-                  iconFallback={<AppIcon name="battery" size={17} color={batteryColor} />}
+-                  label="Battery / Power"
+-                  value={item.battery || '—'}
+-                  accentColor={batteryColor}
+-                  iconBg={batteryBg}
+-                  highlightValueColor={batteryColor}
+-                />
+-              </View>
+-            </View>
++          <View style={[styles.panel, panel]}>
++            <ThemedText style={[styles.label, { color: colors.textSecondary }]}>Special functions</ThemedText>
++            <ThemedText style={[styles.value, { color: colors.text }]}>{item.specialFunctions?.join(' • ') || 'None active'}</ThemedText>
+           </View>
+-
+-          {/* Admin Desktop Device & Hardware Configuration (Parity with media_1790601682594.png) */}
+-          <View style={{
+-            borderRadius: 16,
+-            borderWidth: 1,
+-            borderColor: isDark ? 'rgba(16, 185, 129, 0.25)' : '#e2e8f0',
+-            backgroundColor: isDark ? 'rgba(0, 0, 0, 0.35)' : '#f8fafc',
+-            padding: 14,
+-            gap: 12,
+-            marginTop: 4,
+-          }}>
+-            {/* 1. HARDWARE CONFIGURATION */}
+-            <View>
+-              <ThemedText style={{ fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6, color: isDark ? '#34d399' : '#047857', marginBottom: 8, textTransform: 'uppercase' }}>
+-                Hardware Configuration
+-              </ThemedText>
+-              <View style={{ gap: 6 }}>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Status</ThemedText>
+-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+-                    <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: item.status === 'critical' ? '#ef4444' : '#10b981' }} />
+-                    <ThemedText style={{ fontSize: 12, fontWeight: '800', color: item.status === 'critical' ? '#ef4444' : '#10b981' }}>
+-                      {item.status === 'critical' ? 'Alert' : 'Online'}
+-                    </ThemedText>
+-                  </View>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>AC Controller Model</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{item.model || '—'}</ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>ESP32 Serial</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '600', color: colors.text }}>{item.serialNumber || item.id || '—'}</ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Battery Level</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>{item.battery || '—'}</ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Available Offline Slots</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '700', color: '#10b981' }}>{(item as any).offlineSlots || '—'}</ThemedText>
+-                </View>
+-              </View>
+-            </View>
+-
+-            <View style={{ height: 1, backgroundColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#e2e8f0' }} />
+-
+-            {/* 2. DEVICE CONFIGURATION */}
+-            <View>
+-              <ThemedText style={{ fontSize: 10.5, fontWeight: '800', letterSpacing: 0.6, color: isDark ? '#34d399' : '#047857', marginBottom: 8, textTransform: 'uppercase' }}>
+-                Device Configuration
+-              </ThemedText>
+-              <View style={{ gap: 6 }}>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Associated AC</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '800', color: '#10b981' }}>
+-                    {item.associatedAc || (item.brand ? `${item.brand} ${item.acType || ''}`.trim() : '—')}
+-                  </ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Aircon Type</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '600', color: colors.text }}>{item.acType || '—'}</ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Assigned Room</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '700', color: colors.text }}>
+-                    {[item.building, item.floor, item.room].filter(Boolean).join(' • ') || 'Unassigned'}
+-                  </ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>Rule / Daily Schedule</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '600', color: colors.text }}>
+-                    {item.dailySchedule || (item.wakeTime && item.sleepTime ? `${item.wakeTime} - ${item.sleepTime}` : '—')}
+-                  </ThemedText>
+-                </View>
+-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+-                  <ThemedText style={{ fontSize: 12, color: colors.textSecondary }}>PIR / Occupancy</ThemedText>
+-                  <ThemedText style={{ fontSize: 12, fontWeight: '800', color: '#10b981' }}>
+-                    {item.pirOccupancy || '—'}
+-                  </ThemedText>
+-                </View>
+-              </View>
+-            </View>
++          <View style={[styles.panel, panel]}>
++            <ThemedText style={[styles.section, { color: colors.text }]}>Controller details</ThemedText>
++            {rows.map(([label, value]) => <View key={label} style={styles.row}>
++              <ThemedText style={[styles.rowLabel, { color: colors.textSecondary }]}>{label}</ThemedText>
++              <ThemedText style={[styles.rowValue, { color: colors.text }]}>{value}</ThemedText>
++            </View>)}
+           </View>
+-
+-          {/* Action Button: View Maintenance Checklist */}
+-          <Pressable
+-            onPress={handleOpenChecklist}
+-            style={({ pressed }) => [
+-              styles.checklistActionBtn,
+-              hasActiveMaintenance
+-                ? {
+-                    backgroundColor: isDark ? '#064e3b' : '#f0fdf4',
+-                    borderColor: isDark ? '#059669' : '#86efac',
+-                  }
+-                : {
+-                    backgroundColor: isDark ? 'rgba(0, 0, 0, 0.25)' : '#f8fafc',
+-                    borderColor: isDark ? 'rgba(255, 255, 255, 0.08)' : '#e2e8f0',
+-                  },
+-              pressed && styles.checklistActionBtnPressed,
+-            ]}
+-          >
+-            <View
+-              style={[
+-                styles.checklistActionIconCircle,
+-                hasActiveMaintenance
+-                  ? {
+-                      backgroundColor: isDark ? '#047857' : '#d1fae5',
+-                    }
+-                  : {
+-                      backgroundColor: isDark ? '#112217' : '#f1f5f9',
+-                    },
+-              ]}
+-            >
+-              <AppIcon
+-                name="checklist"
+-                size={20}
+-                color={hasActiveMaintenance ? (isDark ? '#34d399' : '#059669') : (isDark ? '#94a3b8' : '#64748b')}
+-              />
+-            </View>
+-            <View style={styles.checklistActionTextContainer}>
+-              <View style={styles.checklistActionTitleRow}>
+-                <ThemedText
+-                  style={[
+-                    styles.checklistActionTitle,
+-                    {
+-                      color: hasActiveMaintenance
+-                        ? (isDark ? '#34d399' : '#047857')
+-                        : (isDark ? '#e2e8f0' : '#1e293b'),
+-                    },
+-                  ]}
+-                  numberOfLines={1}
+-                >
+-                  {hasActiveMaintenance ? 'Active Maintenance Task' : 'Maintenance Checklist'}
+-                </ThemedText>
+-                {item.activeReportId ? (
+-                  <View
+-                    style={[
+-                      styles.reportIdBadge,
+-                      {
+-                        backgroundColor: isDark ? 'rgba(5, 150, 105, 0.25)' : '#d1fae5',
+-                        borderColor: isDark ? 'rgba(5, 150, 105, 0.45)' : '#a7f3d0',
+-                      },
+-                    ]}
+-                  >
+-                    <ThemedText
+-                      style={[
+-                        styles.reportIdBadgeText,
+-                        { color: isDark ? '#a7f3d0' : '#065f46' },
+-                      ]}
+-                    >
+-                      {item.activeReportId}
+-                    </ThemedText>
+-                  </View>
+-                ) : null}
+-              </View>
+-              <ThemedText
+-                style={[
+-                  styles.checklistActionSubtitle,
+-                  {
+-                    color: hasActiveMaintenance
+-                      ? (isDark ? '#a7f3d0' : '#059669')
+-                      : (isDark ? '#64748b' : '#94a3b8'),
+-                  },
+-                ]}
+-                numberOfLines={1}
+-              >
+-                {hasActiveMaintenance
+-                  ? `Guides directly to ${item.building ? `${item.building}, ` : ''}${item.room || item.location}${item.acId ? ` • ${item.acId}` : ''}`
+-                  : 'Check routine service logs and inspections'}
+-              </ThemedText>
+-            </View>
+-            <View
+-              style={[
+-                styles.chevronCircle,
+-                {
+-                  backgroundColor: hasActiveMaintenance
+-                    ? (isDark ? 'rgba(5, 150, 105, 0.35)' : '#dcfce7')
+-                    : (isDark ? '#112217' : '#f1f5f9'),
+-                },
+-              ]}
+-            >
+-              <AppIcon
+-                name="chevron-right"
+-                size={14}
+-                color={hasActiveMaintenance ? '#10b981' : (isDark ? '#475569' : '#94a3b8')}
+-              />
+-            </View>
++          <Pressable accessibilityRole="button" onPress={() => { onClose(); router.push({ pathname: '/Maintenance', ...(item.activeReportId ? { params: { reportId: item.activeReportId } } : {}) } as any); }} style={[styles.checklist, panel]}>
++            <AppIcon name="checklist" size={19} color="#10b981" />
++            <ThemedText style={[styles.value, { flex: 1, color: colors.text }]}>Maintenance Checklist</ThemedText>
++            <AppIcon name="chevron-right" size={16} color="#10b981" />
+           </Pressable>
+         </ScrollView>
+-      </Animated.View>
+-    </View>
+-  );
++      </SafeAreaView>
++    </Animated.View>
++  </View>;
+ }
+-
+ export const SensorDetailSheet = AcControllerDetailSheet;
+-
+ const styles = StyleSheet.create({
+-  backdrop: {
+-    position: 'absolute',
+-    top: 0,
+-    left: 0,
+-    right: 0,
+-    bottom: 0,
+-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+-  },
+-  bottomSheet: {
+-    position: 'absolute',
+-    bottom: 0,
+-    left: 0,
+-    right: 0,
+-    borderTopLeftRadius: 28,
+-    borderTopRightRadius: 28,
+-    borderTopWidth: 1,
+-    borderLeftWidth: 1,
+-    borderRightWidth: 1,
+-    overflow: 'hidden',
+-    ...Platform.select({
+-      ios: {
+-        shadowColor: '#000000',
+-        shadowOffset: { width: 0, height: -10 },
+-        shadowOpacity: 0.22,
+-        shadowRadius: 20,
+-      },
+-      android: {
+-        elevation: 24,
+-      },
+-    }),
+-  },
+-  grabber: {
+-    width: 38,
+-    height: 4.5,
+-    borderRadius: 3,
+-    alignSelf: 'center',
+-    marginTop: 10,
+-    marginBottom: 10,
+-  },
+-  sheetContent: {
+-    gap: 14,
+-    paddingHorizontal: 20,
+-    paddingBottom: Platform.OS === 'ios' ? 34 : 24,
+-  },
+-  sheetHeader: {
+-    flexDirection: 'row',
+-    justifyContent: 'space-between',
+-    alignItems: 'flex-start',
+-  },
+-  headerTitleCol: {
+-    flex: 1,
+-    paddingRight: 10,
+-  },
+-  headerNameRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 10,
+-  },
+-  headerDotPulse: {
+-    width: 18,
+-    height: 18,
+-    borderRadius: 9,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-  },
+-  headerDot: {
+-    width: 9,
+-    height: 9,
+-    borderRadius: 4.5,
+-  },
+-  sheetTitle: {
+-    fontSize: 20,
+-    fontWeight: '800',
+-    lineHeight: 24,
+-    flex: 1,
+-  },
+-  headerBadgeRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    flexWrap: 'wrap',
+-    gap: 8,
+-    marginTop: 6,
+-  },
+-  locationBadge: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 6,
+-    paddingHorizontal: 9,
+-    paddingVertical: 4.5,
+-    borderRadius: 8,
+-    borderWidth: 1,
+-  },
+-  locationBadgeText: {
+-    fontSize: 11,
+-    fontWeight: '700',
+-  },
+-  statusPill: {
+-    paddingHorizontal: 8,
+-    paddingVertical: 3.5,
+-    borderRadius: 6,
+-    borderWidth: 1,
+-  },
+-  statusPillText: {
+-    fontSize: 10,
+-    fontWeight: '800',
+-    letterSpacing: 0.4,
+-  },
+-  closeBtn: {
+-    width: 32,
+-    height: 32,
+-    borderRadius: 16,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-    borderWidth: 1,
+-  },
+-  closeBtnText: {
+-    fontSize: 12,
+-    fontWeight: '700',
+-  },
+-  acTypeCard: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    justifyContent: 'space-between',
+-    borderRadius: 16,
+-    paddingVertical: 10,
+-    paddingHorizontal: 12,
+-    borderWidth: 1,
+-  },
+-  acTypeLeft: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 10,
+-    flex: 1,
+-    paddingRight: 8,
+-  },
+-  acTypeIconSquircle: {
+-    width: 36,
+-    height: 36,
+-    borderRadius: 10,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-  },
+-  acTypeIcon: {
+-    width: 20,
+-    height: 20,
+-  },
+-  acTypeInfo: {
+-    gap: 2,
+-  },
+-  acTypeHeaderLabel: {
+-    fontSize: 9.5,
+-    fontWeight: '800',
+-    letterSpacing: 0.6,
+-  },
+-  acTypeIdSubtitle: {
+-    fontSize: 12,
+-    fontWeight: '600',
+-  },
+-  acTypeBadge: {
+-    paddingHorizontal: 9,
+-    paddingVertical: 4.5,
+-    borderRadius: 8,
+-    borderWidth: 1,
+-  },
+-  acTypeBadgeText: {
+-    fontSize: 11,
+-    fontWeight: '700',
+-  },
+-  diagnosticsSection: {
+-    gap: 10,
+-  },
+-  sectionHeaderRow: {
+-    flexDirection: 'row',
+-    justifyContent: 'space-between',
+-    alignItems: 'center',
+-  },
+-  sectionLabel: {
+-    fontSize: 11,
+-    fontWeight: '800',
+-    letterSpacing: 0.5,
+-  },
+-  liveIndicator: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 5,
+-  },
+-  liveDot: {
+-    width: 6,
+-    height: 6,
+-    borderRadius: 3,
+-    backgroundColor: '#10b981',
+-  },
+-  liveText: {
+-    fontSize: 10,
+-    fontWeight: '800',
+-    color: '#10b981',
+-    letterSpacing: 0.3,
+-  },
+-  diagnosticsGrid: {
+-    gap: 8,
+-  },
+-  diagnosticsRow: {
+-    flexDirection: 'row',
+-    gap: 8,
+-  },
+-  checklistActionBtn: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 12,
+-    padding: 12,
+-    borderRadius: 16,
+-    borderWidth: 1,
+-    marginTop: 4,
+-  },
+-  checklistActionBtnPressed: {
+-    opacity: 0.85,
+-  },
+-  checklistActionIconCircle: {
+-    width: 38,
+-    height: 38,
+-    borderRadius: 12,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-  },
+-  checklistActionIcon: {
+-    width: 20,
+-    height: 20,
+-  },
+-  checklistActionTextContainer: {
+-    flex: 1,
+-    gap: 2,
+-  },
+-  checklistActionTitleRow: {
+-    flexDirection: 'row',
+-    alignItems: 'center',
+-    gap: 6,
+-  },
+-  checklistActionTitle: {
+-    fontSize: 13,
+-    fontWeight: '800',
+-  },
+-  reportIdBadge: {
+-    paddingHorizontal: 6,
+-    paddingVertical: 2,
+-    borderRadius: 5,
+-    borderWidth: 1,
+-  },
+-  reportIdBadgeText: {
+-    fontSize: 9.5,
+-    fontWeight: '800',
+-  },
+-  checklistActionSubtitle: {
+-    fontSize: 11,
+-    fontWeight: '600',
+-  },
+-  chevronCircle: {
+-    width: 28,
+-    height: 28,
+-    borderRadius: 14,
+-    alignItems: 'center',
+-    justifyContent: 'center',
+-  },
+-  checklistActionChevron: {
+-    width: 14,
+-    height: 14,
+-  },
++  backdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
++  sheet: { position: 'absolute', bottom: 0, left: 0, right: 0, maxHeight: '90%', borderTopLeftRadius: 24, borderTopRightRadius: 24, borderWidth: 1, overflow: 'hidden' },
++  grabber: { width: 38, height: 4, backgroundColor: '#64748b', borderRadius: 2, alignSelf: 'center', marginTop: 10 },
++  header: { flexDirection: 'row', alignItems: 'flex-start', padding: 18, gap: 12 },
++  title: { fontSize: 20, lineHeight: 28, fontWeight: '800' },
++  location: { fontSize: 12, lineHeight: 19 },
++  close: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, borderWidth: 1 },
++  body: { padding: 18, paddingTop: 0, paddingBottom: 24, gap: 12 },
++  connection: { flexDirection: 'row', alignItems: 'center', gap: 6 },
++  dot: { width: 7, height: 7, borderRadius: 4 },
++  connectionText: { fontSize: 13, lineHeight: 19, fontWeight: '700' },
++  panel: { padding: 13, borderRadius: 13, borderWidth: 1, gap: 6 },
++  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
++  metric: { flexGrow: 1, flexBasis: '45%', minWidth: 100, borderRadius: 13, borderWidth: 1, padding: 13, gap: 6 },
++  label: { fontSize: 12, lineHeight: 18, fontWeight: '600' },
++  value: { fontSize: 14, lineHeight: 22, fontWeight: '600' },
++  metricValue: { fontSize: 17, lineHeight: 25, fontWeight: '800' },
++  section: { fontSize: 14, lineHeight: 21, fontWeight: '700', marginBottom: 4 },
++  row: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingVertical: 5 },
++  rowLabel: { flexBasis: '36%', flexGrow: 1, fontSize: 12, lineHeight: 19 },
++  rowValue: { flexBasis: '55%', flexGrow: 1, minWidth: 0, fontSize: 12, lineHeight: 19, textAlign: 'right' },
++  checklist: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 14, borderRadius: 13, borderWidth: 1 },
+ });
+--- before/src/services/controller-display.ts
++++ after/src/services/controller-display.ts
+@@ -0,0 +1,17 @@
++import type { AcControllerData } from '@/services/supabase';
++
++export function controllerConnection(item: AcControllerData): { label: string; color: string } {
++  const state = item.connectionState;
++  if (state === 'online') return { label: 'Online', color: '#10b981' };
++  if (state === 'sleeping') return { label: 'Sleeping', color: '#f59e0b' };
++  if (state === 'offline') return { label: 'Offline', color: '#94a3b8' };
++  return { label: 'Status unavailable', color: '#94a3b8' };
++}
++export function controllerPower(item: AcControllerData): string {
++  return item.powerSetting === 'on' ? 'ON' : item.powerSetting === 'off' ? 'OFF' : '—';
++}
++export function batteryReading(value?: string): { text: string; color: string } {
++  const number = value && /^\d+(\.\d+)?%?$/.test(value.trim()) ? Number(value.replace('%', '')) : NaN;
++  if (!Number.isFinite(number) || number < 0 || number > 100) return { text: '—', color: '#94a3b8' };
++  return { text: Math.round(number) + '%', color: number >= 40 ? '#10b981' : number >= 20 ? '#f59e0b' : '#ef4444' };
++}
+--- before/src/services/home-controller-state.ts
++++ after/src/services/home-controller-state.ts
+@@ -18,10 +18,10 @@
+     ['Turbo', settings?.turbo], ['Eco', settings?.eco], ['Quiet', settings?.quiet],
+     ['Sleep', settings?.sleep], ['Display', settings?.display], ['Clean', settings?.clean], ['I Feel', settings?.i_feel],
+   ].filter(([, value]) => enabled(value)).map(([label]) => String(label));
+-  const summary = [power?.toUpperCase(), settings?.mode?.toUpperCase(), settings?.fan ? String(settings.fan).toUpperCase() + ' FAN' : undefined].filter(Boolean).join(' · ') || '—';
++  const summary = [power?.toUpperCase(), settings?.mode ? String(settings.mode).toUpperCase() : undefined, settings?.fan ? String(settings.fan).toUpperCase() + ' FAN' : undefined].filter(Boolean).join(' · ') || '—';
+   return { ...item, connectionState: connection, statusLabel: connection === 'unavailable' ? 'Status unavailable' : connection[0].toUpperCase() + connection.slice(1),
+     settingsSnapshot: snapshot, lastSeen: row?.last_seen || item.lastSeen, sleepingUntil: row ? row.sleeping_until : item.sleepingUntil,
+-    serialNumber: row?.device_id || item.serialNumber, model: row?.firmware_version ? item.model : item.model,
++    serialNumber: row?.device_id || item.serialNumber,
+     powerSetting: power, operatingMode: settings?.mode, fanMode: settings?.fan,
+     setpoint: typeof settings?.temp === 'number' && Number.isFinite(settings.temp) ? settings.temp : undefined,
+     specialFunctions: functions, airconState: summary, aircon: summary,
+--- before/src/services/supabase.ts
++++ after/src/services/supabase.ts
+@@ -5,7 +5,8 @@
+ import { exactMatchFilter, fetchAccessibleRows, type ReadScope } from './query-utils';
+ import { isChecklistItemComplete, isRepairDone, isRepairAwaitingVerification } from './maintenance-status';
+ import { remoteObservation, selectSettings } from './receiver-state';
+-import { CloudHardware, connectionStatus } from './cloud-hardware';
++import { CloudHardware, connectionStatus, type CloudDeviceState } from './cloud-hardware';
++import { applyHomeControllerState } from './home-controller-state';
+ import AsyncStorage from '@react-native-async-storage/async-storage';
+ import { createClient } from '@supabase/supabase-js';
+ 
+@@ -31,6 +32,15 @@
+   activeReportId?: string;
+   maintenanceStatus?: string;
+   maintenancePriority?: 'High' | 'Medium' | 'Low';
++  connectionState?: 'online' | 'offline' | 'sleeping' | 'unavailable';
++  powerSetting?: 'on' | 'off';
++  operatingMode?: string;
++  fanMode?: string;
++  setpoint?: number;
++  specialFunctions?: string[];
++  lastSeen?: string;
++  sleepingUntil?: string | null;
++  settingsSnapshot?: Record<string, any>;
+   // Desktop middle telemetry properties
+   wakeTime?: string;
+   sleepTime?: string;
+@@ -637,7 +647,7 @@
+ 
+       const tempVal = rawTemp ?? 0;
+       const hardware = hardwareRes.find(state => state.node_id === node.id);
+-      const nodeStatus = hardware ? connectionStatus(hardware) : 'offline';
++      const nodeStatus = hardware ? connectionStatus(hardware) : 'unavailable';
+       if (nodeStatus === 'offline') {
+         status = 'critical';
+         statusLabel = 'Offline';
+@@ -690,9 +700,10 @@
+       const intervalFormatted = node.interval_val ? formatInterval(node.interval_val, node.interval_unit || 'Hours') : '';
+       const updatedTimeFormatted = hardware?.last_seen ? formatUpdatedTime(hardware.last_seen) : 'Unverified';
+ 
+-      return {
++      return applyHomeControllerState({
++        settingsSnapshot: snapshot || undefined,
+         id: node.id,
+-        name: `${node.name} (${roomName})`,
++        name: node.name,
+         value: celsius,
+         status,
+         statusLabel,
+@@ -731,10 +742,10 @@
+         airconBrand: airconBrand || undefined,
+         associatedAc: associatedAc || undefined,
+         model: (node as any).model || matchedAc?.model || undefined,
+-        serialNumber: (node as any).mac_address || (node as any).serial || node.id || '—',
++        serialNumber: hardware?.device_id || (node as any).serial || node.id || '—',
+         pirOccupancy: (node as any).pir_status || (node as any).occupancy || undefined,
+         dailySchedule: (wakeTimeFormatted && sleepTimeFormatted) ? `${wakeTimeFormatted} - ${sleepTimeFormatted}` : undefined,
+-      };
++      }, hardware);
+     });
+   } catch (error) {
+       scope?.recordError(error);
+@@ -746,10 +757,14 @@
+ export const fetchLiveAcControllers = fetchLiveSensors;
+ 
+ // Real-time subscription to nodes, rooms, floors, buildings, and staff
+-export function subscribeToNodes(onUpdate: () => void) {
++export function subscribeToNodes(onUpdate: (row?: CloudDeviceState) => void) {
+   const channelId = `nodes_rooms_staff_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+   const channel = supabase
+     .channel(channelId)
++    .on('postgres_changes', { event: '*', schema: 'public', table: 'ecotrack_device_state' }, payload => {
++      const row = payload.new as CloudDeviceState;
++      onUpdate(row?.node_id ? row : undefined);
++    })
+     .on('postgres_changes', { event: '*', schema: 'public', table: 'nodes' }, () => {
+       onUpdate();
+     })
+--- before/supabase/migrations/202610110001_assigned_staff_hardware_read.sql
++++ after/supabase/migrations/202610110001_assigned_staff_hardware_read.sql
+@@ -0,0 +1,28 @@
++-- Read-only hardware status for active staff in their current admin-assigned room.
++-- Cloud registration, commands, private Broadcast, and credentials remain admin-only.
++BEGIN;
++SET LOCAL lock_timeout = '5s';
++SET LOCAL statement_timeout = '20s';
++DO $$ BEGIN
++ IF to_regclass('public.ecotrack_device_state') IS NULL
++   OR to_regprocedure('public.ecotrack_staff_id()') IS NULL
++   OR to_regprocedure('public.ecotrack_can_access_room(text)') IS NULL THEN
++  RAISE EXCEPTION 'Install EcoTrack cloud hardware and authentication migrations first';
++ END IF;
++END $$;
++DROP POLICY IF EXISTS ecotrack_device_state_assigned_staff_read ON public.ecotrack_device_state;
++CREATE POLICY ecotrack_device_state_assigned_staff_read
++ ON public.ecotrack_device_state FOR SELECT TO authenticated
++ USING (
++  public.ecotrack_staff_id() IS NOT NULL
++  AND EXISTS (
++   SELECT 1 FROM public.nodes n
++   WHERE n.id = ecotrack_device_state.node_id
++     AND public.ecotrack_can_access_room(n.room_id)
++  )
++ );
++COMMIT;
++SELECT policyname, cmd, roles, qual
++FROM pg_policies
++WHERE schemaname='public' AND tablename='ecotrack_device_state'
++ AND policyname='ecotrack_device_state_assigned_staff_read';

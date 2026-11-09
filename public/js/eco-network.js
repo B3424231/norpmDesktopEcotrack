@@ -175,11 +175,15 @@
      */
     async fetch(url, options = {}, config = {}) {
       const timeoutMs = config.timeout || this.DEFAULT_TIMEOUT_MS;
-      const retries = config.retries !== undefined ? config.retries : (options.method === 'POST' ? 0 : this.MAX_RETRIES);
+      const method = String(options.method || 'GET').toUpperCase();
+      const retries = ['GET', 'HEAD'].includes(method) ? (config.retries ?? this.MAX_RETRIES) : 0;
       const isSilent = config.silent || false;
+      const cancelled = () => { const error = new Error('Request cancelled'); error.name = 'AbortError'; return error; };
+      if (options.signal?.aborted) throw cancelled();
 
       // Detect offline immediately
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?=[:/]|$)/i.test(String(url));
+      if (!isLocal && typeof navigator !== 'undefined' && !navigator.onLine) {
         const offlineErr = new Error('You are currently offline. Check your local or network connection.');
         offlineErr.isOffline = true;
         if (!isSilent) EcoToast.warning('Network unavailable: Offline mode active.');
@@ -189,6 +193,9 @@
       let attempt = 0;
       while (attempt <= retries) {
         const controller = new AbortController();
+        const abortFromCaller = () => controller.abort();
+        options.signal?.addEventListener('abort', abortFromCaller, { once: true });
+        if (options.signal?.aborted) { options.signal.removeEventListener('abort', abortFromCaller); throw cancelled(); }
         const timer = setTimeout(() => controller.abort(), timeoutMs);
 
         try {
@@ -219,6 +226,7 @@
           return response;
         } catch (error) {
           clearTimeout(timer);
+          if (options.signal?.aborted) throw cancelled();
 
           const isTimeout = error.name === 'AbortError';
           const isNetworkFailure = error instanceof TypeError || isTimeout;
@@ -247,6 +255,8 @@
           }
 
           throw error;
+        } finally {
+          options.signal?.removeEventListener('abort', abortFromCaller);
         }
       }
     },
@@ -264,6 +274,9 @@
   // 3. Global Online / Offline Status Banner
   // --------------------------------------------------------------------------
   function initOfflineDetector() {
+    // Monitoring reports its local backend status in-page; internet loss must not
+    // cover its header with the cloud-only warning used by control pages.
+    if (document.body?.matches('[data-sensor-page],[data-device-mode-profile]')) return;
     let banner = document.getElementById('eco-offline-banner');
 
     function updateStatus(isOnline) {
@@ -297,7 +310,7 @@
         banner.style.border = '1px solid rgba(254, 202, 202, 0.4)';
         banner.innerHTML = `
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9.28"/><path d="M1.42 9A15.91 15.91 0 0 1 4.7 5.75"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-          <span>Offline Mode — Changes will sync when reconnected</span>
+          <span>Offline — Cloud changes require a connection. Retry after reconnecting.</span>
         `;
         banner.style.transform = 'translateX(-50%) translateY(0)';
       } else {
@@ -329,8 +342,77 @@
   // 4. Modern Glassmorphic EcoModal & Safe Alert Interceptor
   // --------------------------------------------------------------------------
   const originalAlert = window.alert;
+  let activeConfirmation = null;
 
   const EcoModal = {
+    confirm(options) {
+      const config = typeof options === 'string' ? { message: options } : (options || {});
+      if (!document.body) return Promise.resolve(false);
+      // A newer request cancels the previous decision; it never approves it.
+      if (activeConfirmation) activeConfirmation(false);
+
+      return new Promise((resolve) => {
+        const previousFocus = document.activeElement;
+        const dialog = document.createElement('dialog');
+        dialog.id = 'eco-confirm-dialog';
+        dialog.className = 'eco-confirm-dialog';
+        dialog.dataset.danger = String(config.danger === true);
+        dialog.setAttribute('aria-labelledby', 'eco-confirm-title');
+        dialog.setAttribute('aria-describedby', 'eco-confirm-message');
+        dialog.innerHTML = `
+          <div class="eco-confirm-dialog__card">
+            <header class="eco-confirm-dialog__header">
+              <div class="eco-confirm-dialog__icon" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle><path d="M12 7v6m0 4h.01"></path>
+                </svg>
+              </div>
+              <h2 id="eco-confirm-title">${escapeHtml(String(config.title || 'Confirm Action'))}</h2>
+              <button type="button" class="eco-confirm-dialog__close" aria-label="Close confirmation">&times;</button>
+            </header>
+            <p id="eco-confirm-message">${escapeHtml(String(config.message || ''))}</p>
+            <footer class="eco-confirm-dialog__actions">
+              <button type="button" class="eco-confirm-dialog__cancel" autofocus>${escapeHtml(String(config.cancelText || 'Cancel'))}</button>
+              <button type="button" class="eco-confirm-dialog__confirm">${escapeHtml(String(config.confirmText || 'Confirm'))}</button>
+            </footer>
+          </div>
+        `;
+        let settled = false;
+        const finish = (confirmed) => {
+          if (settled) return;
+          settled = true;
+          if (activeConfirmation === finish) activeConfirmation = null;
+          if (dialog.open) dialog.close();
+          dialog.remove();
+          if (previousFocus?.isConnected && typeof previousFocus.focus === 'function') previousFocus.focus({ preventScroll: true });
+          resolve(confirmed === true);
+        };
+        activeConfirmation = finish;
+        dialog.querySelector('.eco-confirm-dialog__confirm').addEventListener('click', () => finish(true));
+        dialog.querySelector('.eco-confirm-dialog__cancel').addEventListener('click', () => finish(false));
+        dialog.querySelector('.eco-confirm-dialog__close').addEventListener('click', () => finish(false));
+        dialog.addEventListener('cancel', (event) => { event.preventDefault(); finish(false); });
+        dialog.addEventListener('close', () => finish(false));
+        dialog.addEventListener('click', (event) => { if (event.target === dialog) finish(false); });
+        dialog.addEventListener('keydown', (event) => {
+          if (event.key !== 'Tab') return;
+          const buttons = dialog.querySelectorAll('button:not([disabled])');
+          const first = buttons[0], last = buttons[buttons.length - 1];
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault(); last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault(); first.focus();
+          }
+        });
+        document.body.appendChild(dialog);
+        try {
+          dialog.showModal();
+          dialog.querySelector('.eco-confirm-dialog__cancel').focus({ preventScroll: true });
+        } catch (error) {
+          finish(false);
+        }
+      });
+    },
     show(options) {
       const config = typeof options === 'string' ? { message: options } : (options || {});
       const message = String(config.message || '');
@@ -375,6 +457,7 @@
       overlay.id = 'eco-global-modal';
       overlay.setAttribute('role', 'dialog');
       overlay.setAttribute('aria-modal', 'true');
+      overlay.dataset.ecoModalType = type;
       overlay.style.cssText = `
         position: fixed;
         inset: 0;
@@ -391,29 +474,26 @@
         pointer-events: auto;
       `;
 
-      // Determine active theme (Dark vs Light)
-      const isDark = document.documentElement.classList.contains('dark') || !document.documentElement.classList.contains('light');
+      // Use the live shared theme palette.
+      const cardBg = 'var(--eco-surface)';
+      const titleColor = 'var(--eco-text) !important';
+      const textColor = 'var(--eco-secondary) !important';
+      const closeBtnBg = 'var(--eco-raised)';
+      const closeBtnColor = 'var(--eco-secondary)';
+      const cardShadow = 'var(--eco-modal-shadow)';
 
-      // Theme-specific color palettes
-      const cardBg = isDark ? '#0c1328' : '#ffffff';
-      const titleColor = isDark ? '#ffffff !important' : '#0f172a !important';
-      const textColor = isDark ? '#cbd5e1 !important' : '#334155 !important';
-      const closeBtnBg = isDark ? 'rgba(255, 255, 255, 0.08)' : '#f1f5f9';
-      const closeBtnColor = isDark ? '#94a3b8' : '#64748b';
-      const cardShadow = isDark ? '0 25px 50px -12px rgba(0, 0, 0, 0.75)' : '0 25px 50px -12px rgba(15, 23, 42, 0.2)';
-
-      let cardBorder = isDark ? '1px solid rgba(255, 255, 255, 0.1)' : '1px solid #e2e8f0';
+      let cardBorder = '1px solid var(--eco-panel-border)';
       let iconHtml = '';
       let btnHtml = '';
 
       if (type === 'offline') {
-        cardBorder = isDark ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #fde68a';
+        cardBorder = '1px solid var(--eco-warning)';
         iconHtml = `
           <div style="position: relative; width: 64px; height: 64px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
-            <div style="position: absolute; inset: -4px; border-radius: 20px; background: rgba(245, 158, 11, 0.25); filter: blur(8px);"></div>
-            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: linear-gradient(135deg, #f59e0b, #ea580c); padding: 2px; box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4); display: flex; align-items: center; justify-content: center;">
-              <div style="width: 100%; height: 100%; background: ${isDark ? '#0c1328' : '#ffffff'}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
-                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <div style="position: absolute; inset: -4px; border-radius: 20px; background: var(--eco-warning-bg); filter: blur(8px);"></div>
+            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: var(--eco-warning); padding: 2px; box-shadow: var(--eco-modal-shadow); display: flex; align-items: center; justify-content: center;">
+              <div style="width: 100%; height: 100%; background: ${cardBg}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--eco-warning)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
                   <line x1="1" y1="1" x2="23" y2="23"></line>
                   <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>
                   <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"></path>
@@ -436,9 +516,9 @@
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: #ffffff !important;
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
+            background: var(--eco-action) !important;
             border: none;
-            box-shadow: 0 10px 22px -5px rgba(245, 158, 11, 0.4);
+            box-shadow: var(--eco-modal-shadow);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -450,13 +530,13 @@
           </button>
         `;
       } else if (type === 'error') {
-        cardBorder = isDark ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid #fecaca';
+        cardBorder = '1px solid var(--eco-danger)';
         iconHtml = `
           <div style="position: relative; width: 64px; height: 64px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
-            <div style="position: absolute; inset: -4px; border-radius: 20px; background: rgba(239, 68, 68, 0.25); filter: blur(8px);"></div>
-            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: linear-gradient(135deg, #dc2626, #ef4444); padding: 2px; box-shadow: 0 10px 25px -5px rgba(239, 68, 68, 0.4); display: flex; align-items: center; justify-content: center;">
-              <div style="width: 100%; height: 100%; background: ${isDark ? '#0c1328' : '#ffffff'}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <div style="position: absolute; inset: -4px; border-radius: 20px; background: var(--eco-danger-bg); filter: blur(8px);"></div>
+            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: var(--eco-danger); padding: 2px; box-shadow: var(--eco-modal-shadow); display: flex; align-items: center; justify-content: center;">
+              <div style="width: 100%; height: 100%; background: ${cardBg}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--eco-danger)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="10"></circle>
                   <line x1="12" y1="8" x2="12" y2="12"></line>
                   <line x1="12" y1="16" x2="12.01" y2="16"></line>
@@ -475,9 +555,9 @@
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: #ffffff !important;
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+            background: var(--eco-action) !important;
             border: none;
-            box-shadow: 0 10px 22px -5px rgba(239, 68, 68, 0.4);
+            box-shadow: var(--eco-modal-shadow);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -489,13 +569,13 @@
           </button>
         `;
       } else if (type === 'warning') {
-        cardBorder = isDark ? '1px solid rgba(245, 158, 11, 0.35)' : '1px solid #fde68a';
+        cardBorder = '1px solid var(--eco-warning)';
         iconHtml = `
           <div style="position: relative; width: 64px; height: 64px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
-            <div style="position: absolute; inset: -4px; border-radius: 20px; background: rgba(245, 158, 11, 0.25); filter: blur(8px);"></div>
-            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: linear-gradient(135deg, #f59e0b, #d97706); padding: 2px; box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.4); display: flex; align-items: center; justify-content: center;">
-              <div style="width: 100%; height: 100%; background: ${isDark ? '#0c1328' : '#ffffff'}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <div style="position: absolute; inset: -4px; border-radius: 20px; background: var(--eco-warning-bg); filter: blur(8px);"></div>
+            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: var(--eco-warning); padding: 2px; box-shadow: var(--eco-modal-shadow); display: flex; align-items: center; justify-content: center;">
+              <div style="width: 100%; height: 100%; background: ${cardBg}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--eco-warning)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
                   <line x1="12" y1="9" x2="12" y2="13"/>
                   <line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -514,9 +594,9 @@
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: #ffffff !important;
-            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
+            background: var(--eco-action) !important;
             border: none;
-            box-shadow: 0 10px 22px -5px rgba(245, 158, 11, 0.4);
+            box-shadow: var(--eco-modal-shadow);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -528,13 +608,13 @@
           </button>
         `;
       } else if (type === 'success') {
-        cardBorder = isDark ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid #a7f3d0';
+        cardBorder = '1px solid var(--eco-success)';
         iconHtml = `
           <div style="position: relative; width: 64px; height: 64px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
-            <div style="position: absolute; inset: -4px; border-radius: 20px; background: rgba(16, 185, 129, 0.25); filter: blur(8px);"></div>
-            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: linear-gradient(135deg, #10b981, #0d9488); padding: 2px; box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.4); display: flex; align-items: center; justify-content: center;">
-              <div style="width: 100%; height: 100%; background: ${isDark ? '#0c1328' : '#ffffff'}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
-                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#34d399" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+            <div style="position: absolute; inset: -4px; border-radius: 20px; background: var(--eco-success-bg); filter: blur(8px);"></div>
+            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: var(--eco-success); padding: 2px; box-shadow: var(--eco-modal-shadow); display: flex; align-items: center; justify-content: center;">
+              <div style="width: 100%; height: 100%; background: ${cardBg}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--eco-success)" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
                   <polyline points="20 6 9 17 4 12"></polyline>
                 </svg>
               </div>
@@ -551,9 +631,9 @@
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: #ffffff !important;
-            background: linear-gradient(135deg, #10b981 0%, #0d9488 100%) !important;
+            background: var(--eco-action) !important;
             border: none;
-            box-shadow: 0 10px 22px -5px rgba(16, 185, 129, 0.4);
+            box-shadow: var(--eco-modal-shadow);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -568,13 +648,13 @@
           </button>
         `;
       } else { // info
-        cardBorder = isDark ? '1px solid rgba(14, 165, 233, 0.35)' : '1px solid #bae6fd';
+        cardBorder = '1px solid var(--eco-info)';
         iconHtml = `
           <div style="position: relative; width: 64px; height: 64px; margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;">
-            <div style="position: absolute; inset: -4px; border-radius: 20px; background: rgba(14, 165, 233, 0.25); filter: blur(8px);"></div>
-            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: linear-gradient(135deg, #0284c7, #0ea5e9); padding: 2px; box-shadow: 0 10px 25px -5px rgba(14, 165, 233, 0.4); display: flex; align-items: center; justify-content: center;">
-              <div style="width: 100%; height: 100%; background: ${isDark ? '#0c1328' : '#ffffff'}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+            <div style="position: absolute; inset: -4px; border-radius: 20px; background: var(--eco-info-bg); filter: blur(8px);"></div>
+            <div style="position: relative; width: 60px; height: 60px; border-radius: 18px; background: var(--eco-info); padding: 2px; box-shadow: var(--eco-modal-shadow); display: flex; align-items: center; justify-content: center;">
+              <div style="width: 100%; height: 100%; background: ${cardBg}; border-radius: 16px; display: flex; align-items: center; justify-content: center;">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--eco-info)" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line>
                 </svg>
               </div>
@@ -591,9 +671,9 @@
             letter-spacing: 0.06em;
             text-transform: uppercase;
             color: #ffffff !important;
-            background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+            background: var(--eco-action) !important;
             border: none;
-            box-shadow: 0 10px 22px -5px rgba(14, 165, 233, 0.4);
+            box-shadow: var(--eco-modal-shadow);
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -607,9 +687,10 @@
       }
 
       // Enhanced message styling with highlighted badges for nodes and statuses
+      const badgeColor = type === 'offline' ? 'var(--eco-warning)' : type === 'error' ? 'var(--eco-danger)' : 'var(--eco-accent)';
       let formattedBody = escapeHtml(message)
-        .replace(/\((node-[^)]+)\)/gi, '(<span style="font-family: monospace; font-weight: 800; color: ' + (type === 'offline' ? '#f59e0b' : type === 'error' ? '#ef4444' : '#10b981') + '; background: ' + (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.05)') + '; padding: 2px 6px; border-radius: 6px;">$1</span>)')
-        .replace(/\bOFFLINE\b/g, '<span style="font-weight: 800; font-size: 11px; letter-spacing: 0.05em; color: #ef4444; background: ' + (isDark ? 'rgba(239, 68, 68, 0.15)' : '#fee2e2') + '; padding: 2px 7px; border-radius: 6px; border: 1px solid ' + (isDark ? 'rgba(239, 68, 68, 0.3)' : '#fca5a5') + ';">OFFLINE</span>');
+        .replace(/\((node-[^)]+)\)/gi, '(<span style="font-family: monospace; font-weight: 800; color: ' + badgeColor + '; background: var(--eco-raised); padding: 2px 6px; border-radius: 6px;">$1</span>)')
+        .replace(/\bOFFLINE\b/g, '<span style="font-weight: 800; font-size: 11px; letter-spacing: 0.05em; color: var(--eco-danger); background: var(--eco-danger-bg); padding: 2px 7px; border-radius: 6px; border: 1px solid var(--eco-danger);">OFFLINE</span>');
 
       overlay.innerHTML = `
         <div class="eco-modal-card" style="
@@ -727,6 +808,7 @@
 
   window.originalAlert = originalAlert;
   window.EcoToast = EcoToast;
+  window.EcoNetwork = EcoNetwork;
   window.EcoModal = EcoModal;
   window.ecoAlert = function (message, title = 'EcoTrack Notification') {
     if (!document.body && typeof originalAlert === 'function') {

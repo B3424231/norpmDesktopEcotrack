@@ -1,0 +1,111 @@
+ M app.json
+ M eas.json
+ M firmware/README.md
+ M firmware/ecotrack_esp32_s3/ecotrack_esp32_s3.ino
+ M package-lock.json
+ M package.json
+ M src/app/Maintenance.tsx
+ M src/app/_layout.tsx
+ M src/app/devices.tsx
+ M src/app/explore.tsx
+ M src/app/index.tsx
+ M src/app/notification.tsx
+ M src/app/profile.tsx
+ M src/app/settings.tsx
+ M src/components/animated-icon.tsx
+ M src/components/animated-icon.web.tsx
+ M src/components/app-icon.tsx
+ M src/components/app-tabs.tsx
+ M src/components/archived-account-modal.tsx
+ M src/components/auth-screen.tsx
+ M src/components/dashboard-sidebar.tsx
+ M src/components/floating-navbar.tsx
+ M src/components/forgot-password-modal.tsx
+ M src/components/location-icon.tsx
+ M src/components/sensor-card.tsx
+ M src/components/sensor-detail-sheet.tsx
+ M src/components/web-badge.tsx
+ M src/constants/custom-icons.ts
+ M src/constants/theme.ts
+ M src/context/auth-context.tsx
+ M src/services/device-service.ts
+ M src/services/mobile-notifications.ts
+ M src/services/supabase.ts
+ M supabase_image_storage_setup.sql
+ M supabase_mobile_notifications_setup.sql
+ M supabase_nodes_schema.sql
+ M tsconfig.json
+?? .agents/
+?? .easignore
+?? ANDROID_APK_BUILD.md
+?? BACKEND_AUDIT.md
+?? DEVICE_CARD_AND_DESKTOP_IR_DIFF.txt
+?? DEVICE_CARD_AND_DESKTOP_IR_REPORT.md
+?? DEVICE_MANAGEMENT_FIX_DIFF.txt
+?? DEVICE_MANAGEMENT_FIX_REPORT.md
+?? FETCH_IMPROVEMENTS_DIFF.txt
+?? FETCH_IMPROVEMENTS_REPORT.md
+?? MOBILE_DESKTOP_CLOUD_REPORT.md
+?? MOBILE_HOME_REGISTRATION_REPORT.md
+?? MOBILE_UI_CLEANUP_REPORT.md
+?? SCOPED_BUG_FIX_DIFF.txt
+?? SCOPED_BUG_FIX_REPORT.md
+?? SUPABASE_FETCH_REVIEW.md
+?? artifacts/
+?? "debugging skills.md"
+?? eslint.config.js
+?? scripts/audit-supabase-readonly.cjs
+?? scripts/check_supabase.js
+?? scripts/download-mobile-home-apk.cjs
+?? scripts/export-schema-metadata.cjs
+?? scripts/provision-auth-users.cjs
+?? scripts/render-mobile-home-fixtures.cjs
+?? scripts/test-aircon-state.cjs
+?? scripts/test-auth.cjs
+?? scripts/test-backend.cjs
+?? scripts/test-cloud-hardware-integration.cjs
+?? scripts/test-cross-system.cjs
+?? scripts/test-daily-logs.cjs
+?? scripts/test-dashboard-power.cjs
+?? scripts/test-database-contracts.cjs
+?? scripts/test-desktop-device-profile.cjs
+?? scripts/test-desktop-startup.cjs
+?? scripts/test-device-integration.cjs
+?? scripts/test-device-ui.cjs
+?? scripts/test-energy-analytics.cjs
+?? scripts/test-energy-audit.cjs
+?? scripts/test-fetching.cjs
+?? scripts/test-log-date-options.cjs
+?? scripts/test-maintenance-rpc.cjs
+?? scripts/test-maintenance-status.cjs
+?? scripts/test-mobile-hardware-read-policy.cjs
+?? scripts/test-mobile-home-state.cjs
+?? scripts/test-native-notifications.cjs
+?? scripts/test-notifications.cjs
+?? scripts/test-operating-window.cjs
+?? scripts/test-render-regressions.cjs
+?? scripts/test-scheduler-controls.cjs
+?? scripts/test-scoped-control-fixes.cjs
+?? scripts/verify-mobile-home-apk.py
+?? src/components/controller-registration-steps.tsx
+?? src/hooks/use-mobile-notifications.ts
+?? src/services/ac-capability-registry.d.ts
+?? src/services/ac-capability-registry.js
+?? src/services/ac-controller-service.ts
+?? src/services/aircon-state.ts
+?? src/services/auth-service.ts
+?? src/services/ble-protocol.ts
+?? src/services/cloud-hardware.ts
+?? src/services/controller-display.ts
+?? src/services/device-transport.ts
+?? src/services/home-controller-state.ts
+?? src/services/maintenance-rpc.ts
+?? src/services/maintenance-status.ts
+?? src/services/private-images.ts
+?? src/services/query-utils.ts
+?? src/services/receiver-state.ts
+?? src/services/refresh-coordinator.ts
+?? supabase/
+?? supabase_aircons_rls_setup.sql
+?? supabase_backend_integrity_patch.sql
+?? supabase_device_nodes_sync_migration.sql

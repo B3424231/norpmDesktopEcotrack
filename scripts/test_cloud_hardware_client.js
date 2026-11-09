@@ -4,6 +4,12 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 let now = Date.parse('2026-10-08T16:00:00Z');
 class TestDate extends Date { static now() { return now; } }
+// Advance short BLE/polling waits without expiring healthy cloud request deadlines.
+// Long transport timers remain cancellable and are forced only by the timeout case.
+function testSetTimeout(callback, ms) {
+ if(ms<=700){now+=ms;queueMicrotask(callback);return;}
+ return setTimeout(callback,ms);
+}
 let bluetoothInfo={device_id:'esp32s3-001122334455',cloud_protocol:1,wifi_status:'unconfigured',cloud_status:'unconfigured',firmware_version:'cloud-ir-receiver-1.0',capabilities:{ir_receiver:true,ir_transmitter:false}};
 let hardwareStatus={node_id:'node-real',device_id:bluetoothInfo.device_id,last_seen:new Date(now).toISOString(),capabilities:{ir_receiver:true,ir_transmitter:false},latest_ir:null};
 let rpcError=null, readError=null, responseMode='complete', wireParts=[], provisioned=[], requests=[], disconnected=false, queued=null;
@@ -55,7 +61,7 @@ const sb={
  }
 };
 const root={CustomEvent:class{constructor(type,options){this.type=type;this.detail=options.detail;}},dispatchEvent:event=>notifications.push(event),supabaseClient:sb,crypto:crypto.webcrypto,navigator:{bluetooth:{requestDevice:async options=>{pickerCalls++;assert.equal(options.filters[0].namePrefix,'EcoTrack-');return device;}}},performance:{now:()=>now},ECOTRACK_CONFIG:{supabaseUrl:'https://test.supabase.co',supabaseKey:'sb_publishable_fixture'},localStorage:{getItem:k=>storage[k]||null,setItem:(k,v)=>storage[k]=v}};
-const context=vm.createContext({window:root,Date:TestDate,TextEncoder,TextDecoder,Uint8Array,atob,console,setTimeout:(callback,ms)=>{now+=ms;queueMicrotask(callback);}});
+const context=vm.createContext({window:root,Date:TestDate,TextEncoder,TextDecoder,Uint8Array,atob,console,setTimeout:testSetTimeout,clearTimeout,AbortController});
 vm.runInContext(fs.readFileSync('public/js/hardware-cloud.js','utf8'),context);
 const cloud=root.EcoTrackHardwareCloud;
 async function main(){
@@ -73,7 +79,7 @@ async function main(){
  checkList.push('Fresh Bluetooth IR metadata is captured before registration without a Supabase request');
  captureFresh=false;captureReads=0;
  await assert.rejects(()=>cloud.learnNearby(bluetoothInfo.device_id),/No new IR signal/);assert.equal(requests.length,beforeIR);
- await assert.rejects(()=>cloud.learnNearby('other-device'),/Reconnect the selected ESP32/);captureFresh=true;
+ await assert.rejects(()=>cloud.learnNearby('other-device'),/Reconnect the selected device/);captureFresh=true;
  checkList.push('Old captures, missing firmware support, and mismatched hardware cannot pass nearby detection');
  await cloud.provision({ssid:'Campus network',pass:'  spaced-password  '});
  assert.equal(provisioned[0].pass,'  spaced-password  ');checkList.push('Credentials are written to BLE and whitespace is preserved');
@@ -98,6 +104,9 @@ async function main(){
  await assert.rejects(()=>cloud.latest('node-real'),/No actual IR capture/);
  hardwareStatus.latest_ir={raw_data:'3500,1750,450,1300',protocol:'DAIKIN2',sequence:4};assert.equal((await cloud.latest('node-real')).sequence,4);checkList.push('Latest IR capture comes from the cloud device record');
  hardwareStatus.last_seen=new Date(now-60000).toISOString();assert.equal((await cloud.getStatus('node-real')).connection_status,'offline');checkList.push('Old heartbeat is offline even when its database row still exists');
+ const beforeOffline=requests.length;
+ await assert.rejects(()=>cloud.control('node-real',{state:{power:'on'}}),error=>error.code==='NODE_OFFLINE');
+ assert.equal(requests.length,beforeOffline,'Offline IR must not queue a command');
  rpcError={code:'PGRST202',message:'Function missing'};await assert.rejects(()=>cloud.request('node-real','ping'),/supabase_cloud_hardware_migration/);checkList.push('Missing cloud deployment produces actionable setup error');
  rpcError=null;readError={code:'42501',message:'Access denied'};await assert.rejects(()=>cloud.getStatus('node-real'),/Access denied/);checkList.push('Database permission failures remain failures');
  readError=null; rpcError=null;
@@ -119,7 +128,7 @@ async function main(){
  checkList.push('Wrong Bluetooth identity is disconnected and cannot rotate another controller credential');
  const originalChooser=root.navigator.bluetooth.requestDevice;
  root.navigator.bluetooth.requestDevice=async()=>{throw Object.assign(new Error('User cancelled the chooser.'),{name:'NotFoundError'});};
- await assert.rejects(()=>cloud.connect(actualId),error=>error.code==='BLE_DISCONNECTED'&&/No ESP32 was selected/.test(error.message));
+ await assert.rejects(()=>cloud.connect(actualId),error=>error.code==='BLE_DISCONNECTED'&&/No device was selected/.test(error.message));
  root.navigator.bluetooth.requestDevice=originalChooser;await cloud.connect(actualId);
  checkList.push('Cancelled device selection leaves an actionable reconnect error');
  const beforeReusePicker=pickerCalls,beforeReuseConnect=connectCalls,beforeReuseDrop=disconnectCalls,beforeReuseRpcs=requests.length,beforeReuseWrites=provisioned.length;
@@ -197,7 +206,7 @@ async function main(){
  const loadFreshTransport=authorizedDevices=>{
   let chooserCalls=0;
   const freshRoot={...root,navigator:{bluetooth:{getDevices:async()=>authorizedDevices,requestDevice:async()=>{chooserCalls++;return device;}}}};
-  const freshContext=vm.createContext({window:freshRoot,Date:TestDate,TextEncoder,TextDecoder,Uint8Array,atob,console,setTimeout:(fn,ms)=>{now+=ms;queueMicrotask(fn);}});
+  const freshContext=vm.createContext({window:freshRoot,Date:TestDate,TextEncoder,TextDecoder,Uint8Array,atob,console,setTimeout:testSetTimeout,clearTimeout,AbortController});
   vm.runInContext(fs.readFileSync('public/js/hardware-cloud.js','utf8'),freshContext);
   return {transport:freshRoot.EcoTrackHardwareCloud,chooserCalls:()=>chooserCalls};
  };
@@ -250,21 +259,22 @@ async function main(){
  checkList.push('Credential recovery calls the metadata-preserving RPC and retains supported secure BLE provisioning');
  const picker=root.navigator.bluetooth.requestDevice, beforeCancelWrites=provisioned.length, beforeCancelDisconnect=disconnectCalls;
  root.navigator.bluetooth.requestDevice=async()=>{throw Object.assign(new Error('Cancelled'),{name:'NotFoundError'});};
- await assert.rejects(()=>cloud.connect(bluetoothInfo.device_id),/No ESP32 was selected/);
+ await assert.rejects(()=>cloud.connect(bluetoothInfo.device_id),/No device was selected/);
  assert.equal(disconnectCalls,beforeCancelDisconnect);assert.equal(device.gatt.connected,true);
  assert.equal((await cloud.reconnect(bluetoothInfo.device_id)).device_id,bluetoothInfo.device_id);assert.equal(provisioned.length,beforeCancelWrites);
  root.navigator.bluetooth.requestDevice=picker;
  checkList.push('Cancelling a new Bluetooth selection preserves the previous working device and credentials');
- const timeoutRpc=sb.rpc, beforeTimeoutWrites=provisioned.length;
+ const timeoutRpc=sb.rpc, beforeTimeoutWrites=provisioned.length, originalTimer=context.setTimeout;
  let timeoutSignal;
- context.AbortController=AbortController;context.clearTimeout=()=>{};
+ context.setTimeout=(callback,ms)=>{now+=ms;queueMicrotask(callback);};
  sb.rpc=(name,args)=>name==='ecotrack_controller_registration_status'?{
    abortSignal(signal){timeoutSignal=signal;return this;},
    then(resolve){queueMicrotask(()=>resolve({data:null,error:{message:timeoutSignal.aborted?'Registration request timed out':'Unexpected live query'}}));}
  }:timeoutRpc(name,args);
  await assert.rejects(()=>cloud.registrationStatus(bluetoothInfo),/timed out/);
- assert.equal(timeoutSignal.aborted,true);assert.equal(provisioned.length,beforeTimeoutWrites);assert.equal(device.gatt.connected,true);sb.rpc=timeoutRpc;
+ assert.equal(timeoutSignal.aborted,true);assert.equal(provisioned.length,beforeTimeoutWrites);assert.equal(device.gatt.connected,true);sb.rpc=timeoutRpc;context.setTimeout=originalTimer;
  checkList.push('Timed-out registration queries abort without provisioning or disconnecting the previous device');
+ fs.mkdirSync('reports/cloud-hardware',{recursive:true});
  fs.writeFileSync('reports/cloud-hardware/client-tests.json',JSON.stringify({checks:checkList,passed:checkList.length,physical_hardware_tested:false},null,2));
  console.log(`Cloud hardware client: ${checkList.length} checks passed.`);
 }

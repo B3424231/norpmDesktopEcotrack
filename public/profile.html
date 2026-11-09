@@ -2,18 +2,23 @@
 <html lang="en">
 
 <head>
+  <script src="./js/battery-status.js?v=1"></script>
+  <script src="./js/device-labels.js?v=1"></script>
+  <script src="./js/app-mode.js?v=8"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Profile - EcoTrack</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="./vendor/tailwindcss.js"></script>
   <script>
     tailwind.config = {
       darkMode: 'class'
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=68">
-  <script src="./js/sidebar.js"></script>
-  <script src="./js/sidebar-loader.js?v=7"></script>
+  <link rel="stylesheet" href="./styles.css?v=70">
+  <link rel="stylesheet" href="./css/profile-tabs.css?v=2">
+  <script src="./js/page-state.js?v=1"></script>
+  <script src="./js/sidebar.js?v=2"></script>
+  <script src="./js/sidebar-loader.js?v=33"></script>
 
   <!-- Cloud Database Engine (Supabase) -->
   <script src="./js/supabase.umd.js"></script>
@@ -23,20 +28,20 @@
     }
   </script>
   <script src="./js/supabase-client.js"></script>
-  <script src="./js/shared.js"></script>
+  <script src="./js/shared.js?v=2"></script>
   <script src="./js/eco-network.js"></script>
   <script src="./js/eco-data-bus.js"></script>
   <script src="./js/skeletons.js"></script>
-  <script src="./js/maintenance-modal.js?v=68"></script>
+  <script src="./js/maintenance-modal.js?v=80"></script>
 </head>
 
-<body class="app-shell bg-gray-50 dark:bg-[#0a0f1d] transition-colors duration-200">
+<body data-device-mode-profile class="app-shell bg-gray-50 dark:bg-[#0a0f1d] transition-colors duration-200">
   <div class="flex h-screen">
     <!-- Sidebar injected here -->
-    <main class="flex-1 flex flex-col overflow-hidden">
+    <main class="flex-1 flex flex-col overflow-hidden" style="min-width:0">
       <header
         class="bg-white dark:bg-[#0c1328] border-b border-gray-200 dark:border-white/5 px-6 py-3.5 flex justify-between items-center z-10 shadow-sm relative">
-        <h2 class="text-2xl font-bold text-[#18392B] dark:text-cyan-400 flex items-center gap-2">
+        <h2 class="eco-primary-text text-2xl font-bold text-[#18392B] dark:text-cyan-400 flex items-center gap-2">
           <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.5"
             class="text-[#10b981]">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -44,6 +49,7 @@
           </svg>
           Admin Profile
         </h2>
+        <button type="button" id="profileModeMenu" class="workspace-button workspace-menu" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">Menu</button>
 
         <!-- Header Actions: Notification & Theme Toggle -->
         <div class="flex items-center gap-3.5">
@@ -130,7 +136,7 @@
                 <input type="file" id="avatarFileInput" accept="image/*" class="hidden">
               </div>
               <div>
-                <h2 id="profile-name" class="text-2xl font-bold text-[#18392B] dark:text-[#a7f3d0]">Administrator</h2>
+                <h2 id="profile-name" class="eco-primary-text text-2xl font-bold text-[#18392B] dark:text-[#a7f3d0]">Administrator</h2>
                 <span id="profile-role-badge"
                   class="inline-block mt-1 px-3 py-1 bg-emerald-50 dark:bg-emerald-950/40 text-[#10b981] text-xs font-semibold rounded-full mb-4">System
                   Administrator</span>
@@ -213,9 +219,9 @@
             class="bg-white dark:bg-[#0c1328]/70 dark:backdrop-blur-md rounded-2xl shadow-sm border-2 border-emerald-200 dark:border-emerald-950/60 overflow-hidden">
             <!-- Tab Navigation Header -->
             <div
-              class="flex items-center border-b border-gray-100 dark:border-white/5 bg-gray-50/50 dark:bg-slate-950/30 px-6 pt-3 gap-2 overflow-x-auto">
+              class="profile-tabs" role="tablist" aria-label="Admin profile">
               <button type="button" id="tabBtnProfile"
-                class="profile-nav-tab px-4 py-3 text-sm font-bold border-b-2 border-emerald-500 text-emerald-600 dark:text-emerald-400 flex items-center gap-2 cursor-pointer transition-colors">
+                class="profile-nav-tab" aria-selected="true">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
                   <circle cx="12" cy="7" r="4" />
@@ -223,7 +229,7 @@
                 Account Profile
               </button>
               <button type="button" id="tabBtnSecurity"
-                class="profile-nav-tab px-4 py-3 text-sm font-bold border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-2 cursor-pointer transition-colors">
+                class="profile-nav-tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                   <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
@@ -231,7 +237,7 @@
                 Security & Password
               </button>
               <button type="button" id="tabBtnHistory"
-                class="profile-nav-tab px-4 py-3 text-sm font-bold border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 flex items-center gap-2 cursor-pointer transition-colors">
+                class="profile-nav-tab">
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10" />
                   <polyline points="12 6 12 12 16 14" />
@@ -240,13 +246,13 @@
               </button>
             </div>
 
+
             <!-- TAB 1: Account Profile Form -->
             <div id="panelProfile" class="profile-tab-panel p-6 sm:p-8 space-y-6">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-lg font-bold text-[#18392B] dark:text-cyan-400">Account Details</h3>
-                  <p class="text-xs text-gray-500 dark:text-gray-400">Manage your administrative name, email address,
-                    and localization</p>
+                  <h3 class="eco-primary-text text-lg font-bold text-[#18392B] dark:text-cyan-400">Account Details</h3>
+                  <p class="text-xs text-gray-500 dark:text-gray-400">Manage your account details and localization</p>
                 </div>
               </div>
 
@@ -265,9 +271,10 @@
                 </div>
                 <div>
                   <label class="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">Email Address</label>
-                  <input type="email" id="edit-email"
+                  <input type="email" id="edit-email" readonly aria-describedby="edit-email-note"
                     class="w-full border border-gray-200 dark:border-white/10 rounded-xl px-4 py-2.5 text-sm bg-white dark:bg-slate-950/40 text-gray-800 dark:text-gray-100 focus:outline-none focus:border-emerald-500 transition-colors shadow-sm"
                     value="admin@ecotrack.com">
+                  <p id="edit-email-note" class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">Account email cannot be changed here.</p>
                 </div>
                 <div>
                   <label class="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">Location</label>
@@ -291,7 +298,7 @@
             <!-- TAB 2: Security & Password -->
             <div id="panelSecurity" class="profile-tab-panel p-6 sm:p-8 space-y-6 hidden">
               <div>
-                <h3 class="text-lg font-bold text-[#18392B] dark:text-cyan-400">Security & Credentials</h3>
+                <h3 class="eco-primary-text text-lg font-bold text-[#18392B] dark:text-cyan-400">Security & Credentials</h3>
                 <p class="text-xs text-gray-500 dark:text-gray-400">Update account password and configure session
                   inactivity timeout</p>
               </div>
@@ -385,7 +392,7 @@
             <div id="panelHistory" class="profile-tab-panel p-6 sm:p-8 space-y-6 hidden">
               <div class="flex items-center justify-between">
                 <div>
-                  <h3 class="text-lg font-bold text-[#18392B] dark:text-cyan-400">Login Activity Audit</h3>
+                  <h3 class="eco-primary-text text-lg font-bold text-[#18392B] dark:text-cyan-400">Login Activity Audit</h3>
                   <p class="text-xs text-gray-500 dark:text-gray-400">Review recent sign-ins and session timestamps</p>
                 </div>
                 <button id="clear-history-btn"
@@ -424,7 +431,7 @@
                   <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
                   <path d="M13.73 21a2 2 0 0 1-3.46 0" />
                 </svg>
-                <h3 class="text-xl font-bold text-[#18392B] dark:text-cyan-400">New Notification!</h3>
+                <h3 class="eco-primary-text text-xl font-bold text-[#18392B] dark:text-cyan-400">New Notification!</h3>
               </div>
               <p id="globalNotificationMessage"
                 class="text-gray-700 dark:text-gray-200 text-sm font-medium mb-5 leading-relaxed">A scheduled message
@@ -442,8 +449,10 @@
             </div>
           </div>
 
-          <script src="./js/global-notifications.js"></script>
-          <script src="./js/profile.js?v=69"></script>
+          <script src="./js/global-notifications.js?v=2"></script>
+          <script src="./js/profile.js?v=75"></script>
+          <script defer src="./js/profile-device-mode.js?v=2"></script>
+          <button type="button" class="workspace-backdrop" id="profileModeBackdrop" aria-label="Close navigation"></button>
 </body>
 
 </html>

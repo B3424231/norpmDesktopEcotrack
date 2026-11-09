@@ -2,10 +2,13 @@
 <html lang="en" class="dark">
 
 <head>
+  <script src="./js/battery-status.js?v=1"></script>
+  <script src="./js/device-labels.js?v=2"></script>
+  <script src="./js/app-mode.js?v=8"></script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AC Controller Devices - EcoTrack Aircon IoT</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <title>Register AC Devices - EcoTrack Aircon IoT</title>
+  <script src="./vendor/tailwindcss.js"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -22,10 +25,19 @@
       }
     }
   </script>
-  <link rel="stylesheet" href="./styles.css?v=56">
-  <link rel="stylesheet" href="./css/controller-registration.css?v=1">
+  <link rel="stylesheet" href="./styles.css?v=70">
+  <link rel="stylesheet" href="./css/controller-registration.css?v=5">
   <style>
-    /* High-contrast status pill guarantees for AC Controller Devices */
+    html:not([data-eco-mode="controller"]) [data-ir-monitor-column] { display:none!important; }
+    /* Fill the remaining page height; rows scroll separately from pagination. */
+    #nodeTableRegion, #nodeTableFrame { display:flex; flex-direction:column; flex:1; min-height:0; min-width:0; }
+    #nodeTableFrame { overflow:hidden; }
+    #nodeTableScroll { flex:1; min-height:0; min-width:0; overflow:auto; }
+    #nodeTableScroll thead { position:sticky; top:0; z-index:1; }
+    #nodeTableScroll table:has(> tbody > tr:only-child > td[colspan]) { height:100%; }
+    #nodeTableFooter { flex-shrink:0; }
+
+    /* High-contrast status pill guarantees for Register AC Devices */
     .node-status-online {
       background-color: #ecfdf5 !important;
       color: #065f46 !important;
@@ -93,16 +105,17 @@
   </style>
   <script src="./js/supabase.umd.js"></script>
   <script src="./js/supabase-client.js"></script>
-  <script src="./js/hardware-cloud.js?v=10"></script>
+  <script src="./js/hardware-cloud.js?v=13"></script>
   <script src="./js/controller-locations.js?v=1"></script>
-  <script src="./js/controller-registration.js?v=2"></script>
-  <script src="./js/sidebar.js"></script>
-  <script src="./js/sidebar-loader.js?v=7"></script>
+  <script src="./js/controller-registration.js?v=4"></script>
+  <script src="./js/page-state.js?v=1"></script>
+  <script src="./js/sidebar.js?v=2"></script>
+  <script src="./js/sidebar-loader.js?v=33"></script>
   <script src="./js/icons.js"></script>
   <script src="./js/eco-network.js"></script>
   <script src="./js/eco-data-bus.js"></script>
   <script src="./js/skeletons.js"></script>
-  <script src="./js/aircon-system.js?v=22"></script>
+  <script src="./js/aircon-system.js?v=27"></script>
 </head>
 
 <body class="app-shell bg-gray-50 dark:bg-[#0a0f1d] text-slate-800 dark:text-slate-100 transition-colors duration-200">
@@ -110,7 +123,7 @@
     <!-- Sidebar injected by sidebar-loader.js -->
 
     <!-- MAIN CONTENT -->
-    <main class="flex-1 flex flex-col overflow-hidden">
+    <main class="eco-device-registry flex-1 flex flex-col overflow-hidden">
       <!-- TOP HEADER -->
       <header class="bg-white dark:bg-[#0c1328] border-b border-gray-200 dark:border-white/5 px-6 py-3.5 flex justify-between items-center z-10 shadow-sm flex-shrink-0">
         <div class="flex items-center gap-3">
@@ -129,8 +142,8 @@
             </svg>
           </div>
           <div>
-            <h1 class="text-xl font-extrabold text-[#18392B] dark:text-white tracking-tight">AC Controller Devices</h1>
-            <p class="text-[11px] font-medium text-gray-500 dark:text-gray-400">Manage wireless AC Controller Devices, WiFi connectivity, and aircon bindings</p>
+            <h1 class="eco-primary-text text-xl font-extrabold text-[#18392B] dark:text-white tracking-tight">Register AC Devices</h1>
+            <p class="text-[11px] font-medium text-gray-500 dark:text-gray-400">Manage AC devices, Wi-Fi connectivity, and aircon assignments</p>
           </div>
         </div>
 
@@ -139,12 +152,12 @@
             <line x1="12" y1="5" x2="12" y2="19"></line>
             <line x1="5" y1="12" x2="19" y2="12"></line>
           </svg>
-          <span>Register AC Controller Device</span>
+          <span>Register AC Device</span>
         </button>
       </header>
 
       <!-- KPI METRICS STRIP -->
-      <div class="px-6 py-4 grid grid-cols-1 sm:grid-cols-4 gap-4 border-b border-gray-200 dark:border-white/5 bg-slate-100/50 dark:bg-black/20 flex-shrink-0">
+      <div id="nodeKpiStrip" class="px-6 py-4 grid grid-cols-1 sm:grid-cols-4 gap-4 border-b border-gray-200 dark:border-white/5 bg-slate-100/50 dark:bg-black/20 flex-shrink-0">
         <div class="bg-white dark:bg-[#0c1328] p-3.5 rounded-xl border border-slate-200 dark:border-white/5 shadow-sm">
           <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-gray-400 block">Total Registered Devices</span>
           <span id="nodeKpiTotal" class="text-2xl font-black text-cyan-600 dark:text-cyan-400">--</span>
@@ -164,30 +177,32 @@
       </div>
 
       <!-- DESKTOP NODE TABLE -->
-      <div class="flex-1 overflow-auto p-6">
-        <div class="bg-white dark:bg-[#0c1328] rounded-2xl overflow-hidden border border-slate-200 dark:border-white/10 shadow-sm">
-          <table class="w-full text-left text-xs min-w-[950px]">
+      <div id="nodeTableRegion" class="flex-1 p-6">
+        <div id="nodeTableFrame" class="eco-table-frame bg-white dark:bg-[#0c1328] rounded-2xl overflow-hidden border border-slate-200 dark:border-white/10 shadow-sm">
+          <div id="nodeTableScroll">
+          <table class="eco-data-table w-full text-left text-xs min-w-[950px]">
             <thead class="bg-slate-50 dark:bg-black/40 border-b border-slate-200 dark:border-white/10 text-slate-700 dark:text-slate-300 uppercase tracking-wider font-extrabold text-[11px]">
               <tr>
-                <th class="py-3.5 px-4">Device ID</th>
-                <th class="py-3.5 px-4">Device Name & Hardware Model</th>
-                <th class="py-3.5 px-4">Status</th>
-                <th class="py-3.5 px-4">WiFi Signal</th>
-                <th class="py-3.5 px-4">IP / Network</th>
-                <th class="py-3.5 px-4">Assigned Aircons</th>
-                <th class="py-3.5 px-4">IR Monitoring</th>
-                <th class="py-3.5 px-4">Last Seen</th>
-                <th class="py-3.5 px-4 text-right">Actions</th>
+                <th scope="col" class="py-3.5 px-4">Device ID</th>
+                <th scope="col" class="py-3.5 px-4">Device Name</th>
+                <th scope="col" class="py-3.5 px-4">Status</th>
+                <th scope="col" class="py-3.5 px-4">WiFi Signal</th>
+                <th scope="col" class="py-3.5 px-4">IP / Network</th>
+                <th scope="col" class="py-3.5 px-4">Assigned Aircons</th>
+                <th scope="col" data-ir-monitor-column class="py-3.5 px-4">IR Monitoring</th>
+                <th scope="col" class="py-3.5 px-4">Last Seen</th>
+                <th scope="col" class="py-3.5 px-4 text-right">Actions</th>
               </tr>
             </thead>
             <tbody id="nodeTableBody" class="divide-y divide-slate-100 dark:divide-white/5 text-slate-800 dark:text-slate-200 font-medium">
               <!-- Dynamically rendered -->
             </tbody>
           </table>
+          </div>
 
           <!-- Nodes Table Pagination (20 items per page) -->
-          <div class="p-4 border-t border-slate-200 dark:border-white/10 flex flex-col sm:flex-row justify-between items-center gap-3 bg-slate-50/50 dark:bg-black/20 text-xs">
-            <span id="nodePageInfo" class="font-bold text-slate-500 dark:text-gray-400">Showing 0 of 0 AC controller devices</span>
+          <div id="nodeTableFooter" class="p-4 border-t border-slate-200 dark:border-white/10 flex flex-col sm:flex-row justify-between items-center gap-3 bg-slate-50/50 dark:bg-black/20 text-xs">
+            <span id="nodePageInfo" class="font-bold text-slate-500 dark:text-gray-400">Showing 0 of 0 AC devices</span>
             <div class="flex items-center gap-2">
               <button id="nodePrevBtn" type="button" disabled class="px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-700 dark:text-gray-300 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer">Previous</button>
               <span id="nodePaginationPages" class="font-bold px-1 text-slate-700 dark:text-gray-300">Page 1 of 1</span>
@@ -212,7 +227,7 @@
             </svg>
           </div>
           <div>
-            <h3 id="nodeModalTitle" class="text-base font-bold text-slate-900 dark:text-white leading-tight">Register AC Controller Device</h3>
+            <h3 id="nodeModalTitle" class="eco-primary-text text-base font-bold text-slate-900 dark:text-white leading-tight">Register AC Device</h3>
             <p id="nodeModalSubtitle" class="text-xs font-medium text-slate-500 dark:text-gray-400 mt-0.5">Step 1 of 3: Bluetooth BLE Discovery</p>
           </div>
         </div>
@@ -224,15 +239,15 @@
         <div class="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-black/35 rounded-xl border border-slate-200/80 dark:border-white/5">
           <button type="button" id="nodeStepTab1" class="flex-1 py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border-0 bg-white dark:bg-teal-950/60 text-teal-700 dark:text-teal-400 shadow-sm border border-teal-500/30">
             <span id="nodeStepBadge1" class="w-5 h-5 rounded-full bg-teal-500 text-white flex items-center justify-center text-[10px] font-black flex-shrink-0">1</span>
-            <span class="truncate">1. Bluetooth</span>
+            <span class="truncate">Bluetooth</span>
           </button>
           <button type="button" id="nodeStepTab2" class="flex-1 py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border-0 bg-transparent text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-slate-200">
             <span id="nodeStepBadge2" class="w-5 h-5 rounded-full bg-slate-300 dark:bg-white/10 text-slate-700 dark:text-gray-300 flex items-center justify-center text-[10px] font-black flex-shrink-0">2</span>
-            <span class="truncate">2. Wi-Fi</span>
+            <span class="truncate">Wi-Fi</span>
           </button>
           <button type="button" id="nodeStepTab3" class="flex-1 py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border-0 bg-transparent text-slate-500 dark:text-gray-400 hover:text-slate-700 dark:hover:text-slate-200">
             <span id="nodeStepBadge3" class="w-5 h-5 rounded-full bg-slate-300 dark:bg-white/10 text-slate-700 dark:text-gray-300 flex items-center justify-center text-[10px] font-black flex-shrink-0">3</span>
-            <span class="truncate">3. Details</span>
+            <span class="truncate">Details</span>
           </button>
         </div>
       </div>
@@ -250,7 +265,7 @@
               </svg>
               <span class="animate-ping absolute inline-flex h-full w-full rounded-2xl bg-teal-400 opacity-20"></span>
             </div>
-            <h4 class="text-sm font-bold text-slate-900 dark:text-white">Find your ESP32-S3 AC Controller Node</h4>
+            <h4 class="eco-primary-text text-sm font-bold text-slate-900 dark:text-white">Find your AC device</h4>
             <p class="text-xs text-slate-500 dark:text-gray-400 mt-1 max-w-sm mx-auto">Make sure your hardware controller is powered on and within Bluetooth range.</p>
           </div>
 
@@ -260,21 +275,21 @@
               <polyline points="23 4 23 10 17 10"></polyline>
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
             </svg>
-            <span id="scanBleLabel">Connect Nearby ESP32</span>
+            <span id="scanBleLabel">Connect Nearby device</span>
           </button>
 
           <!-- Discovered Devices Container -->
           <div class="space-y-2">
-            <div class="flex items-center justify-between">
+            <div class="flex flex-wrap items-center justify-between gap-2">
               <span class="text-[11px] font-bold text-slate-600 dark:text-gray-400 uppercase tracking-wider">Discovered Bluetooth Nodes</span>
-              <button type="button" id="toggleManualNodeBtn" class="text-[11px] font-bold text-teal-600 dark:text-teal-400 hover:underline border-0 bg-transparent cursor-pointer">+ Enter Node ID</button>
+              <button type="button" id="toggleManualNodeBtn" aria-controls="manualNodeContainer" aria-expanded="false" class="registration-manual-id-button"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Enter AC Device ID</button>
             </div>
 
             <!-- Manual Node ID Input (Toggled) -->
             <div id="manualNodeContainer" class="hidden p-3 rounded-xl bg-slate-50 dark:bg-black/25 border border-slate-200 dark:border-white/10 space-y-2">
-              <label class="block text-[10px] font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider">Manual Node ID / Hardware Identifier *</label>
+              <label for="manualNodeInput" class="block text-[10px] font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider">AC Device ID / Hardware Identifier *</label>
               <div class="flex items-center gap-2">
-                <input type="text" id="manualNodeInput" placeholder="e.g. node-10 or ESP32-S3-01" class="flex-1 px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-teal-500">
+                <input type="text" id="manualNodeInput" placeholder="e.g. node-10 or device-01" class="flex-1 px-3 py-2 rounded-xl bg-white dark:bg-black/40 border border-slate-200 dark:border-white/15 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-teal-500">
                 <button type="button" id="confirmManualNodeBtn" class="px-3.5 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs border-0 cursor-pointer transition-colors">Pair</button>
               </div>
             </div>
@@ -291,7 +306,7 @@
               <span class="w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center text-xs font-black">✓</span>
               <div>
                 <div class="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                  <span id="pairedDeviceName">ESP32-S3 AC Controller</span>
+                  <span id="pairedDeviceName">AC controller</span>
                   <span id="pairedDeviceBadge" class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-600 dark:text-teal-300 font-bold">--</span>
                 </div>
                 <div class="text-[10px] text-slate-500 dark:text-gray-400 font-mono" id="pairedDeviceMac">MAC: 3C:71:BF:24:A8:12 &bull; Signal: -58 dBm</div>
@@ -359,7 +374,7 @@
             </div>
           </div>
 
-          <!-- Current IP reported by the connected ESP32 -->
+          <!-- Current IP reported by the connected device -->
           <div>
             <div class="flex items-center justify-between mb-1">
               <label class="block text-[11px] font-bold text-slate-600 dark:text-gray-400 uppercase tracking-wider">
@@ -370,9 +385,9 @@
                 <span id="autoAssignIpLabel">Read Device IP</span>
               </button>
             </div>
-            <input type="text" id="nodeFormIp" aria-describedby="deviceIpFeedback" placeholder="Reported by ESP32 after Wi-Fi connects" readonly
+            <input type="text" id="nodeFormIp" aria-describedby="deviceIpFeedback" placeholder="Reported by device after Wi-Fi connects" readonly
               class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/15 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-teal-500">
-            <p id="deviceIpFeedback" class="device-ip-feedback" data-state="idle" role="status" aria-live="polite" aria-atomic="true">Read the current IP from the connected ESP32.</p>
+            <p id="deviceIpFeedback" class="device-ip-feedback" data-state="idle" role="status" aria-live="polite" aria-atomic="true">Read the current IP from the connected device.</p>
           </div>
           <input type="hidden" id="nodeFormStatus" value="Offline">
 
@@ -407,18 +422,18 @@
           <!-- Paired Hardware Confirmation Badge -->
           <div class="p-2.5 rounded-xl bg-teal-500/10 border border-teal-500/25 flex items-center justify-between text-xs">
             <div class="flex items-center gap-2">
-              <span class="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">Target Controller:</span>
+              <span class="text-[10px] font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">Target Device:</span>
               <span id="step3NodeBadge" class="font-mono font-bold text-slate-900 dark:text-white px-2 py-0.5 rounded bg-white dark:bg-black/40 border border-teal-500/30">--</span>
               <span id="step3IpBadge" class="font-mono text-teal-600 dark:text-teal-400 font-semibold text-[11px]">--</span>
             </div>
             <span class="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">Step 3 of 3</span>
           </div>
 
-          <div id="registrationCloudStatus" role="status" aria-live="polite" aria-atomic="true" data-state="pending" class="p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-xs text-amber-800 dark:text-amber-200 space-y-1">
-            <p id="registrationCloudTitle" class="font-bold">Registration Required</p>
-            <p id="registrationCloudMessage"></p>
-            <button type="button" id="reconnectRegistrationBtn" aria-busy="false" class="mt-2 inline-flex items-center justify-center px-3 py-2 rounded-lg border border-current font-bold focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50">Reconnect ESP32</button>
-            <button type="button" id="chooseRegistrationBtn" class="hidden ml-2 px-2 py-2 underline underline-offset-2 font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50">Choose ESP32 again</button>
+          <div id="registrationCloudStatus" role="status" aria-live="polite" aria-atomic="true" data-state="pending" class="p-3 rounded-xl border border-slate-300 bg-slate-50 text-xs text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 space-y-1">
+            <p id="registrationCloudTitle" class="font-bold">Finish device setup</p>
+            <p id="registrationCloudMessage">Complete the details below, then select Save &amp; Verify Device to finish setup.</p>
+            <button type="button" id="reconnectRegistrationBtn" aria-busy="false" class="hidden mt-2 inline-flex items-center justify-center px-3 py-2 rounded-lg border border-current font-bold focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50">Reconnect device</button>
+            <button type="button" id="chooseRegistrationBtn" class="hidden ml-2 px-2 py-2 underline underline-offset-2 font-semibold focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-50">Choose device again</button>
           </div>
 
 
@@ -434,7 +449,7 @@
                   <svg class="eye-off" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="m3 3 18 18M10 5c7-1 12 7 12 7l-3 4M6 6l-4 6s4 7 10 7l4-1"/></svg>
                 </button>
               </div>
-              <p id="registrationWifiPasswordHelp" class="text-[11px] text-slate-500 mt-1">Required only when refreshing ESP32 cloud credentials.</p>
+              <p id="registrationWifiPasswordHelp" class="text-[11px] text-slate-500 mt-1">Wi-Fi is already connected. This password is needed only to finish linking the device to EcoTrack.</p>
               <p id="registrationWifiPasswordError" class="registration-error" hidden></p>
             </div>
           </div>
@@ -442,12 +457,14 @@
           <!-- Hidden Device ID field that stores the paired node ID -->
           <input type="hidden" id="nodeFormId" readonly value="">
 
-          <!-- Friendly Display Name -->
+          <input type="hidden" id="nodeFormDeviceMode" value="both">
+
+          <!-- AC Device Name -->
           <div>
             <label class="block text-[11px] font-bold text-slate-600 dark:text-gray-400 uppercase tracking-wider mb-1">
-              Friendly Display Name <span class="text-rose-500">*</span>
+              AC Device Name <span class="text-rose-500">*</span>
             </label>
-            <input type="text" id="nodeFormName" maxlength="100" aria-describedby="nodeFormNameError" placeholder="e.g. AC Controller Device Epsilon (Master Suite)" required
+            <input type="text" id="nodeFormName" maxlength="100" aria-describedby="nodeFormNameError" placeholder="e.g. AC Device 1" required
               class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/15 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-gray-500 focus:outline-none focus:border-teal-500">
           </div>
 
@@ -463,10 +480,10 @@
               <label for="nodeFormAircon" class="block text-xs mb-1">Available air conditioner *</label>
               <select id="nodeFormAircon" aria-describedby="nodeFormAirconError" class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/15 text-xs"><option value="">Select an air conditioner</option></select>
               <p id="nodeFormAirconError" class="registration-error" hidden></p>
-              <div id="registrationCustomNameWrap" class="mt-2" hidden><label for="registrationCustomName" class="block text-xs mb-1">Add custom Air conditioner name *</label><input id="registrationCustomName" maxlength="100" aria-describedby="registrationCustomNameError" class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/15 text-xs"><p id="registrationCustomNameError" class="registration-error" hidden></p><p class="text-xs text-slate-500 mt-1">Renames this AC profile and preserves its controller, history and schedules.</p></div>
+              <div id="registrationCustomNameWrap" class="mt-2" hidden><label for="registrationCustomName" class="block text-xs mb-1">Add custom Custom Aircon Name *</label><input id="registrationCustomName" maxlength="100" aria-describedby="registrationCustomNameError" class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/15 text-xs"><p id="registrationCustomNameError" class="registration-error" hidden></p><p class="text-xs text-slate-500 mt-1">Renames this AC profile and preserves its controller, history and schedules.</p></div>
             </div>
             <div id="registrationNewAc" hidden>
-              <label for="registrationAcName" class="block text-xs mb-1">Add custom Air conditioner name *</label>
+              <label for="registrationAcName" class="block text-xs mb-1">Add custom Custom Aircon Name *</label>
               <input id="registrationAcName" maxlength="64" placeholder="e.g. Office AC" aria-describedby="registrationAcNameError" class="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/15 text-xs">
               <p id="registrationAcNameError" class="registration-error" hidden></p>
             </div>
@@ -555,11 +572,11 @@
             </div>
           </div>
 
-          <div class="p-3 rounded-xl bg-teal-500/10 border border-teal-500/30 space-y-2">
-            <h4 class="text-xs font-bold text-teal-700 dark:text-teal-300">Auto-Detect Brand with Remote</h4>
+          <div id="registrationIrConfig" class="p-3 rounded-xl bg-teal-500/10 border border-teal-500/30 space-y-2">
+            <h4 class="eco-primary-text text-xs font-bold text-teal-700 dark:text-teal-300">Detect IR Protocol with Remote</h4>
             <p class="text-xs text-slate-600 dark:text-slate-300">Point the remote at the receiver and press a button while listening.</p>
             <button type="button" id="registerRemoteBtn" disabled aria-describedby="registerRemoteStatus" class="btn-gradient-submit px-3 py-2 rounded-xl text-white text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed">Detect via Bluetooth</button>
-            <p id="registerRemoteStatus" role="status" aria-live="polite" class="text-xs text-slate-600 dark:text-slate-300">Connect the ESP32 through Bluetooth to detect its remote without adding a controller.</p>
+            <p id="registerRemoteStatus" role="status" aria-live="polite" class="text-xs text-slate-600 dark:text-slate-300">Connect the device through Bluetooth to detect its remote without adding a controller.</p>
           </div>
 
           <details class="registration-details"><summary>Hardware &amp; configuration</summary>
@@ -578,7 +595,7 @@
           <div class="p-3 rounded-xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 space-y-2">
             <div class="flex items-center justify-between">
               <span class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-gray-400">Pre-Flight Configuration Review</span>
-              <span id="summaryStatusBadge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">Cloud pending</span>
+              <span id="summaryStatusBadge" class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-600">Setup not saved</span>
             </div>
             <div class="grid grid-cols-2 gap-2 text-[11px]">
               <div><span class="text-slate-400">Device ID:</span> <span id="summaryDeviceId" class="font-mono font-bold text-slate-800 dark:text-white">--</span></div>
@@ -613,7 +630,7 @@
             <!-- Final Save Button -->
             <button type="submit" id="saveNodeBtn" class="hidden btn-gradient-submit px-5 py-2 rounded-xl text-white font-bold text-xs shadow-md border-0 cursor-pointer flex items-center gap-1.5">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-              <span id="saveNodeBtnText">Save &amp; Verify Controller</span>
+              <span id="saveNodeBtnText">Save &amp; Verify Device</span>
             </button>
           </div>
         </div>
@@ -640,7 +657,7 @@
           </div>
           <div class="min-w-0">
             <div class="flex items-center gap-2 flex-wrap">
-              <h3 id="pingModalDeviceName" class="text-base font-extrabold text-slate-900 dark:text-white tracking-tight truncate max-w-xs sm:max-w-sm">EcoTrack-Node-225</h3>
+              <h3 id="pingModalDeviceName" class="eco-primary-text text-base font-extrabold text-slate-900 dark:text-white tracking-tight truncate max-w-xs sm:max-w-sm">EcoTrack-Node-225</h3>
               <span id="pingModalNodeBadge" class="font-mono text-[10px] font-bold px-2 py-0.5 rounded-md bg-teal-500/15 text-teal-600 dark:text-teal-300 border border-teal-500/20">NODE-225</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5 flex items-center gap-1.5">
@@ -760,17 +777,17 @@
             <span id="pingProbeTimestamp" class="font-mono text-[10px] text-gray-400">Just now</span>
           </div>
 
-          <div class="rounded-2xl border shadow-inner overflow-hidden" style="background: #060c18 !important; border-color: rgba(6, 182, 212, 0.25) !important;">
-            <div class="px-3.5 py-2 flex items-center justify-between" style="background: #0d1527 !important; border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;">
+          <div class="rounded-2xl border shadow-inner overflow-hidden" style="background: var(--eco-canvas) !important; border-color: var(--eco-border) !important;">
+            <div class="px-3.5 py-2 flex items-center justify-between" style="background: var(--eco-raised) !important; border-bottom: 1px solid var(--eco-border) !important;">
               <div class="flex items-center gap-1.5">
                 <span class="w-2.5 h-2.5 rounded-full bg-rose-500/90 inline-block"></span>
                 <span class="w-2.5 h-2.5 rounded-full bg-amber-500/90 inline-block"></span>
                 <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/90 inline-block"></span>
-                <span id="pingTerminalTitle" class="font-mono text-[10px] ml-2 truncate max-w-xs font-bold" style="color: #f1f5f9 !important;">Waiting for cloud probe</span>
+                <span id="pingTerminalTitle" class="font-mono text-[10px] ml-2 truncate max-w-xs font-bold" style="color: var(--eco-text) !important;">Waiting for cloud probe</span>
               </div>
-              <span class="font-mono text-[9px] font-extrabold px-2 py-0.5 rounded" style="background: rgba(6, 182, 212, 0.15) !important; color: #22d3ee !important; border: 1px solid rgba(6, 182, 212, 0.3) !important;">SUPABASE</span>
+              <span class="font-mono text-[9px] font-extrabold px-2 py-0.5 rounded" style="background: var(--eco-selected) !important; color: var(--eco-accent) !important; border: 1px solid var(--eco-accent) !important;">SUPABASE</span>
             </div>
-            <div id="pingTerminalOutput" class="p-3.5 font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto select-all m-0" style="background: #060c18 !important; color: #e2e8f0 !important; scrollbar-width: thin !important; scrollbar-color: rgba(255, 255, 255, 0.25) transparent !important;"></div>
+            <div id="pingTerminalOutput" class="p-3.5 font-mono text-[11px] leading-relaxed max-h-48 overflow-y-auto select-all m-0" style="background: var(--eco-canvas) !important; color: var(--eco-text) !important; scrollbar-width: thin !important; scrollbar-color: var(--eco-input-border) transparent !important;"></div>
           </div>
         </div>
 
@@ -867,7 +884,7 @@
           </div>
           <div>
             <div class="flex items-center gap-2 flex-wrap">
-              <h3 id="viewModalTitle" class="text-base font-bold text-slate-900 dark:text-white">AC Controller Device Details</h3>
+              <h3 id="viewModalTitle" class="eco-primary-text text-base font-bold text-slate-900 dark:text-white">AC Device Details</h3>
               <span id="viewModalNodeBadge" class="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-teal-500/15 text-teal-700 dark:text-cyan-400">node-10</span>
             </div>
             <p id="viewModalSubtitle" class="text-xs text-gray-500 dark:text-gray-400 font-medium mt-0.5">Comprehensive controller specifications, bindings &amp; status</p>
@@ -880,22 +897,22 @@
       <div class="p-5 overflow-y-auto space-y-4 custom-scrollbar">
         <!-- Status & Signal Banner -->
         <div class="p-3.5 rounded-2xl bg-slate-50 dark:bg-black/30 border border-slate-200 dark:border-white/10 flex items-center justify-between flex-wrap gap-2">
-          <div class="flex items-center gap-2.5">
-            <span id="viewStatusDot" class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
+          <div id="viewConnectionStatus" class="controller-detail-state" data-device-state="unknown">
+            <span id="viewStatusDot" class="controller-detail-state-icon" aria-hidden="true"></span>
             <div>
-              <div id="viewStatusText" class="text-xs font-bold text-slate-900 dark:text-white">Connected &amp; Online</div>
-              <div id="viewLastSeen" class="text-[10px] text-gray-500 dark:text-gray-400 font-mono">Last seen: Just now</div>
+              <div id="viewStatusText" class="text-xs font-bold">Not reported</div>
+              <div id="viewLastSeen" class="text-[10px] text-gray-500 dark:text-gray-400 font-mono">Last seen: Not reported</div>
             </div>
           </div>
           <div class="flex items-center gap-2">
-            <span id="viewSignalBadge" class="text-xs font-mono font-bold text-teal-600 dark:text-cyan-400 px-2.5 py-1 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center gap-1.5">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0">
+            <span id="viewSignalBadge" class="controller-detail-signal" data-device-state="unknown">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M5 12.55a11 11 0 0 1 14.08 0"></path>
                 <path d="M1.42 9a16 16 0 0 1 21.16 0"></path>
                 <path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>
                 <line x1="12" y1="20" x2="12.01" y2="20"></line>
               </svg>
-              <span id="viewSignalBadgeText">-65 dBm (2.4 GHz)</span>
+              <span id="viewSignalBadgeText">Signal not reported</span>
             </span>
           </div>
         </div>
@@ -915,7 +932,7 @@
             <div class="text-xs controller-details-row"><span class="text-gray-500">IP Address:</span> <span id="viewIpAddress" class="font-mono font-bold text-teal-600 dark:text-cyan-400">Not reported</span></div>
             <div class="text-xs controller-details-row"><span class="text-gray-500">WiFi SSID:</span> <span id="viewWifiSsid" class="font-mono font-semibold text-slate-800 dark:text-white">EcoTrack-IoT</span></div>
             <div class="text-xs controller-details-row"><span class="text-gray-500">Battery:</span> <span id="viewBattery" class="font-mono text-slate-800 dark:text-white">Not reported</span></div>
-            <div class="text-xs controller-details-row"><span class="text-gray-500">Signal RSSI:</span> <span class="font-mono text-slate-800 dark:text-white flex items-center gap-1.5"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" class="text-teal-500 shrink-0"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg><span id="viewRssiVal">Not reported</span></span></div>
+            <div class="text-xs controller-details-row"><span class="text-gray-500">Signal RSSI:</span> <span class="controller-detail-signal-value font-mono"><svg id="viewRssiIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><line x1="12" y1="20" x2="12.01" y2="20"></line></svg><span id="viewRssiVal">Not reported</span></span></div>
           </div>
         </div>
 
@@ -954,7 +971,7 @@
           <span>Ping Test</span>
         </button>
         <div class="flex items-center gap-2">
-          <button id="viewModalEditBtn" type="button" class="px-4 py-2 rounded-xl text-xs font-bold text-white shadow-sm cursor-pointer border-0 flex items-center gap-1.5" style="background: linear-gradient(135deg, #0d9488 0%, #059669 100%) !important;">
+          <button id="viewModalEditBtn" type="button" class="eco-primary-action px-4 py-2 rounded-xl text-xs font-bold text-white shadow-sm cursor-pointer border-0 flex items-center gap-1.5" style="background: var(--eco-action) !important;">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             <span>Edit Device</span>
           </button>
@@ -980,7 +997,7 @@
           </div>
           <div>
             <div class="flex items-center gap-2 flex-wrap">
-              <h3 class="text-base font-bold text-slate-900 dark:text-white">Edit AC Controller Device</h3>
+              <h3 class="eco-primary-text text-base font-bold text-slate-900 dark:text-white">Edit AC Device</h3>
               <span id="editModalNodeBadge" class="font-mono text-[10px] font-bold px-2 py-0.5 rounded bg-teal-500/15 text-teal-700 dark:text-cyan-400">node-10</span>
             </div>
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Modify display name, deployment location, brand, and aircon type</p>
@@ -999,7 +1016,7 @@
           <input type="text" id="editNodeName" required class="w-full bg-slate-50 dark:bg-slate-900/80 border border-gray-300 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-teal-500">
         </div>
 
-        <div><label for="editAirconName" class="block text-xs font-bold text-gray-500 uppercase mb-1">Air conditioner name *</label><input id="editAirconName" maxlength="100" class="w-full bg-slate-50 dark:bg-slate-900/80 border border-gray-300 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-semibold"><p class="text-xs text-slate-500 mt-1">This is separate from the controller display name above.</p></div>
+        <div><label for="editAirconName" class="block text-xs font-bold text-gray-500 uppercase mb-1">Custom Aircon Name *</label><input id="editAirconName" maxlength="100" class="w-full bg-slate-50 dark:bg-slate-900/80 border border-gray-300 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-semibold"><p class="text-xs text-slate-500 mt-1">This is separate from the controller display name above.</p></div>
         <!-- Location: Building, Floor, Room -->
         <div>
           <label class="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1.5">Deployment Location</label>
@@ -1023,14 +1040,15 @@
         </div>
 
         <div class="p-3 rounded-xl bg-teal-500/10 border border-teal-500/30 space-y-2">
-          <h4 class="text-xs font-bold text-teal-700 dark:text-teal-300">Auto-Detect Brand with Remote</h4>
-          <p class="text-xs text-slate-600 dark:text-slate-300">Point your AC remote at the ESP32 receiver and press a button during its 6-second listening window. This PC and the controller both need internet access to Supabase; they can use different Wi-Fi networks.</p>
+          <h4 class="eco-primary-text text-xs font-bold text-teal-700 dark:text-teal-300">Detect IR Protocol with Remote</h4>
+          <p class="text-xs text-slate-600 dark:text-slate-300">Aim the remote at the controller and press a button within 6 seconds. Both devices need internet; different Wi-Fi networks are OK.</p>
           <button type="button" id="editRemoteBtn" class="btn-gradient-submit px-3 py-2 rounded-xl text-white text-xs font-bold disabled:opacity-50">Listen for Remote Signal</button>
           <p id="editRemoteStatus" role="status" aria-live="polite" class="text-xs text-slate-600 dark:text-slate-300"></p>
         </div>
         <div>
           <label for="editNodeBrand" class="block text-xs font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-1">AC Manufacturer Brand</label>
-          <input type="text" id="editNodeBrand" list="nodeBrandOptionsList" placeholder="Type or select the AC brand" class="w-full bg-slate-50 dark:bg-slate-900/80 border border-gray-300 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-teal-500">
+          <input type="text" id="editNodeBrand" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="editBrandList" autocomplete="off" placeholder="Type or select the AC brand" class="w-full bg-slate-50 dark:bg-slate-900/80 border border-gray-300 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 dark:text-white outline-none focus:border-teal-500">
+          <div id="editBrandList" class="controller-brand-list" role="listbox" aria-label="AC manufacturers" hidden></div>
         </div>
 
         <div>
@@ -1083,8 +1101,8 @@
       </div>
 
       <!-- Title & Subtitle -->
-      <h3 class="text-xl font-extrabold text-slate-900 dark:text-white tracking-tight mb-1">
-        Delete AC Controller Device?
+      <h3 class="eco-primary-text text-xl font-extrabold text-slate-900 dark:text-white tracking-tight mb-1">
+        Delete AC Device?
       </h3>
       <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">
         This action will permanently remove this wireless hardware controller and unbind any assigned AC profile.
@@ -1132,7 +1150,7 @@
     </div>
   </div>
 
-  <script src="./js/controller-details.js?v=1"></script>
+  <script src="./js/controller-details.js?v=2"></script>
   <link rel="stylesheet" href="./css/controller-details.css?v=1">
   <script>
     document.addEventListener('DOMContentLoaded', () => {
@@ -1145,7 +1163,7 @@
         register: { id: 'nodeFormId', ip: 'nodeFormIp', brand: 'nodeFormBrand', modal: 'nodeModal', save: 'saveNodeBtn' },
         edit: { id: 'editNodeIdHidden', ip: 'editNodeIp', brand: 'editNodeBrand', modal: 'editNodeModal', save: 'saveEditNodeBtn' }
       };
-      const registrationRemoteNotice = 'Connect the ESP32 through Bluetooth to detect its remote without adding a controller.';
+      const registrationRemoteNotice = 'Connect the device through Bluetooth to detect its remote without adding a controller.';
       let registrationCloudState = 'pending';
       let registrationSaving = false;
       let registrationReconnecting = false;
@@ -1169,6 +1187,7 @@
           const result=await window.EcoTrackHardwareCloud.registrationStatus(info);
           if(!current())return;
           registrationCheck=result;
+          if(result.node) registrationUi.setDeviceMode(result.node.device_mode || 'controller',result.node.sensor_config || {});
           await loadRegistrationAirconChoices(result);
           if(!current())return;
           if(restore && result.node && !registrationDraftTouched) {
@@ -1191,20 +1210,32 @@
         }
       }
 
+      function updateRegistrationRecoveryAction() {
+        const button = document.getElementById('reconnectRegistrationBtn');
+        if (!button) return;
+        const bluetoothIssue = ['bluetooth','bluetooth_request'].includes(registrationCloudState);
+        const needsCheck = registrationCloudState === 'waiting' || (registrationCloudState === 'failed' && (!registrationCheck || registrationCheck.state === 'waiting'));
+        button.classList.toggle('hidden', !(bluetoothIssue || needsCheck || registrationReconnecting));
+        button.disabled = registrationSaving || registrationReconnecting;
+        button.setAttribute('aria-busy', String(registrationReconnecting));
+        button.textContent = registrationReconnecting ? 'Checking connection…' : bluetoothIssue ? 'Reconnect device' : 'Check connection again';
+      }
+
       function setRegistrationCloudStatus(state, message) {
         registrationCloudState = state;
         const view = {
-          pending: { title: 'Registration Required', badge: 'Registration Required', color: 'amber', message: '' },
-          connected: { title: 'Connected', badge: 'Connected', color: 'teal', message: 'Existing cloud registration verified.' },
-          waiting: { title: 'Verification Pending', badge: 'Verification Pending', color: 'amber', message: 'Waiting for this ESP32 to report to Supabase. Keep it awake, then reconnect.' },
-          verifying: { title: 'Verification Pending', badge: 'Verifying cloud', color: 'amber', message: 'Checking the controller and AC assignment…' },
-          verified: { title: 'Registered', badge: 'Cloud verified', color: 'teal', message: 'Controller and AC assignment verified.' },
-          bluetooth: { title: 'Reconnect required', badge: 'Bluetooth disconnected', color: 'rose', message: 'Reconnect the same ESP32 to check its connection. Your entries are preserved.' },
-          bluetooth_request: { title: 'Bluetooth: Request failed', badge: 'Bluetooth needs retry', color: 'amber', message: 'The Bluetooth link is connected, but the setup request failed. Select Reconnect ESP32 to check its setup characteristics again.' },
-          reconnecting: { title: 'Bluetooth: Reconnecting...', badge: 'Reconnecting Bluetooth', color: 'amber', message: 'Checking the selected ESP32 and its setup characteristics. Keep the board awake and nearby. Your controller details will be preserved.' },
-          failed: { title: 'Setup incomplete', badge: 'Setup incomplete', color: 'rose', message: 'Cloud setup could not be completed. Check the connection and try Save & Verify Controller again.' }
+          pending: { title: 'Finish device setup', badge: 'Setup not saved', color: 'neutral', message: 'Complete the details below, then select Save & Verify Device to finish setup.' },
+          connected: { title: 'Device connection verified', badge: 'Connection verified', color: 'teal', message: 'Review the details below, then select Save & Verify Device to save the AC assignment.' },
+          waiting: { title: 'Waiting for device confirmation', badge: 'Confirmation pending', color: 'amber', message: 'Keep the device powered on and connected to Wi-Fi, then select Check connection again.' },
+          verifying: { title: 'Saving and verifying device…', badge: 'Saving setup…', color: 'amber', message: 'Keep the device powered on while EcoTrack saves the details and confirms its connection.' },
+          verified: { title: 'Setup complete', badge: 'Registered', color: 'teal', message: 'The device and its AC assignment have been saved and verified.' },
+          bluetooth: { title: 'Reconnect required', badge: 'Bluetooth disconnected', color: 'rose', message: 'Reconnect the same device to check its connection. Your entries are preserved.' },
+          bluetooth_request: { title: 'Bluetooth: Request failed', badge: 'Bluetooth needs retry', color: 'amber', message: 'The Bluetooth link is connected, but the setup request failed. Select Reconnect device to check its setup characteristics again.' },
+          reconnecting: { title: 'Checking device connection…', badge: 'Checking connection…', color: 'amber', message: 'Keep the device powered on and nearby. Your details will be kept.' },
+          failed: { title: 'Setup incomplete', badge: 'Setup incomplete', color: 'rose', message: 'Cloud setup could not be completed. Check the connection and try Save & Verify Device again.' }
         }[state];
         const colors = {
+          neutral: 'border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200',
           amber: 'border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200',
           teal: 'border-teal-500/30 bg-teal-500/10 text-teal-800 dark:text-teal-200',
           rose: 'border-rose-500/30 bg-rose-500/10 text-rose-800 dark:text-rose-200'
@@ -1218,9 +1249,8 @@
         const badge = document.getElementById('summaryStatusBadge');
         badge.textContent = view.badge;
         badge.className = `text-[10px] font-bold px-2 py-0.5 rounded-full border ${colors[view.color]}`;
-        document.getElementById('saveNodeBtnText').textContent = state === 'verifying' ? 'Verifying Supabase...' : state === 'reconnecting' ? 'Reconnecting Bluetooth...' : 'Save & Verify Controller';
-        const reconnectButton = document.getElementById('reconnectRegistrationBtn');
-        if (reconnectButton) reconnectButton.disabled = registrationSaving || registrationReconnecting;
+        document.getElementById('saveNodeBtnText').textContent = state === 'verifying' ? 'Saving & Verifying…' : state === 'reconnecting' ? 'Checking connection…' : 'Save & Verify Device';
+        updateRegistrationRecoveryAction();
         const chooseButton = document.getElementById('chooseRegistrationBtn');
         if (chooseButton) {
           chooseButton.classList.toggle('hidden', !['bluetooth','bluetooth_request'].includes(state));
@@ -1245,8 +1275,8 @@
       }
       function selectManualBrand(kind, brand) {
         const state = remoteCapture[kind];
-        if (state.protocol && !state.busy && (state.ambiguous || state.brand?.toLowerCase() === brand.toLowerCase())) { state.brand = brand; return; }
-        resetRemoteDetection(kind);
+        // Manufacturer/name edits must not discard an exact captured protocol.
+        state.brand = brand;
       }
       async function listenForRemote(kind) {
         if ((registrationSaving || registrationReconnecting) && kind === 'register') return;
@@ -1276,12 +1306,11 @@
             return;
           }
           if (result.success) {
-            if (result.brand && !document.getElementById(fields.brand).value.trim()) document.getElementById(fields.brand).value = result.brand;
             state.brand = document.getElementById(fields.brand).value.trim();
             state.ambiguous = !!result.ambiguous;
             state.capture = result;
             state.protocol = result.protocol;
-            status.textContent = result.brand ? `Detected ${result.brand}; protocol ${result.protocol}. Review the details, then save.` : result.message;
+            status.textContent = `IR protocol ${result.protocol} captured. The custom aircon name and manufacturer stay unchanged.`;
             if (kind === 'register') {
               document.getElementById('selectedBrandDisplay').textContent = state.brand || 'Not specified';
               renderBrandChips(state.brand);
@@ -1328,16 +1357,30 @@
         return label + ': ' + [power,temp,mode,fan].join(' • ');
       }
       function renderNodes() {
-        const nodes = NodeService.getNodes();
+        try { renderRegisteredNodes(); }
+        catch (error) {
+          console.error('[EcoTrack] Device table render failed:', error);
+          window.EcoTrackSkeletons?.renderLoadingError(tableBody, new Error('Devices could not be displayed. Reload this page to retry.'));
+        }
+      }
+      function renderRegisteredNodes() {
+        const mode = window.EcoTrackMode?.mode || 'controller';
+        const nodes = NodeService.getNodes().filter(node => {
+          const role = node.device_mode || 'controller';
+          return mode === 'both' || role === 'both' || role === mode;
+        });
         const aircons = AirconProfileManager.getAll();
+        const attachedTo = node => aircons.filter(ac =>
+          ac.node_id === node.node_id || (node.db_id && ac.controller_node_id === node.db_id) ||
+          (node.monitor_aircon_id && (ac.aircon_id || ac.id) === node.monitor_aircon_id));
 
         // Update KPIs
         const total = nodes.length;
-        const connected = nodes.filter(n => n.status.toLowerCase() === 'connected' || n.status.toLowerCase() === 'online').length;
+        const connected = nodes.filter(n => String(n.status || '').toLowerCase() === 'connected' || String(n.status || '').toLowerCase() === 'online').length;
         document.getElementById('nodeKpiTotal').textContent = total;
         document.getElementById('nodeKpiConnected').textContent = connected;
         document.getElementById('nodeKpiOffline').textContent = total - connected;
-        document.getElementById('nodeKpiAircons').textContent = aircons.length;
+        document.getElementById('nodeKpiAircons').textContent = new Set(nodes.flatMap(node => attachedTo(node).map(ac => ac.aircon_id || ac.id))).size;
 
         const totalNodes = nodes.length;
         const totalPages = Math.max(1, Math.ceil(totalNodes / NODE_PAGE_SIZE));
@@ -1355,8 +1398,8 @@
 
         if (pageInfo) {
           pageInfo.textContent = totalNodes === 0
-            ? 'Showing 0 of 0 AC controller devices'
-            : `Showing ${startIdx + 1}–${endIdx} of ${totalNodes} AC controller devices`;
+            ? 'Showing 0 of 0 AC devices'
+            : `Showing ${startIdx + 1}–${endIdx} of ${totalNodes} AC devices`;
         }
         if (pagesText) pagesText.textContent = `Page ${nodeCurrentPage} of ${totalPages}`;
         if (prevBtn) prevBtn.disabled = nodeCurrentPage <= 1;
@@ -1365,14 +1408,14 @@
         if (!nodes || nodes.length === 0) {
           tableBody.innerHTML = `
             <tr>
-              <td colspan="9" class="text-center py-12 text-slate-500 dark:text-gray-400">
+              <td colspan="${mode === 'controller' ? 9 : 8}" class="text-center py-12 text-slate-500 dark:text-gray-400">
                 <div class="flex flex-col items-center justify-center gap-2">
                   <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" class="text-slate-400 dark:text-gray-500">
                     <rect x="4" y="4" width="16" height="16" rx="2" />
                     <rect x="9" y="9" width="6" height="6" />
                   </svg>
-                  <span class="text-sm font-bold text-slate-700 dark:text-gray-300">No AC Controller Devices Registered</span>
-                  <span class="text-xs text-slate-500 dark:text-gray-400">Click "Register AC Controller Device" to bind a hardware node.</span>
+                  <span class="text-sm font-bold text-slate-700 dark:text-gray-300">No AC Devices Registered for This Mode</span>
+                  <span class="text-xs text-slate-500 dark:text-gray-400">Click "Register AC Device" to bind a hardware node.</span>
                 </div>
               </td>
             </tr>
@@ -1383,13 +1426,13 @@
         const fragment = document.createDocumentFragment();
 
         pageItems.forEach(n => {
-          let displayName = n.name || n.node_id;
+          let displayName = ecoDeviceDisplayName(n.name || n.node_id);
           let nodeRoom = n.room_name;
           if (displayName.includes('(Unassigned)') && nodeRoom && nodeRoom !== 'Unassigned') {
-            displayName = `${n.node_id} (${nodeRoom})`;
+            displayName = `${ecoDeviceDisplayName(n.node_id)} (${nodeRoom})`;
           }
-          const isOnline = n.status.toLowerCase() === 'connected' || n.status.toLowerCase() === 'online';
-          const attached = aircons.filter(a => a.node_id === n.node_id || (n.db_id && a.controller_node_id === n.db_id));
+          const isOnline = String(n.status || '').toLowerCase() === 'connected' || String(n.status || '').toLowerCase() === 'online';
+          const attached = attachedTo(n);
           const attachedDisplay = attached.map(a => a.name).join(', ');
           const attachedCount = attached.length;
 
@@ -1408,17 +1451,17 @@
             openNodeContextMenu(e, n.node_id);
           });
           row.innerHTML = `
-            <td class="py-3.5 px-4 font-mono font-bold text-teal-700 dark:text-cyan-400 text-xs">${n.node_id}</td>
+            <td class="py-3.5 px-4 font-mono font-bold text-teal-700 dark:text-cyan-400 text-xs">${ecoEscapeHtml(ecoDeviceIdentifier(n, aircons))}</td>
             <td class="py-3.5 px-4">
-              <div class="font-bold text-slate-900 dark:text-white text-xs">${displayName}</div>
-              <div class="text-[11px] text-slate-500 dark:text-gray-400 mt-0.5">${n.hardware || 'AC Controller Device (WiFi + IR)'}</div>
+              <div class="font-bold text-slate-900 dark:text-white text-xs">${ecoEscapeHtml(displayName)}</div>
+              <div class="text-[11px] text-slate-500 dark:text-gray-400 mt-0.5">${(n.device_mode === 'monitoring' ? 'AC Device' : n.device_mode === 'both' ? 'AC Device' : 'AC Controller Device')}</div>
             </td>
             <td class="py-3.5 px-4">
               <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold transition-all shadow-sm ${
                 isOnline ? 'node-status-online' : 'node-status-offline'
               }">
                 <span class="w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 dark:bg-emerald-400 animate-pulse' : 'bg-rose-500 dark:bg-rose-400'}"></span>
-                <span>${n.status}</span>
+                <span>${ecoEscapeHtml(n.status || 'Not reported')}</span>
               </span>
             </td>
             <td class="py-3.5 px-4">
@@ -1437,7 +1480,7 @@
                 <span class="text-[11px] text-slate-500 dark:text-gray-400 font-medium truncate max-w-[170px]" title="${attachedDisplay}">${attachedDisplay || 'None assigned'}</span>
               </div>
             </td>
-            <td class="py-3.5 px-4"><span class="ir-monitor-summary block text-xs text-slate-700 dark:text-slate-200 max-w-[260px]"></span></td>
+            <td data-ir-monitor-column class="py-3.5 px-4"><span class="ir-monitor-summary block text-xs text-slate-700 dark:text-slate-200 max-w-[260px]"></span></td>
             <td class="py-3.5 px-4 text-slate-600 dark:text-gray-400 font-mono text-[11px] font-medium">${timeAgo}</td>
             <td class="py-3.5 px-4 text-right">
               <div class="flex items-center justify-end gap-1.5">
@@ -1499,6 +1542,7 @@
       let existingWifiInfo = null;
       let connectionTestRevision = 0;
       let registrationSessionVersion = 0;
+      let installationAttempt = null;
       function setConnectionCheck(id, state, message) {
         const badge = document.getElementById(id);
         if (badge) {
@@ -1524,15 +1568,15 @@
       function applyControllerInfo(info) {
         document.getElementById('nodeFormFw').value = info?.firmware_version || 'Not reported';
         document.getElementById('nodeFormHw').value = info?.capabilities?.ir_transmitter === true
-          ? 'ESP32-S3 IR receiver + transmitter'
-          : info?.capabilities?.ir_receiver === true ? 'ESP32-S3 IR receiver' : 'ESP32-S3 controller';
+          ? 'IR receiver and transmitter'
+          : info?.capabilities?.ir_receiver === true ? 'IR receiver' : 'device controller';
       }
       function acceptLiveBluetoothInfo(info) {
         if (modal.classList.contains('hidden') || info?.device_id !== selectedBleDevice?.nodeId) return;
         registrationBluetoothLive = true;
         selectedBleDevice.info = info;
         applyControllerInfo(info);
-        setConnectionCheck('chkBle', 'success', 'ESP32 replied over Bluetooth.');
+        setConnectionCheck('chkBle', 'success', 'device replied over Bluetooth.');
         const sameWifi = hasConnectedWifi(info) && info.wifi_ssid === document.getElementById('nodeFormSsid').value.trim();
         if (sameWifi) {
           existingWifiInfo = info; selectedBleDevice.ip = info.ip_address;
@@ -1541,8 +1585,8 @@
         }
         if (!registrationSaving && !registrationReconnecting && ['bluetooth','bluetooth_request'].includes(registrationCloudState))
           setRegistrationCloudStatus('pending', sameWifi
-            ? 'ESP32 Connected. Checking cloud registration.'
-            : 'ESP32 replied over Bluetooth. Verify its current Wi-Fi connection before saving.');
+            ? 'device Connected. Checking cloud registration.'
+            : 'device replied over Bluetooth. Verify its current Wi-Fi connection before saving.');
         refreshExistingWifiPanel();updateRegistrationSave();
       }
       window.addEventListener?.('ecotrack:bluetooth-info', event => acceptLiveBluetoothInfo(event.detail?.info));
@@ -1577,7 +1621,7 @@
         document.getElementById('registrationWifiPassword').required=needsPassword && currentModalStep===3;
         document.getElementById('nodeFormPassword').required=!reuse && currentModalStep===2;
         document.getElementById('existingWifiMessage').textContent=reuse
-          ? (registrationBluetoothLive ? 'ESP32 Connected · ' : 'Last verified · ') + 'Wi-Fi: ' + existingWifiInfo.wifi_ssid + ' · IP: ' + existingWifiInfo.ip_address : '';
+          ? (registrationBluetoothLive ? 'device Connected · ' : 'Last verified · ') + 'Wi-Fi: ' + existingWifiInfo.wifi_ssid + ' · IP: ' + existingWifiInfo.ip_address : '';
         document.getElementById('existingCloudMessage').textContent='';
       }
       function acceptExistingWifi(info, advance = false) {
@@ -1591,10 +1635,10 @@
         wifiConfirmedFor = info.wifi_ssid;
         if (!document.getElementById('registrationWifiPassword').value)
           document.getElementById('registrationWifiPassword').value = document.getElementById('nodeFormPassword').value;
-        updateDeviceIpResult(info.ip_address, `ESP32 Wi-Fi connected. Device IP: ${info.ip_address}`);
-        setDeviceIpFeedback('success', `ESP32 replied. Device IP: ${info.ip_address}`);
-        setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected ESP32');
-        setConnectionCheck('chkWifi', 'success', `ESP32 confirmed its existing Wi-Fi connection: ${info.wifi_ssid}`);
+        updateDeviceIpResult(info.ip_address, `device Wi-Fi connected. Device IP: ${info.ip_address}`);
+        setDeviceIpFeedback('success', `device replied. Device IP: ${info.ip_address}`);
+        setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected device');
+        setConnectionCheck('chkWifi', 'success', `device confirmed its existing Wi-Fi connection: ${info.wifi_ssid}`);
         refreshExistingWifiPanel();
         if (advance) setNodeModalStep(3);
         return true;
@@ -1611,17 +1655,17 @@
         setRegistrationCloudStatus(bluetooth ? connectedFailure ? 'bluetooth_request' : 'bluetooth' : /^Verification pending:/i.test(message) ? 'waiting' : 'failed', message);
         if (bluetooth) setConnectionCheck('chkBle', 'error', connectedFailure
           ? 'Bluetooth link connected, but the setup request failed. Retry the device check.'
-          : 'Bluetooth disconnected. Reconnect the same ESP32 to continue.');
+          : 'Bluetooth disconnected. Reconnect the same device to continue.');
         refreshExistingWifiPanel();
         window.EcoToast?.show(message, 'error');
       }
       async function verifySelectedController(nodeId, ssid) {
         const info = await window.EcoTrackHardwareCloud.reconnect(nodeId);
         if (info.device_id !== nodeId)
-          throw Object.assign(new Error('Reconnect the selected ESP32. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
+          throw Object.assign(new Error('Reconnect the selected device. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
         if (!hasConnectedWifi(info) || info.wifi_ssid !== ssid) {
           existingWifiInfo = null; wifiConfirmedFor = null;
-          throw new Error('The ESP32 Wi-Fi connection has changed or disconnected. Open Wi-Fi Connect and test its current network before saving.');
+          throw new Error('The device Wi-Fi connection has changed or disconnected. Open Wi-Fi Connect and test its current network before saving.');
         }
         registrationBluetoothLive = true;
         selectedBleDevice.info = info;
@@ -1629,8 +1673,8 @@
         existingWifiInfo = info;
         if (!document.getElementById('registrationWifiPassword').value)
           document.getElementById('registrationWifiPassword').value = document.getElementById('nodeFormPassword').value;
-        updateDeviceIpResult(info.ip_address, 'ESP32 Wi-Fi connection verified.');
-        setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected ESP32');
+        updateDeviceIpResult(info.ip_address, 'device Wi-Fi connection verified.');
+        setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected device');
         refreshExistingWifiPanel();
         return info;
       }
@@ -1642,7 +1686,7 @@
         const button = document.getElementById('reconnectRegistrationBtn');
         const current = () => session === registrationSessionVersion && nodeId === selectedBleDevice?.nodeId && !modal.classList.contains('hidden');
         registrationReconnecting = true;
-        button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = chooseDevice ? 'Choose the same ESP32...' : 'Checking ESP32...';
+        button.disabled = true; button.setAttribute('aria-busy', 'true'); button.textContent = chooseDevice ? 'Choose the same device...' : 'Checking device...';
         document.getElementById('saveNodeBtn').disabled = true;
         document.getElementById('registerRemoteBtn').disabled = true;
         setRegistrationCloudStatus('reconnecting');
@@ -1653,7 +1697,7 @@
             ? await window.EcoTrackHardwareCloud.connect(nodeId)
             : await window.EcoTrackHardwareCloud.reconnect(nodeId);
           if (!current()) return;
-          if (info.device_id !== nodeId) throw Object.assign(new Error('Reconnect the selected ESP32. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
+          if (info.device_id !== nodeId) throw Object.assign(new Error('Reconnect the selected device. The Bluetooth device does not match this controller.'), { code: 'BLE_DEVICE_MISMATCH' });
           selectedBleDevice.info = info;
           applyControllerInfo(info);
           const previousSsid = document.getElementById('nodeFormSsid').value.trim();
@@ -1669,14 +1713,14 @@
           } else {
             existingWifiInfo = null; wifiConfirmedFor = null;
             refreshExistingWifiPanel();
-            setRegistrationCloudStatus('failed', 'Bluetooth reconnected. Open Wi-Fi Connect and test the ESP32 network before saving. Your controller details are preserved.');
+            setRegistrationCloudStatus('failed', 'Bluetooth reconnected. Open Wi-Fi Connect and test the device network before saving. Your controller details are preserved.');
           }
         } catch (error) {
           if (current()) reportRegistrationFailure(error);
         } finally {
           if (current()) {
             registrationReconnecting = false;
-            button.disabled = false; button.setAttribute('aria-busy', 'false'); button.textContent = 'Reconnect ESP32';
+            updateRegistrationRecoveryAction();
             document.getElementById('chooseRegistrationBtn').disabled = false;
             document.getElementById('saveNodeBtn').disabled = remoteCapture.register.busy;
             document.getElementById('registerRemoteBtn').disabled = !selectedBleDevice?.info;
@@ -1691,7 +1735,7 @@
         registrationBluetoothLive=false;
         updateRegistrationSave();
         setRegistrationCloudStatus('bluetooth');
-        setConnectionCheck('chkBle', 'error', 'Bluetooth disconnected. Reconnect the same ESP32 to continue.');
+        setConnectionCheck('chkBle', 'error', 'Bluetooth disconnected. Reconnect the same device to continue.');
         refreshExistingWifiPanel();
       });
 
@@ -1699,7 +1743,7 @@
         const button = document.getElementById('scanBleBtn');
         const label = document.getElementById('scanBleLabel');
         if (button) button.disabled = true;
-        if (label) label.textContent = 'Checking previously connected ESP32...';
+        if (label) label.textContent = 'Checking previously connected device...';
         let timer;
         try {
           const info = await Promise.race([
@@ -1716,7 +1760,7 @@
           clearTimeout(timer);
           if (session === registrationSessionVersion) {
             if (button) button.disabled = false;
-            if (label) label.textContent = 'Connect Nearby ESP32';
+            if (label) label.textContent = 'Connect Nearby device';
           }
         }
       }
@@ -1740,7 +1784,7 @@
         if (discoveredBleDevices.length === 0) {
           container.innerHTML = `
             <div class="p-4 text-center text-xs text-slate-400 dark:text-gray-500 bg-slate-50 dark:bg-black/20 rounded-xl border border-dashed border-slate-200 dark:border-white/10">
-              No Bluetooth devices discovered yet. Click "Connect Nearby ESP32" to scan, or use "Enter Node ID Manually" below.
+              No Bluetooth devices discovered yet. Click "Connect Nearby device" to scan, or use "Enter AC Device ID" below.
             </div>
           `;
           return;
@@ -1766,7 +1810,7 @@
                 </svg>
               </div>
               <div class="min-w-0 flex-1">
-                <div class="text-xs font-bold text-slate-900 dark:text-white truncate">${device.id}</div>
+                <div class="text-xs font-bold text-slate-900 dark:text-white truncate">${ecoEscapeHtml(ecoDeviceDisplayName(device.id))}</div>
                 <div class="text-[10px] text-slate-500 dark:text-gray-400 font-mono mt-0.5 flex items-center gap-2 flex-wrap">
                   <span class="px-1.5 py-0.2 rounded bg-teal-500/15 text-teal-700 dark:text-teal-300 font-bold">${device.nodeId}</span>
                   <span class="text-slate-300 dark:text-white/20">&bull;</span>
@@ -1806,7 +1850,7 @@
         if (nodeIdInput) nodeIdInput.value = device.nodeId;
 
         const nameInput = document.getElementById('nodeFormName');
-        if (nameInput && !nameInput.value) nameInput.value = device.id;
+        if (nameInput && !nameInput.value) nameInput.value = ecoDeviceDisplayName(device.id);
 
         const cleanIp = device.ip || '';
         wifiConfirmedFor = null;
@@ -1814,7 +1858,7 @@
         if (ipInput) {
           ipInput.value = cleanIp;
           const chkIpText = document.getElementById('chkIpText');
-          if (chkIpText) chkIpText.textContent = cleanIp ? `ESP32 reported IP: ${cleanIp}` : 'Connect Wi-Fi to read the device IP';
+          if (chkIpText) chkIpText.textContent = cleanIp ? `device reported IP: ${cleanIp}` : 'Connect Wi-Fi to read the device IP';
         }
 
         // Update paired banner
@@ -1824,7 +1868,7 @@
         const bannerMac = document.getElementById('pairedDeviceMac');
 
         if (banner) banner.classList.remove('hidden');
-        if (bannerName) bannerName.textContent = device.id || 'ESP32-S3 AC Controller';
+        if (bannerName) bannerName.textContent = ecoDeviceDisplayName(device.id);
         if (bannerBadge) bannerBadge.textContent = device.nodeId;
         if (bannerMac) bannerMac.textContent = `Hardware ID: ${device.nodeId}${Number.isFinite(device.rssi) ? ' | Signal: ' + device.rssi + ' dBm' : ''}`;
 
@@ -1838,7 +1882,7 @@
         renderDiscoveredBleNodes();
         if (typeof updateNextButtonState === 'function') updateNextButtonState();
         resetRemoteDetection('register');
-        setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected ESP32');
+        setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected device');
         if (!acceptExistingWifi(device.info, true)) setNodeModalStep(2);
         void refreshRegistrationStatus(device.info,true);
         if (window.EcoToast) window.EcoToast.show(`Bluetooth connected to ${device.nodeId}`, 'success');
@@ -1865,12 +1909,12 @@
           isBleScanning = false;
           scanBleBtn.disabled = false;
           if (scanBleIcon) scanBleIcon.classList.remove('animate-spin');
-          if (scanBleLabel) scanBleLabel.textContent = 'Connect Nearby ESP32';
+          if (scanBleLabel) scanBleLabel.textContent = 'Connect Nearby device';
           renderDiscoveredBleNodes();
           if (discoveredBleDevices.length > 0) {
             if (window.EcoToast) window.EcoToast.show(`Discovered ${discoveredBleDevices.length} nearby Bluetooth AC Controller node(s).`, 'info');
           } else {
-            if (window.EcoToast) window.EcoToast.show('No compatible ESP32 connected. Check Bluetooth and install the cloud receiver sketch.', 'warning');
+            if (window.EcoToast) window.EcoToast.show('No compatible device connected. Check Bluetooth and install the cloud receiver sketch.', 'warning');
           }
         });
       }
@@ -1883,6 +1927,7 @@
       if (toggleManualBtn && manualContainer) {
         toggleManualBtn.addEventListener('click', () => {
           manualContainer.classList.toggle('hidden');
+          toggleManualBtn.setAttribute('aria-expanded', String(!manualContainer.classList.contains('hidden')));
           if (!manualContainer.classList.contains('hidden') && manualInput) {
             manualInput.focus();
           }
@@ -1890,7 +1935,7 @@
       }
 
       function handleManualPairing() {
-        window.EcoToast?.show('Use Connect Nearby ESP32 to read its real identity and provision Wi-Fi securely.', 'warning');
+        window.EcoToast?.show('Use Connect Nearby device to read its real identity and provision Wi-Fi securely.', 'warning');
       }
 
       if (confirmManualBtn) confirmManualBtn.addEventListener('click', handleManualPairing);
@@ -2132,7 +2177,7 @@
       function resetDeviceIpFeedback() {
         deviceIpReadVersion++;
         setDeviceIpBusy(false);
-        setDeviceIpFeedback('idle', 'Read the current IP from the connected ESP32.');
+        setDeviceIpFeedback('idle', 'Read the current IP from the connected device.');
       }
       function updateDeviceIpResult(ip, message) {
         document.getElementById('nodeFormIp').value = ip;
@@ -2148,28 +2193,28 @@
         const nodeId = selectedBleDevice?.nodeId;
         let timeout;
         setDeviceIpBusy(true);
-        setDeviceIpFeedback('reading', 'Reading IP from ESP32 over Bluetooth...');
+        setDeviceIpFeedback('reading', 'Reading IP from device over Bluetooth...');
         try {
-          if (!nodeId) throw new Error('Connect the nearby ESP32 through Bluetooth first.');
+          if (!nodeId) throw new Error('Connect the nearby device through Bluetooth first.');
           const info = await Promise.race([
             window.EcoTrackHardwareCloud.readInfo(),
             new Promise((_, reject) => {
-              timeout = setTimeout(() => reject(new Error('ESP32 did not reply. Check power and reconnect Bluetooth.')), 12000);
+              timeout = setTimeout(() => reject(new Error('device did not reply. Check power and reconnect Bluetooth.')), 12000);
             })
           ]);
           if (version !== deviceIpReadVersion || nodeId !== selectedBleDevice?.nodeId) return;
-          if (info.device_id !== nodeId) throw new Error('Wrong Bluetooth device replied. Reconnect the selected ESP32.');
+          if (info.device_id !== nodeId) throw new Error('Wrong Bluetooth device replied. Reconnect the selected device.');
           const ip = typeof info.ip_address === 'string' ? info.ip_address.trim() : '';
           const validIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split('.').every(part => Number(part) <= 255) && ip !== '0.0.0.0';
           if (info.wifi_status !== 'connected' || !validIp) {
-            const message = 'ESP32 replied, but no connected Wi-Fi IP is available. Use Test Connection first.';
+            const message = 'device replied, but no connected Wi-Fi IP is available. Use Test Connection first.';
             updateDeviceIpResult('', message);
             setDeviceIpFeedback('warning', message);
             window.EcoToast?.show(message, 'warning');
             return;
           }
           selectedBleDevice.ip = ip;
-          const message = `ESP32 replied. Device IP: ${ip}`;
+          const message = `device replied. Device IP: ${ip}`;
           updateDeviceIpResult(ip, message);
           setDeviceIpFeedback('success', message);
           const targetSsid = document.getElementById('nodeFormSsid').value.trim();
@@ -2177,7 +2222,7 @@
           window.EcoToast?.show(message, 'success');
         } catch (error) {
           if (version !== deviceIpReadVersion || nodeId !== selectedBleDevice?.nodeId) return;
-          const message = 'Could not read device IP: ' + (error.message || 'Reconnect the ESP32 and try again.');
+          const message = 'Could not read device IP: ' + (error.message || 'Reconnect the device and try again.');
           updateDeviceIpResult('', message);
           setDeviceIpFeedback('error', message);
           window.EcoToast?.show(message, 'error');
@@ -2237,42 +2282,42 @@
         let timer, bluetoothVerified = false;
         verifyWifiBtn.disabled = true;
         verifyWifiBtn.setAttribute('aria-busy', 'true');
-        document.getElementById('verifyWifiLabel').textContent = 'Checking ESP32...';
+        document.getElementById('verifyWifiLabel').textContent = 'Checking device...';
         setDeviceIpBusy(true);
-        setConnectionCheck('chkBle', 'checking', 'Waiting for the selected ESP32 to reply over Bluetooth');
+        setConnectionCheck('chkBle', 'checking', 'Waiting for the selected device to reply over Bluetooth');
         setConnectionCheck('chkWifi', 'pending', 'Wi-Fi connection is being checked');
         try {
-          if (!nodeId) throw new Error('Connect the nearby ESP32 through Bluetooth first.');
+          if (!nodeId) throw new Error('Connect the nearby device through Bluetooth first.');
           const ssid = document.getElementById('nodeFormSsid').value.trim();
           const pass = document.getElementById('nodeFormPassword').value;
           const current = await Promise.race([
             window.EcoTrackHardwareCloud.readInfo(),
-            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('ESP32 did not reply. Reconnect Bluetooth and try again.')), 12000); })
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('device did not reply. Reconnect Bluetooth and try again.')), 12000); })
           ]);
           clearTimeout(timer);
           if (revision !== connectionTestRevision || nodeId !== selectedBleDevice?.nodeId) return;
           if (current.device_id !== nodeId) throw new Error('Wrong Bluetooth device connected.');
           bluetoothVerified = true;
-          setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected ESP32');
+          setConnectionCheck('chkBle', 'success', 'Bluetooth connection verified with the selected device');
           let info = current;
           if (!(hasConnectedWifi(current) && (!ssid || current.wifi_ssid === ssid))) {
             wifiConfirmedFor = null;
             existingWifiInfo = null;
             refreshExistingWifiPanel();
             document.getElementById('verifyWifiLabel').textContent = 'Connecting Wi-Fi...';
-            setConnectionCheck('chkWifi', 'checking', 'Sending the selected network settings; waiting for the ESP32');
+            setConnectionCheck('chkWifi', 'checking', 'Sending the selected network settings; waiting for the device');
             info = await window.EcoTrackHardwareCloud.provision({ ssid, pass, device_id: nodeId });
           }
           if (revision !== connectionTestRevision || nodeId !== selectedBleDevice?.nodeId) return;
-          if (!acceptExistingWifi(info, true)) throw new Error('ESP32 did not confirm a connected Wi-Fi network and valid IP.');
+          if (!acceptExistingWifi(info, true)) throw new Error('device did not confirm a connected Wi-Fi network and valid IP.');
           document.getElementById('verifyWifiLabel').textContent = 'Wi-Fi Connected';
-          window.EcoToast?.show('ESP32 Wi-Fi connection verified. Continue to Controller Info to verify Supabase.', 'success');
+          window.EcoToast?.show('device Wi-Fi connection verified. Continue to Controller Info to verify Supabase.', 'success');
         } catch (error) {
           if (revision !== connectionTestRevision || nodeId !== selectedBleDevice?.nodeId) return;
           wifiConfirmedFor = null;
           existingWifiInfo = null;
           refreshExistingWifiPanel();
-          if (!bluetoothVerified || error.code === 'BLE_CONNECTION_FAILED' || /gatt|bluetooth/i.test(error.message || '')) setConnectionCheck('chkBle', 'error', 'Bluetooth connection could not be verified. Reconnect the ESP32.');
+          if (!bluetoothVerified || error.code === 'BLE_CONNECTION_FAILED' || /gatt|bluetooth/i.test(error.message || '')) setConnectionCheck('chkBle', 'error', 'Bluetooth connection could not be verified. Reconnect the device.');
           setConnectionCheck('chkWifi', 'error', 'Wi-Fi connection could not be verified');
           updateDeviceIpResult('', error.message);
           setConnectionCheck('chkIp', 'error', error.message);
@@ -2458,12 +2503,19 @@
         updateRegistrationSave();
         const isBlePaired = registrationBluetoothLive && !!selectedBleDevice?.info;
         const wifiReady = confirmedWifiReady();
-        for (const [id, ready] of [['nodeStepTab2', isBlePaired], ['nodeStepTab3', wifiReady]]) {
-          const tab = document.getElementById(id);
+        for (const [step, ready] of [[1, true], [2, isBlePaired], [3, wifiReady]]) {
+          const tab = document.getElementById('nodeStepTab' + step);
           if (tab) {
-            tab.classList.toggle('opacity-40', !ready);
-            tab.classList.toggle('cursor-not-allowed', !ready);
-            tab.title = ready ? '' : !isBlePaired ? 'Connect the ESP32 through Bluetooth first' : 'Test Connection to verify the ESP32 Wi-Fi connection';
+            const completed = step < currentModalStep;
+            tab.disabled = completed || !ready;
+            tab.dataset.stepComplete = String(completed);
+            tab.setAttribute('aria-disabled', String(tab.disabled));
+            tab.setAttribute('aria-current', step === currentModalStep ? 'step' : 'false');
+            tab.classList.toggle('opacity-40', !ready && !completed);
+            tab.classList.toggle('cursor-pointer', !tab.disabled);
+            tab.classList.toggle('cursor-not-allowed', !ready && !completed);
+            tab.classList.toggle('cursor-default', completed);
+            tab.title = completed ? 'Step completed' : ready ? '' : !isBlePaired ? 'Connect the device through Bluetooth first' : 'Test Connection to verify the device Wi-Fi connection';
           }
         }
         if (!nextBtn) return;
@@ -2471,7 +2523,7 @@
         nextBtn.disabled = !ready;
         nextBtn.classList.toggle('opacity-40', !ready);
         nextBtn.classList.toggle('cursor-not-allowed', !ready);
-        nextBtn.title = ready ? '' : !isBlePaired ? 'Connect the ESP32 through Bluetooth first' : 'Test Connection and wait for the ESP32 reply';
+        nextBtn.title = ready ? '' : !isBlePaired ? 'Connect the device through Bluetooth first' : 'Test Connection and wait for the device reply';
       }
 
       function setNodeModalStep(step) {
@@ -2496,7 +2548,7 @@
           const idVal = document.getElementById('nodeFormId')?.value.trim();
           if (!idVal || !selectedBleDevice?.info || selectedBleDevice.nodeId !== idVal) {
             if (window.EcoToast) {
-              window.EcoToast.show('Bluetooth discovery required: Please search for and pair with an ESP32-S3 AC Controller Node via Bluetooth first before Wi-Fi setup.', 'warning');
+              window.EcoToast.show('Bluetooth discovery required: Please search for and pair with an AC device via Bluetooth first before Wi-Fi setup.', 'warning');
             }
             const scanBtn = document.getElementById('scanBleBtn');
             if (scanBtn) {
@@ -2510,7 +2562,7 @@
 
         // Existing Wi-Fi is verified from the real BLE reply; cloud registration is separate.
         if (step === 3 && !confirmedWifiReady()) {
-          window.EcoToast?.show('Test Connection and wait for the ESP32 Wi-Fi confirmation first.', 'warning');
+          window.EcoToast?.show('Test Connection and wait for the device Wi-Fi confirmation first.', 'warning');
           return;
         }
 
@@ -2617,9 +2669,9 @@
       }
 
       // Step navigation event listeners
-      if (stepTab1) stepTab1.addEventListener('click', () => setNodeModalStep(1));
-      if (stepTab2) stepTab2.addEventListener('click', () => setNodeModalStep(2));
-      if (stepTab3) stepTab3.addEventListener('click', () => setNodeModalStep(3));
+      if (stepTab1) stepTab1.addEventListener('click', () => { if (!stepTab1.disabled) setNodeModalStep(1); });
+      if (stepTab2) stepTab2.addEventListener('click', () => { if (!stepTab2.disabled) setNodeModalStep(2); });
+      if (stepTab3) stepTab3.addEventListener('click', () => { if (!stepTab3.disabled) setNodeModalStep(3); });
 
       if (nextStepBtn) {
         nextStepBtn.addEventListener('click', () => {
@@ -2662,7 +2714,7 @@
           if(error)throw error;
           if(session!==registrationSessionVersion || deviceId!==selectedBleDevice?.nodeId)return;
           const target=registration?.node?.id, name=registration?.node?.name;
-          registrationAircons=(data || []).filter(ac=>
+          registrationAircons=(data || []).filter(ac=>registrationUi.fields().device_mode==='monitoring' ||
             (!ac.node_id || [target,deviceId,name].filter(Boolean).includes(ac.node_id)) &&
             (!ac.controller_node_id || ac.controller_node_id===target));
           registrationUi.addBrands((data || []).map(ac=>ac.brand));
@@ -2697,8 +2749,9 @@
       });
 
       // Modal open/close
-      openBtn.addEventListener('click', async () => {
-        if (registrationSaving) return;
+      let registrationOpening = false;
+      async function openRegistrationModal() {
+        installationAttempt = null;
         resetRemoteDetection('register');
         setRegistrationCloudStatus('pending');
         const session = ++registrationSessionVersion;
@@ -2785,6 +2838,21 @@
         modal.classList.remove('hidden');
         closeBtn.setAttribute('aria-label','Close registration');closeBtn.focus();
         await resumeControllerSetup(session);
+      }
+      openBtn.addEventListener('click', async () => {
+        if (registrationSaving || registrationOpening) return;
+        registrationOpening = true;
+        try {
+          if (window.EcoTrackModalLoading?.run) {
+            await window.EcoTrackModalLoading.run(openBtn, openRegistrationModal, {label:'Preparing…'});
+          } else {
+            await openRegistrationModal();
+          }
+        } catch (error) {
+          window.EcoToast?.show(error?.message || 'Registration could not be opened. Please try again.', 'error');
+        } finally {
+          registrationOpening = false;
+        }
       });
 
       function closeModal() { if (registrationSaving) return; registrationReconnecting=false;registrationSessionVersion++;registrationCheckRevision++;
@@ -2817,9 +2885,9 @@
         const wifi_ssid=document.getElementById('nodeFormSsid').value.trim(), setup={...validation.data};
         const selectedAc=registrationAircons.find(ac=>ac.id===setup.aircon_id);
         if(!setup.brand && selectedAc?.brand && selectedAc.brand!=='Unspecified')setup.brand=selectedAc.brand;
-        setup.protocol_name=remoteCapture.register.brand===setup.brand && remoteCapture.register.protocol ||
-          (selectedAc?.brand===setup.brand ? selectedAc.protocol_name || selectedAc.protocol : null) ||
-          (setup.brand ? CapabilityEngine.resolveProtocolName(setup.brand) : selectedAc?.protocol_name || null);
+        setup.protocol_name=remoteCapture.register.protocol || selectedAc?.protocol_name || selectedAc?.protocol ||
+          registrationCheck?.node?.protocol_name || 'UNKNOWN';
+        if(setup.device_mode==='monitoring')setup.protocol_name=null;
         const room=document.getElementById('nodeFormRoom').value;
         setup.room_id=room && room!=='custom' ? room : null;
         registrationSaving=true;updateRegistrationSave();setRegistrationCloudStatus('verifying');
@@ -2829,7 +2897,7 @@
           await window.EcoTrackHardwareCloud.validateAssignment(node_id,setup);
           const current=await window.EcoTrackHardwareCloud.registrationStatus(info);
           registrationCheck=current;refreshExistingWifiPanel();
-          if(current.state==='waiting')throw new Error('Verification Pending: the ESP32 is not reporting to this Supabase project. Keep it awake and reconnect.');
+          if(current.state==='waiting')throw new Error('Waiting for the controller to connect to the cloud. Keep it awake, then reconnect.');
           const actualValidation=registrationUi.validate(current.state==='refresh');
           if(!actualValidation.valid) {
             registrationUi.showErrors(actualValidation.errors);
@@ -2840,11 +2908,16 @@
           const registered=current.state==='reuse' ? current :
             await window.EcoTrackHardwareCloud.register({},registrationCredentials(),node_id,{preserveMetadata:true});
           setup.room_id=deployment.room_id;
+          const installationKey = JSON.stringify({ node_id, setup });
+          if (!installationAttempt || installationAttempt.key !== installationKey) {
+            installationAttempt = { key: installationKey, id: crypto.randomUUID() };
+          }
+          setup.installation_attempt_id = installationAttempt.id;
           await NodeService.saveNode({
             node_id,db_id:registered.node.id,cloud_registered:true,registration_assignment:setup,aircon_id:setup.aircon_id,
-            name:setup.controller_name,brand:setup.brand || selectedAc?.brand || 'Unspecified',
+            device_mode:setup.device_mode,sensor_config:setup.sensor_config,name:setup.controller_name,brand:setup.brand || selectedAc?.brand || 'Unspecified',
             aircon_type:setup.aircon_type,protocol_name:setup.protocol_name,
-            hardware:registered.info.capabilities?.ir_transmitter===true?'ESP32-S3 IR controller':'ESP32-S3 IR receiver',
+            hardware:registered.info.capabilities?.ir_transmitter===true?'IR controller':'IR receiver',
             firmware:registered.info.firmware_version,cloud_state:registered.cloud_state,status:'Connected',
             ip_address:registered.info.ip_address || null,wifi_ssid:registered.info.wifi_ssid,
             capabilities:registered.info.capabilities,ir_rx:registered.info.capabilities?.ir_receiver===true,
@@ -2885,6 +2958,7 @@
       // RIGHT-CLICK CONTEXT MENU CONTROLLER
       // ==========================================
       let currentContextNodeId = null;
+      let contextMenuCloseTimer = null;
       const contextMenu = document.getElementById('nodeContextMenu');
       const ctxBadge = document.getElementById('contextMenuNodeBadge');
       const ctxName = document.getElementById('contextMenuNodeName');
@@ -2897,19 +2971,23 @@
       function closeNodeContextMenu() {
         if (!contextMenu || contextMenu.classList.contains('hidden')) return;
         contextMenu.classList.add('opacity-0', 'scale-95');
-        setTimeout(() => {
+        clearTimeout(contextMenuCloseTimer);
+        contextMenuCloseTimer = setTimeout(() => {
           contextMenu.classList.add('hidden');
+          contextMenuCloseTimer = null;
         }, 120);
         document.querySelectorAll('#nodeTableBody tr').forEach(r => r.classList.remove('bg-teal-500/10', 'dark:bg-teal-500/20'));
       }
 
       function openNodeContextMenu(e, nodeId) {
+        clearTimeout(contextMenuCloseTimer);
+        contextMenuCloseTimer = null;
         currentContextNodeId = nodeId;
         const node = NodeService.getNode(nodeId) || { node_id: nodeId, name: nodeId, status: 'Connected' };
         const isOnline = (node.status || '').toLowerCase() === 'connected' || (node.status || '').toLowerCase() === 'online';
 
-        if (ctxBadge) ctxBadge.textContent = node.node_id || nodeId;
-        if (ctxName) ctxName.textContent = node.name || nodeId;
+        if (ctxBadge) ctxBadge.textContent = ecoDeviceIdentifier(node, AirconProfileManager.getAll());
+        if (ctxName) ctxName.textContent = ecoDeviceDisplayName(node.name || nodeId);
         if (ctxDot) {
           ctxDot.className = `w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`;
         }
@@ -2925,8 +3003,8 @@
 
         // Show and position within viewport boundaries
         contextMenu.classList.remove('hidden');
-        const menuWidth = 210;
-        const menuHeight = 230;
+        const menuWidth = contextMenu.offsetWidth;
+        const menuHeight = contextMenu.offsetHeight;
         let x = e.clientX;
         let y = e.clientY;
         if (x + menuWidth > window.innerWidth) x = window.innerWidth - menuWidth - 12;
@@ -3019,7 +3097,7 @@
         const node = NodeService.getNode(nodeId) || {
           node_id: nodeId,
           name: nodeId,
-          status: 'Connected',
+          status: 'unknown',
           hardware: 'AC Controller Device (WiFi + IR)',
           firmware: 'v2.4.2-WiFi',
           rssi: null
@@ -3029,7 +3107,7 @@
         const numPart = (node.node_id || '').replace(/\D/g, '') || '1';
         const ip = node.ip_address || 'Not reported';
         const ssid = node.wifi_ssid || 'Not reported';
-        const hw = node.hardware || 'AC Controller Device (WiFi + IR)';
+        const hw = node.device_mode === 'monitoring' ? 'AC Device' : node.device_mode === 'both' ? 'AC Device' : 'AC Controller Device';
         const fw = node.firmware || 'Not reported';
 
         // Attached aircons
@@ -3042,27 +3120,31 @@
         const rm = node.room_name || 'Unassigned';
 
         // Populate fields
-        document.getElementById('viewModalNodeBadge').textContent = node.node_id || nodeId;
-        document.getElementById('viewModalTitle').textContent = node.name || nodeId;
+        document.getElementById('viewModalNodeBadge').textContent = ecoDeviceIdentifier(node, allAircons);
+        document.getElementById('viewModalTitle').textContent = ecoDeviceDisplayName(node.name || nodeId);
         
+        const rawStatus = String(node.status || '').toLowerCase();
+        const connectionState = isOnline ? 'online' : rawStatus === 'sleeping' ? 'sleeping' : ['offline','disconnected'].includes(rawStatus) ? 'offline' : 'unknown';
+        document.getElementById('viewConnectionStatus').dataset.deviceState = connectionState;
+        const statusIcons = {online:'<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',offline:'<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6m0-6-6 6"/>',sleeping:'<path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/>',unknown:'<circle cx="12" cy="12" r="9"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 2-3 4m.1 3h.01"/>'};
         const dot = document.getElementById('viewStatusDot');
-        if (dot) dot.className = `w-3 h-3 rounded-full ${isOnline ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`;
-        
+        if (dot) dot.innerHTML = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${statusIcons[connectionState]}</svg>`;
         const statusText = document.getElementById('viewStatusText');
-        if (statusText) statusText.textContent = isOnline ? 'Connected & Online' : 'Offline / Standby';
+        if (statusText) statusText.textContent = {online:'Connected & online',offline:'Offline / standby',sleeping:'Sleeping',unknown:'Status not reported'}[connectionState];
 
         const lastSeen = document.getElementById('viewLastSeen');
         if (lastSeen) lastSeen.textContent = window.EcoTrackControllerDetails.timestamp(node.last_seen) ? `Last seen: ${window.EcoTrackControllerDetails.timestamp(node.last_seen).date} • ${window.EcoTrackControllerDetails.timestamp(node.last_seen).time}` : 'Last seen: Not reported';
 
         const sigBadge = document.getElementById('viewSignalBadge');
         const sigBadgeText = document.getElementById('viewSignalBadgeText');
+        const rssi = node.rssi == null || String(node.rssi).trim() === '' ? null : Number(node.rssi);
+        const hasRssi = Number.isFinite(rssi);
+        const rssiText = hasRssi ? `${rssi} dBm${isOnline ? '' : ' · last reported'}` : 'Not reported';
         if (sigBadgeText) {
-          sigBadgeText.textContent = node.rssi ? `${node.rssi} dBm (2.4 GHz)` : '— (Offline)';
-        } else if (sigBadge) {
-          sigBadge.textContent = node.rssi ? `${node.rssi} dBm (2.4 GHz)` : '— (Offline)';
+          sigBadgeText.textContent = hasRssi ? rssiText : 'Signal not reported';
         }
         if (sigBadge) {
-          sigBadge.className = isOnline ? 'text-xs font-mono font-bold text-teal-600 dark:text-cyan-400 px-2.5 py-1 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center gap-1.5' : 'text-xs font-mono font-bold text-rose-500 px-2.5 py-1 rounded-xl bg-rose-500/10 border border-rose-500/20 flex items-center gap-1.5';
+          sigBadge.dataset.deviceState = isOnline && hasRssi ? 'online' : 'unknown';
         }
 
         document.getElementById('viewHardwareModel').textContent = hw;
@@ -3071,7 +3153,7 @@
         document.getElementById('viewWifiSsid').textContent = ssid;
         window.EcoTrackControllerDetails.render(node);
         document.getElementById('viewIrRole').textContent = node.ir_tx && node.ir_rx ? 'IR TX & IR Learning Active' : node.ir_rx ? 'IR Learning Active' : node.ir_tx ? 'IR TX Active' : 'Not reported';
-        document.getElementById('viewRssiVal').textContent = node.rssi ? `${node.rssi} dBm` : '—';
+        document.getElementById('viewRssiVal').textContent = rssiText;
         document.getElementById('viewBuilding').textContent = bld;
         document.getElementById('viewFloor').textContent = flr;
         document.getElementById('viewRoom').textContent = rm;
@@ -3121,6 +3203,7 @@
       function closeEditNodeModal() {
         if (editSaving) return;
         resetRemoteDetection('edit');
+        registrationUi.hideBrandPicker('editNodeBrand');
         if (editModal) editModal.classList.add('hidden');
       }
 
@@ -3145,13 +3228,15 @@
         const node = NodeService.getNode(nodeId);
         if (!node) { window.EcoToast?.show('Controller no longer exists. Refresh the device list.', 'error'); return; }
         document.getElementById('editNodeIdHidden').value = nodeId;
-        document.getElementById('editModalNodeBadge').textContent = nodeId;
+        document.getElementById('editModalNodeBadge').textContent = ecoDeviceIdentifier(node, AirconProfileManager.getAll());
         document.getElementById('editNodeName').value = node.name || nodeId;
         const attachedAc=AirconProfileManager.getAll().find(ac=>ac.node_id===nodeId || ac.controller_node_id===node.db_id);
         document.getElementById('editAirconName').value=attachedAc?.name || '';
+        document.getElementById('editRemoteStatus').textContent=`Saved IR protocol: ${attachedAc?.protocol_name || attachedAc?.protocol || node.protocol_name || 'Unavailable'}.`;
         document.getElementById('editAirconName').disabled=!attachedAc;
         document.getElementById('editAirconName').required=!!attachedAc;
         document.getElementById('editNodeBrand').value = node.brand || '';
+        registrationUi.hideBrandPicker('editNodeBrand');
         const editType=document.getElementById('editNodeAirconType'),savedType=node.aircon_type || 'Split Type (Inverter)';
         if(!Array.from(editType.options).some(option=>option.value===savedType))editType.appendChild(new Option(savedType,savedType));
         editType.value=savedType;
@@ -3178,7 +3263,8 @@
             {buildings:_cachedBuildings,floors:_cachedFloors,rooms:_cachedRooms}, window.supabaseClient || window.sb);
           const brand = document.getElementById('editNodeBrand').value.trim();
           const aircon_type = document.getElementById('editNodeAirconType').value;
-          const protocol = remoteCapture.edit.brand === brand && remoteCapture.edit.protocol ||
+          const attachedAc=(AirconProfileManager.getAll?.() || []).find(ac=>ac.node_id===nodeId || ac.controller_node_id===node.db_id);
+          const protocol = remoteCapture.edit.protocol || attachedAc?.protocol_name || attachedAc?.protocol ||
             node.protocol_name || 'UNKNOWN';
           const aircon_name=document.getElementById('editAirconName').value.trim();
           await NodeService.editDevice(nodeId, {...deployment, name, aircon_name, brand:brand || null, aircon_type, protocol_name:protocol});
@@ -3235,7 +3321,7 @@
           : 'None';
 
         document.getElementById('delModalNodeId').textContent = nodeId;
-        document.getElementById('delModalNodeName').textContent = node.name || nodeId;
+        document.getElementById('delModalNodeName').textContent = ecoDeviceDisplayName(node.name || nodeId);
         document.getElementById('delModalLocation').textContent = node.location || (node.room_name ? `${node.room_name} (${node.building || 'main campus'})` : 'Unassigned');
         document.getElementById('delModalAircon').textContent = attachedText;
 
@@ -3329,9 +3415,9 @@
         set('pingModalNodeBadge', id);
         set('pingDetailIp', n.ip_address || 'Not reported'); 
         set('pingDetailSsid', n.wifi_ssid || 'Not reported');
-        set('pingDetailHw', n.hardware || 'Not reported'); 
+        set('pingDetailHw', n.device_mode === 'monitoring' ? 'AC Device' : n.device_mode === 'both' ? 'AC Device' : 'AC Controller Device');
         set('pingDetailFw', n.firmware || 'Not reported');
-        set('pingTerminalTitle', 'EcoTrack -> Supabase -> ESP32 -> acknowledgement');
+        set('pingTerminalTitle', 'EcoTrack -> Supabase -> device -> acknowledgement');
         set('pingProbeTimestamp', new Date().toLocaleTimeString());
 
         // Visual loading state on Re-Test Connection button
@@ -3364,7 +3450,7 @@
         }
         if (statusTitle) {
           statusTitle.className = 'text-xs font-black uppercase tracking-wider text-cyan-700 dark:text-cyan-300 truncate';
-          statusTitle.textContent = 'PINGING ESP32 VIA SUPABASE...';
+          statusTitle.textContent = 'PINGING device VIA SUPABASE...';
         }
         set('pingStatusSubtitle', 'Probe request queued. Listening for bidirectional hardware acknowledgement...');
 
@@ -3385,7 +3471,7 @@
 
         const startTime = Date.now();
         const timeStr = new Date().toLocaleTimeString();
-        set('pingTerminalOutput', `[${timeStr}] Initializing real-time ping probe to ${id}...\n[${timeStr}] Queued command into Supabase ecotrack_device_commands table.\n[${timeStr}] Waiting for ESP32 hardware to poll and return acknowledgement...`);
+        set('pingTerminalOutput', `[${timeStr}] Initializing real-time ping probe to ${id}...\n[${timeStr}] Queued command into Supabase ecotrack_device_commands table.\n[${timeStr}] Waiting for device hardware to poll and return acknowledgement...`);
 
         // Real-time elapsed ticker (every 100ms)
         pingProbeTimer = setInterval(() => {
@@ -3432,7 +3518,7 @@
           }
           if (statusTitle) {
             statusTitle.className = 'text-xs font-black uppercase tracking-wider text-emerald-700 dark:text-emerald-300 truncate';
-            statusTitle.textContent = 'ESP32 REPLIED THROUGH SUPABASE';
+            statusTitle.textContent = 'device REPLIED THROUGH SUPABASE';
           }
           set('pingStatusSubtitle', 'Cloud command and device acknowledgement verified.');
 
@@ -3446,7 +3532,7 @@
           set('pingMetricLatencySub', response.round_trip_ms < 100 ? '● Excellent (< 100ms)' : '● Includes cloud delivery and polling');
 
           setHtml('pingMetricRssi', `<span class="text-2xl font-black text-teal-600 dark:text-teal-300 font-mono tracking-tight">${Number.isFinite(response.rssi) ? `${response.rssi} dBm` : 'Not reported'}</span>`);
-          set('pingMetricRssiSub', 'Measured by ESP32');
+          set('pingMetricRssiSub', 'Measured by device');
 
           setHtml('pingMetricPackets', '<span class="text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono tracking-tight">Received</span>');
           set('pingMetricPacketsSub', 'Device acknowledgement');
@@ -3497,7 +3583,7 @@
             statusTitle.className = 'text-xs font-black uppercase tracking-wider text-rose-700 dark:text-rose-300 truncate';
             statusTitle.textContent = error.code === 'DEVICE_SLEEPING' ? 'Controller is sleeping' : 'No device acknowledgement';
           }
-          set('pingStatusSubtitle', error.message || 'ESP32 did not respond within timeout window.');
+          set('pingStatusSubtitle', error.message || 'device did not respond within timeout window.');
 
           if (latencyPill) {
             latencyPill.className = 'font-mono text-xs font-bold px-2.5 py-1 rounded-full bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/30 flex-shrink-0';
@@ -3612,6 +3698,7 @@
       AirconEvents.on('node:updated', () => refreshNodes(true));
       AirconEvents.on('aircon:updated', () => refreshNodes(true));
       AirconEvents.on('devices:synced', () => refreshNodes(true));
+      window.addEventListener('workspace:changed', () => { nodeCurrentPage = 1; renderNodes(); });
 
       // Preload facility hierarchy and load nodes
       loadBuildingsFloorsRooms().catch(() => {});

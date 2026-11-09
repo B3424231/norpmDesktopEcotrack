@@ -1,0 +1,1792 @@
+--- before/desktop/src/main.js
++++ after/desktop/src/main.js
+@@ -582,7 +582,9 @@
+     });
+     // Validation, authorization and version checks belong to the transactional RPC.
+     // A rejected operation must never fall through to a direct table write.
+-    if (error) return { success: false, error: error.message, code: error.code };
++    if (error) return { success: false, error: error.code === '40001'
++        ? 'This report changed on another device. Refresh it and review your changes before retrying.'
++        : error.message, code: error.code };
+     if (data?.report?.id !== report.id) {
+       return { success: false, error: 'Database did not confirm the report save.', code: 'INVALID_RESPONSE' };
+     }
+--- before/desktop/public/dashboard.html
++++ after/desktop/public/dashboard.html
+@@ -425,11 +425,10 @@
+ 
+       function getDashboardPowerState(ac) {
+         const observation = window.EcoTrackAirconState.describeAirconState(ac.control_snapshot);
+-        const settings = window.EcoTrackAirconState.displaySettings(ac.control_snapshot);
+-        const online = !['offline', 'disconnected'].includes(String(ac.status).toLowerCase());
+-        const power = online && observation.confirmed ? observation.power :
+-          online && observation.remoteObserved ? observation.observedPower : null;
+-        return {power,label:settings.powerLabel};
++        const online = String(ac.status).toLowerCase() === 'online' &&
++          !!ac.node_id && NodeService.isNodeOnline(ac.node_id);
++        const power = online && observation.confirmed ? observation.power : null;
++        return {power,label:power === true ? 'Active' : power === false ? 'Standby' : 'Power unconfirmed'};
+       }
+ 
+       function renderDashboard() {
+@@ -456,8 +455,8 @@
+         document.getElementById('kpiOnlineUnits').textContent = onlineCount;
+         document.getElementById('kpiActivePower').textContent = total && unknownPowerCount === total ? '—' : activePowerCount;
+         document.getElementById('kpiStandby').textContent = total && unknownPowerCount === total ? '—' : standbyCount;
+-        document.getElementById('kpiActivePowerCaption').textContent = 'Units with power ON';
+-        document.getElementById('kpiStandbyCaption').textContent = 'Units with power OFF';
++        document.getElementById('kpiActivePowerCaption').textContent = unknownPowerCount ? `${unknownPowerCount} awaiting feedback` : 'Units with confirmed power ON';
++        document.getElementById('kpiStandbyCaption').textContent = unknownPowerCount ? `${unknownPowerCount} awaiting feedback` : 'Units with confirmed power OFF';
+         document.getElementById('kpiNodesOnline').textContent = `${onlineNodesCount} / ${nodes.length}`;
+         document.getElementById('kpiCommandsSent').textContent = commandsSent;
+         document.getElementById('kpiCommandsSuccess').textContent = commandsSuccess;
+--- before/desktop/public/logs.html
++++ after/desktop/public/logs.html
+@@ -1264,7 +1264,8 @@
+   <script src="./js/sidebar.js"></script>
+   <script src="./js/clear-logs-dialog.js?v=1"></script>
+   <script src="./js/energy-prediction.js?v=1"></script>
+-  <script src="./js/logs.js?v=44"></script>
++  <script src="./js/telemetry-history.js?v=1"></script>
++  <script src="./js/logs.js?v=45"></script>
+ </body>
+ 
+ </html>
+--- before/desktop/public/js/logs.js
++++ after/desktop/public/js/logs.js
+@@ -74,6 +74,7 @@
+ window.addEventListener('focus', onTelemetrySavedDebounced);
+ 
+ function getTelemetryRevision(data) {
++  if (data.history_revision) return data.history_revision;
+   const latest = data.items?.[0];
+   return JSON.stringify([data.totalItems, latest?.id, latest?.created, latest?.updated, data.reset_at]);
+ }
+@@ -784,9 +785,15 @@
+   }
+   try {
+     const backendUrl = window.ECOTRACK_CONFIG?.backendUrl || 'http://localhost:5000';
+-    const res = await (window.EcoNetwork?.fetch.bind(window.EcoNetwork) || fetch)(`${backendUrl}/api/telemetry?perPage=0&sort=-created`, { cache: 'no-store' }, { timeout: 8000, retries: 0, silent: true });
+-    if (!res.ok) throw new Error(`Telemetry request failed (HTTP ${res.status})`);
+-    const data = await res.json();
++    const requestHistory = url => (window.EcoNetwork?.fetch.bind(window.EcoNetwork) || fetch)(url,
++      { cache: 'no-store' }, { timeout: 8000, retries: 0, silent: true });
++    let data;
++    if (window.EcoTrackTelemetryHistory) data = await window.EcoTrackTelemetryHistory.read(backendUrl, requestHistory);
++    else {
++      const res = await requestHistory(`${backendUrl}/api/telemetry?perPage=0&sort=-created`);
++      if (!res.ok) throw new Error(`Telemetry request failed (HTTP ${res.status})`);
++      data = await res.json();
++    }
+     if (!Array.isArray(data.items)) throw new Error('Telemetry response must contain an items array');
+     const records = data.items;
+     document.getElementById('logsLoadError')?.remove();
+@@ -1826,7 +1833,8 @@
+   const value = Number(log.intervalVal ?? log.interval_val ?? node.interval_val ?? node.intervalVal);
+   const unit = String(log.intervalUnit ?? log.interval_unit ?? node.interval_unit ?? node.intervalUnit ?? '').toLowerCase();
+   const multiplier = unit.startsWith('sec') ? 1000 : unit.startsWith('min') ? 60000 : (unit.startsWith('hour') || unit.startsWith('hr')) ? 3600000 : 0;
+-  const calcMs = Number.isFinite(value) && value > 0 && multiplier ? value * multiplier : 900000;
++  // An absent historical cadence cannot establish a thirty-second or fifteen-minute interval.
++  const calcMs = Number.isFinite(value) && value > 0 && multiplier ? value * multiplier : 0;
+   return Math.min(calcMs, 3600000);
+ }
+ 
+@@ -1858,17 +1866,13 @@
+     const daySegmentStart = Math.max(start, dayBoundaryStart);
+     const daySegmentEnd = Math.min(end, dayBoundaryEnd);
+     
+-    if (daySegmentEnd > daySegmentStart) {
+-      if (filterStart !== null || filterEnd !== null) {
+-        const filteredWindows = runtimeDayWindows(day, filterStart ?? 0, filterEnd ?? 1440);
+-        filteredWindows.forEach(([f, t]) => {
+-          const clippedStart = Math.max(daySegmentStart, f);
+-          const clippedEnd = Math.min(daySegmentEnd, t);
+-          if (clippedEnd > clippedStart) segments.push([clippedStart, clippedEnd]);
+-        });
+-      } else {
+-        segments.push([daySegmentStart, daySegmentEnd]);
+-      }
++    const operatingWindows = runtimeDayWindows(day, runtimeClockMinutes(node.wake_time ?? node.wakeTime),
++      runtimeClockMinutes(node.sleep_time ?? node.sleepTime));
++    const filteredWindows = runtimeDayWindows(day, filterStart ?? 0, filterEnd ?? 1440);
++    for (const [wake, sleep] of operatingWindows) for (const [f, t] of filteredWindows) {
++      const clippedStart = Math.max(daySegmentStart, wake, f);
++      const clippedEnd = Math.min(daySegmentEnd, sleep, t);
++      if (clippedEnd > clippedStart) segments.push([clippedStart, clippedEnd]);
+     }
+     day.setDate(day.getDate() + 1);
+   }
+@@ -1904,6 +1908,7 @@
+   const allFacilitySegments = [];
+   const settingsSegments = [];
+   let totalRuntimeSum = 0;
++  let missingCadenceSamples = 0;
+ 
+   logsByNode.forEach(({ node, samples }, id) => {
+     let config = { ...node };
+@@ -1920,10 +1925,11 @@
+     readings.forEach(({ log, timestamp, config }, index) => {
+       if (getConfirmedAcOnState(log) !== true) return;
+       const intervalMs = getRuntimeIntervalMs(log, config);
++      if (!intervalMs) { missingCadenceSamples++; return; }
+       const next = readings[index + 1];
+       const gap = next ? next.timestamp - timestamp : Infinity;
+       const dayEnd = new Date(timestamp); dayEnd.setHours(24, 0, 0, 0);
+-      const maxSessionGap = Math.max(intervalMs * 2.5, 1800000);
++      const maxSessionGap = intervalMs * 2.5;
+       const end = (gap > 0 && gap <= maxSessionGap)
+         ? next.timestamp : Math.min(timestamp + intervalMs, dayEnd.getTime());
+       const clipped = clipRuntimeSegment(timestamp, end, config);
+@@ -1971,6 +1977,7 @@
+     runtimeHrs: totalFacilityActiveHrs || facilitySpanHrs,
+     perUnitUtil: activeUnits ? totalRuntimeSum / activeUnits : 0,
+     totalRuntimeSum,
++    missingCadenceSamples,
+     activeUnits,
+     nodeRuntimes,
+     dailyNodeRuntimes,
+@@ -2248,7 +2255,10 @@
+ }
+ 
+ function updateKpiCardsTrends(period, isSingleNode, kwh, cost, runtimeHrs, activeUnits, totalUnits, idleUnits, capacityPct) {
+-  const previous = currentAnalyticsResult?.previous;
++  const result = currentAnalyticsResult;
++  const previous = !result?.forecast && result?.previous?.complete &&
++    !result?.missingEstimates && !result?.coverage?.unknownUnits && !result?.coverage?.unknownSamples
++    ? result.previous : null;
+   const labels = { daily: 'vs previous day', weekly: 'vs previous week', monthly: 'vs previous month', yearly: 'vs previous year' };
+   const compare = (id, value, prior, unit) => {
+     let text = '--';
+@@ -2298,8 +2308,9 @@
+   const energy = value => Number.isFinite(value) ? value.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : 'Unavailable';
+   const operating = result.forecast ? getForecastOperatingMetrics(result) : { ...runtime, ...coverage };
+   const partial = result.forecast ? operating.unknownUnits > 0 || result.missingEstimates > 0
+-    : coverage.unknownUnits > 0 || coverage.unknownSamples > 0 || result.missingEstimates > 0;
+-  const hasRuntime = result.forecast ? operating.knownUnits > 0 : coverage.confirmedSamples > 0;
++    : coverage.unknownUnits > 0 || coverage.unknownSamples > 0 || result.missingEstimates > 0 || runtime.missingCadenceSamples > 0;
++  const hasRuntime = result.forecast ? operating.knownUnits > 0
++    : coverage.confirmedSamples > 0 && !(runtime.missingCadenceSamples > 0 && !runtime.totalRuntimeSum);
+   setAnalyticsText('energyConsumption', Number.isFinite(kwh) ? energy(kwh) + ' kWh' : 'Unavailable');
+   setAnalyticsValue('kpiEnergyVal', energy(kwh), 'kpiEnergyUnit');
+   for (const id of ['kpiCostVal', 'estBillValue', 'costTodayCost', 'costCurrentCycle']) setAnalyticsValue(id, money(cost));
+@@ -2381,7 +2392,8 @@
+         if (!job.projection) { job.reason = 'No confirmed AC-on feedback or complete saved schedule is available.'; continue; }
+       }
+       const operating = job.projection || features;
+-      if (operating.acOnRatio === 0 || operating.hoursUsed <= 0) { job.kwh = 0; continue; }
++      if (operating.acOnRatio === 0 || (job.projection && operating.hoursUsed <= 0)) { job.kwh = 0; continue; }
++      if (operating.hoursUsed <= 0) { job.reason = 'No bounded operating interval is available; check the recorded cadence and schedule.'; continue; }
+       if (!scenarioId) { job.reason = 'Choose conditions in Prediction options.'; continue; }
+       if (!client) { job.reason = 'The Random Forest client is unavailable. Reload this page.'; continue; }
+       let segments;
+--- before/desktop/public/js/node-sync.js
++++ after/desktop/public/js/node-sync.js
+@@ -105,8 +105,8 @@
+       const aircon = matches.length === 1 ? matches[0] : null;
+       const hasPacketSnapshot = Object.prototype.hasOwnProperty.call(packet, 'control_snapshot');
+       let controlSnapshot = hasPacketSnapshot ? packet.control_snapshot : aircon?.control_snapshot;
+-      const selectedPower = window.EcoTrackAirconState?.displaySettings?.(controlSnapshot)?.power;
+-      if ((selectedPower ?? resolvedAcOn) !== true) return null;
++      // A received measurement is valid even when the AC is OFF or its power is
++      // unknown. Selected settings must never suppress physical OFF evidence.
+       // Capture selected settings at ingestion, without treating them as a command or feedback.
+       // A null snapshot on an unbound profile cannot supply historical state.
+       if (!hasPacketSnapshot && aircon?.aircon_id && controlSnapshot &&
+@@ -133,6 +133,7 @@
+         building_name: loc.buildingName,
+         aircon_type: airconType,
+         temperature: measurement(packet.temp ?? packet.temperature),
++        pressure: measurement(packet.pressure),
+         battery: measurement(packet.battery),
+         rssi: measurement(packet.rssi),
+         status: packet.status || 'online',
+@@ -181,13 +182,25 @@
+   }
+ 
+   // ===== BACKGROUND TELEMETRY CADENCE SERVICE =====
+-  // Runs continuous telemetry logging based on each node's interval setting
+-  // when the user is on Daily Logs, Scheduler, or other pages where telemetry.html is not active.
++  // Reconcile pending cloud command receipts on pages without the telemetry view.
++  // Cached node values are never turned into new measurements by this timer.
+   let _bgCadenceTimer = null;
+-  const _nodeLastSendTime = {};
+-  const _nodeInitialSendAt = {};
+   let _assignedNodesCache = null;
+   let _assignedNodesCacheTime = 0;
++
++  function readCloudWithDeadline(query) {
++    const controller = new AbortController();
++    let timer;
++    const timeout = new Promise((_, reject) => {
++      timer = setTimeout(() => {
++        reject(new Error('Cloud status read timed out'));
++        controller.abort();
++      }, 15000);
++    });
++    const read = Promise.resolve().then(() => typeof query.abortSignal === 'function'
++      ? query.abortSignal(controller.signal) : query);
++    return Promise.race([read, timeout]).finally(() => clearTimeout(timer));
++  }
+ 
+   async function getAssignedNodesWithSchedule() {
+     const now = Date.now();
+@@ -197,7 +210,7 @@
+     const sb = getSupabase();
+     if (!sb) return [];
+     try {
+-      const { data: nodes, error } = await sb.from('nodes').select('*').not('room_id', 'is', null);
++      const { data: nodes, error } = await readCloudWithDeadline(sb.from('nodes').select('*').not('room_id', 'is', null));
+       if (!error && Array.isArray(nodes)) {
+         _assignedNodesCache = nodes;
+         _assignedNodesCacheTime = now;
+@@ -220,6 +233,7 @@
+   }
+ 
+   const _commandReceiptChecks = new Map();
++  const _commandReceiptInFlight = new Set();
+   async function reconcilePendingCommandReceipt(node, now = Date.now()) {
+     if (typeof window === 'undefined') return;
+     const system = window.EcoTrackAirconSystem, sb = getSupabase();
+@@ -227,12 +241,14 @@
+     if (matches.length !== 1 || !sb?.from) return;
+     const ac = matches[0], snapshot = ac.control_snapshot;
+     if (!ac.aircon_id || !snapshot?.command_id || snapshot.command_status !== 'queued') return;
++    if (_commandReceiptInFlight.has(ac.aircon_id)) return;
+     const previous = _commandReceiptChecks.get(ac.aircon_id);
+     if (previous?.command_id === snapshot.command_id && now - previous.checkedAt < 5000) return;
+     _commandReceiptChecks.set(ac.aircon_id, { command_id: snapshot.command_id, checkedAt: now });
++    _commandReceiptInFlight.add(ac.aircon_id);
+     try {
+-      const { data: command, error } = await sb.from('ecotrack_device_commands').select('id,node_id,kind,payload,status,result')
+-        .eq('id', snapshot.command_id).maybeSingle();
++      const { data: command, error } = await readCloudWithDeadline(sb.from('ecotrack_device_commands').select('id,node_id,kind,payload,status,result')
++        .eq('id', snapshot.command_id).maybeSingle());
+       if (error || command?.id !== snapshot.command_id || command.node_id !== node.id || command.kind !== 'ac_intent' || command.payload?.aircon_id !== ac.aircon_id) return;
+       const current = system.AirconProfileManager.getAll().find(profile => profile.aircon_id === ac.aircon_id);
+       if (current?.control_snapshot?.command_id !== snapshot.command_id || current.control_snapshot.command_status !== 'queued') return;
+@@ -241,75 +257,24 @@
+         ['failed','expired'].includes(command.status) ? 'failed' : null;
+       if (status) system.AirconProfileManager.updateState(ac.device_id, {}, { ...current.control_snapshot, command_status: status });
+     } catch (_) { /* Preserve queued status until an authenticated cloud receipt is available. */ }
+-  }
+-
++    finally { _commandReceiptInFlight.delete(ac.aircon_id); }
++  }
++
++  let _backgroundReadPending = false;
+   async function stepBackgroundTelemetryCadence() {
+-    const assignedNodes = await getAssignedNodesWithSchedule();
+-    if (!assignedNodes.length) return;
+-
+-    // The cloud receiver writes its actual reports. Browser timers must not mint new sensor history from cached node snapshots.
+-    if (typeof window !== 'undefined' && window.EcoTrackHardwareCloud) {
+-      for (const node of assignedNodes) void reconcilePendingCommandReceipt(node);
+-      return;
+-    }
+-
+-    const now = Date.now();
+-
+-    for (const [index, node] of assignedNodes.entries()) {
+-      if (!isNodeWithinOperatingWindow(node, now)) continue;
+-      void reconcilePendingCommandReceipt(node, now);
+-      const val = parseInt(node.interval_val) || 15;
+-      const unit = (node.interval_unit || 'Minutes').toLowerCase();
+-      let intervalMs = 15 * 60 * 1000;
+-
+-      if (unit.startsWith('second') || unit.startsWith('sec')) {
+-        intervalMs = Math.max(1000, val * 1000);
+-      } else if (unit.startsWith('minute') || unit.startsWith('min')) {
+-        intervalMs = Math.max(1000, val * 60 * 1000);
+-      } else if (unit.startsWith('hour') || unit.startsWith('hr')) {
+-        intervalMs = Math.max(1000, val * 3600 * 1000);
+-      }
+-
+-      const nodeKey = node.name || node.id;
+-      if (_nodeInitialSendAt[nodeKey] === undefined) {
+-        _nodeInitialSendAt[nodeKey] = now + (index * 250) % intervalMs;
+-      }
+-      const lastSend = _nodeLastSendTime[nodeKey];
+-      const isDue = lastSend === undefined ? now >= _nodeInitialSendAt[nodeKey] : now - lastSend >= intervalMs;
+-      if (isDue) {
+-        _nodeLastSendTime[nodeKey] = now;
+-
+-        // Log the last reported node readings at the configured cadence.
+-        const actualPacket = {
+-          id: node.name || node.id,
+-          name: node.name || node.id,
+-          pb_id: node.id,
+-          telemetry_id: `telem_cadence_${node.id}_${Math.floor(now / intervalMs)}`,
+-          temp: measurement(node.temp),
+-          battery: measurement(node.battery),
+-          rssi: measurement(node.rssi),
+-          status: node.status || 'offline',
+-          ac_on: node.ac_on ?? node.acOn ?? node.power_state,
+-          intervalVal: val,
+-          intervalUnit: node.interval_unit || 'Minutes',
+-          wake_time: node.wake_time, sleep_time: node.sleep_time,
+-          room_id: node.room_id || null
+-        };
+-        if (typeof window !== 'undefined' && typeof window.evaluateRulesForTelemetry === 'function') {
+-          try {
+-            Promise.resolve(window.evaluateRulesForTelemetry(actualPacket)).catch(() => {});
+-          } catch (_) {}
+-        }
+-        saveNodeTelemetryToSqlite(actualPacket).catch(() => {});
+-      }
+-    }
++    if (_backgroundReadPending) return;
++    _backgroundReadPending = true;
++    try {
++      const assignedNodes = await getAssignedNodesWithSchedule();
++      await Promise.all(assignedNodes.map(node => reconcilePendingCommandReceipt(node)));
++    } finally { _backgroundReadPending = false; }
+   }
+ 
+   function startBackgroundTelemetryCadence() {
+     if (_bgCadenceTimer) return;
+-    // Quarter-second checks preserve startup offsets so saves stay within one debounce window.
++    // Only reconcile delivery receipts; new telemetry comes from actual received reports.
+     stepBackgroundTelemetryCadence();
+-    _bgCadenceTimer = setInterval(stepBackgroundTelemetryCadence, 250);
++    _bgCadenceTimer = setInterval(stepBackgroundTelemetryCadence, 5000);
+   }
+ 
+   if (typeof window !== 'undefined') {
+--- before/desktop/public/js/telemetry-history.js
++++ after/desktop/public/js/telemetry-history.js
+@@ -0,0 +1,31 @@
++(function (root) {
++  'use strict';
++  function createReader() {
++    let rows = new Map(), cursor = null, backend = null, pending = null;
++    async function read(url, fetcher) {
++      if (url !== backend) { rows = new Map(); cursor = null; backend = url; }
++      const query = new URLSearchParams({ perPage: '0', sort: '-created', history: '1' });
++      if (cursor) query.set('cursor', cursor);
++      const response = await fetcher(`${url}/api/telemetry?${query}`);
++      if (!response.ok) throw new Error(`Telemetry request failed (HTTP ${response.status})`);
++      const data = await response.json();
++      if (!Array.isArray(data.items)) throw new Error('Telemetry response must contain an items array');
++      const next = data.history_full === false ? new Map(rows) : new Map();
++      for (const row of data.items) {
++        if (!row || typeof row.id !== 'string' || !row.id) throw new Error('Telemetry row is missing its identity');
++        next.set(row.id, row);
++      }
++      if (Number.isInteger(data.history_total) && next.size !== data.history_total) {
++        cursor = null;
++        throw new Error('Telemetry history changed while loading. Retry to refresh the complete snapshot.');
++      }
++      rows = next; cursor = data.history_cursor || null;
++      return { ...data, items: [...rows.values()].sort((a, b) => String(b.created).localeCompare(String(a.created)) || b.id.localeCompare(a.id)) };
++    }
++    return (url, fetcher) => {
++      if (!pending) pending = read(url, fetcher).finally(() => { pending = null; });
++      return pending;
++    };
++  }
++  root.EcoTrackTelemetryHistory = { createReader, read: createReader() };
++})(typeof window !== 'undefined' ? window : globalThis);
+--- before/desktop/backend/app.py
++++ after/desktop/backend/app.py
+@@ -81,6 +81,17 @@
+             conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_local_reset (
+                 id INTEGER PRIMARY KEY CHECK (id = 1), deleted_through TEXT NOT NULL
+             )''')
++            # Inserts append rowids. Any edit/deletion invalidates incremental
++            # snapshots, including backfilled imports and rowid reuse after clears.
++            conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_history_generation (
++                id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL
++            )''')
++            conn.execute('INSERT OR IGNORE INTO telemetry_history_generation VALUES (1, ?)', (uuid.uuid4().hex,))
++            for operation in ('UPDATE', 'DELETE'):
++                conn.execute(f'''CREATE TRIGGER IF NOT EXISTS telemetry_history_{operation.lower()}
++                    AFTER {operation} ON telemetry BEGIN
++                    UPDATE telemetry_history_generation SET token=lower(hex(randomblob(16))) WHERE id=1;
++                    END''')
+         print(f"[*] SQLite3 Sensor Logs Database initialized at: {SQLITE_DB_PATH}")
+     finally:
+         conn.close()
+@@ -495,6 +506,13 @@
+             if page < 1 or per_page < 0 or column not in TELEMETRY_FIELDS:
+                 raise ValueError('Invalid telemetry pagination or sort')
+             filter_sql, filter_params = compile_telemetry_filter(request.args.get('filter'))
++            history = request.args.get('history') == '1'
++            cursor = request.args.get('cursor', '')
++            if cursor and not re.fullmatch(r'[0-9a-f]{32}:\d+', cursor):
++                raise ValueError('Invalid history cursor')
++            if history and (per_page != 0 or page != 1 or any(request.args.get(k) for k in
++                    ('filter', 'node_id', 'node', 'sensor_name', 'date', 'start_time', 'end_time'))):
++                raise ValueError('Incremental history requires an unfiltered complete snapshot')
+         except (ValueError, TypeError) as error:
+             return {'error': str(error)}, 400
+         node_id = request.args.get('node_id', request.args.get('node', None))
+@@ -544,6 +562,18 @@
+ 
+         conn = get_db_connection()
+         try:
++            conn.execute('BEGIN')  # The rows and cursor must describe the same snapshot.
++            generation = conn.execute('SELECT token FROM telemetry_history_generation WHERE id=1').fetchone()[0]
++            history_count, last_rowid = conn.execute('SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM telemetry').fetchone()
++            history_cursor = f'{generation}:{last_rowid}'
++            full_history = True
++            if history and cursor:
++                token, after = cursor.split(':')
++                if token == generation and int(after) <= last_rowid:
++                    full_history = False
++                    # Insert before ORDER BY to keep the existing indexed sort contract.
++                    query = query.replace(' ORDER BY ', ' AND rowid > ? ORDER BY ', 1)
++                    params.append(int(after))
+             total_items = conn.execute(count_query, count_params).fetchone()[0]
+ 
+             if per_page > 0:
+@@ -559,6 +589,10 @@
+             return {
+                 "items": items,
+                 "totalItems": total_items,
++                "history_total": history_count,
++                "history_cursor": history_cursor,
++                "history_revision": f'{history_cursor}:{history_count}',
++                "history_full": full_history,
+                 "reset_at": telemetry_reset_at(conn),
+                 "page": page,
+                 "perPage": per_page,
+@@ -621,22 +655,22 @@
+                     if existing is not None:
+                         inserted_items.append(row_to_dict(existing))
+                         continue
+-                    # Management events keep their audit path; routine samples require AC ON.
+-                    if item.get('event_type') != 'schedule_updated' and (analytics_recording_power(item) is not True
+-                            or str(item.get('status') or '').lower() in ('off', 'offline', 'disconnected', 'sleeping', 'asleep')):
+-                        skipped_items += 1
+-                        continue
++                    # Preserve received OFF/unknown samples as evidence, just like cloud
++                    # imports. Only the runtime calculation decides which intervals are
++                    # confirmed ON; selected controls must never discard an OFF boundary.
+ 
+                     conn.execute("""
+                         INSERT OR IGNORE INTO telemetry (
+                             id, node_id, sensor_name, room_name, floor_name, building_name,
+                             aircon_type, temperature, pressure, battery, rssi, status, created, updated,
+-                            ac_on, interval_seconds, aircon_id, control_snapshot, ac_state
+-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                            ac_on, interval_seconds, aircon_id, control_snapshot, ac_state,
++                            event_type, wake_time, sleep_time
++                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     """, (
+                         record_id, node_id, sensor_name, room_name, floor_name, building_name,
+                         aircon_type, temperature, pressure, battery, rssi, status, created, updated,
+-                        ac_on, interval_seconds, item.get("aircon_id"), serialize_control_snapshot(item.get("control_snapshot")), item.get("ac_state")
++                        ac_on, interval_seconds, item.get("aircon_id"), serialize_control_snapshot(item.get("control_snapshot")), item.get("ac_state"),
++                        item.get('event_type'), item.get('wake_time'), item.get('sleep_time')
+                     ))
+ 
+                     inserted_items.append({
+--- before/desktop/scripts/test_cloud_telemetry_sync.py
++++ after/desktop/scripts/test_cloud_telemetry_sync.py
+@@ -105,20 +105,21 @@
+             self.assertEqual(get.call_args.kwargs['params']['created'], 'gt.' + reset['reset_at'])
+         self.assertEqual(self.api.get('/api/telemetry').get_json()['totalItems'], 2)
+ 
+-    def test_off_and_unknown_power_skip_routine_local_writes(self):
++    def test_received_off_and_unknown_power_are_preserved(self):
+         for row in [self.row('off', ac_on=False), self.row('unknown'),
+                     self.row('sleeping', ac_on=True, status='sleeping')]:
+             response = self.api.post('/api/telemetry', json=row)
+-            self.assertEqual(response.status_code, 200)
+-            self.assertEqual(response.get_json()['count'], 0)
+-            self.assertEqual(response.get_json()['skipped'], 1)
+-        self.assertEqual(self.api.get('/api/telemetry').get_json()['totalItems'], 0)
++            self.assertEqual(response.status_code, 201)
++            self.assertEqual(response.get_json()['ac_on'], row.get('ac_on'))
++            self.assertEqual(response.get_json()['status'], row.get('status', 'unknown'))
++        self.assertEqual(self.api.get('/api/telemetry').get_json()['totalItems'], 3)
+ 
+-    def test_newer_remote_power_controls_recording_without_fake_feedback(self):
++    def test_remote_commands_do_not_override_measured_power_or_suppress_rows(self):
+         snapshot = {'desired_state': {'power': True}, 'commanded_at': '2026-10-10T09:00:00Z',
+                     'observed_remote_state': {'power': False}, 'observed_remote_at': '2026-10-10T09:01:00Z'}
+         response = self.api.post('/api/telemetry', json=self.row('remote_off', ac_on=True, control_snapshot=snapshot))
+-        self.assertEqual(response.get_json()['count'], 0)
++        self.assertEqual(response.status_code, 201)
++        self.assertEqual(response.get_json()['ac_on'], True)
+         snapshot['desired_state']['power'] = False
+         snapshot['observed_remote_state']['power'] = True
+         response = self.api.post('/api/telemetry', json=self.row('remote_on', control_snapshot=snapshot))
+@@ -127,8 +128,9 @@
+         self.assertEqual(response.get_json()['control_snapshot'], snapshot)
+         snapshot['observed_remote_field_at'] = {'power': '2026-10-10T08:00:00Z'}
+         response = self.api.post('/api/telemetry', json=self.row('old_remote', control_snapshot=snapshot))
+-        self.assertEqual(response.get_json()['count'], 0)
+-        self.assertEqual(self.api.get('/api/telemetry').get_json()['totalItems'], 1)
++        self.assertEqual(response.status_code, 201)
++        self.assertIsNone(response.get_json()['ac_on'])
++        self.assertEqual(self.api.get('/api/telemetry').get_json()['totalItems'], 3)
+ 
+     def test_node_delete_does_not_reset_the_whole_history(self):
+         backend.import_cloud_telemetry([self.row(), self.row('other', node_id='node-7')])
+--- before/desktop/scripts/test_dashboard_workflows.js
++++ after/desktop/scripts/test_dashboard_workflows.js
+@@ -3,7 +3,7 @@
+ const fs = require('node:fs');
+ const path = require('node:path');
+ const vm = require('node:vm');
+-const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
++const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8').replace(/\r\n/g, '\n');
+ const section = (file, start, end) => {
+   const source = read(file);
+   const first = source.indexOf(start);
+@@ -72,7 +72,7 @@
+   const runtime = logs.calculateRuntimeFromLogs([heartbeat('n1'), heartbeat('n2'), heartbeat('unknown')]);
+   assert.equal(runtime.nodeRuntimes.n1, 30 / 3600);
+   assert.equal(runtime.nodeRuntimes.n2, 5 / 60);
+-  assert.equal(runtime.nodeRuntimes.unknown, 30 / 3600);
++  assert.equal(runtime.nodeRuntimes.unknown, 0);
+ 
+   let database = client(q => q.operation === 'update' ? { data: [{ id: 'canonical' }] } : { data: q.field === 'id' ? null : { id: 'canonical' } });
+   let result = await ipcHandler('node-update-schedule', database)(null, { id: 'stale', name: 'node-4', wakeTime: '08:00', sleepTime: '18:00', intervalVal: 30, intervalUnit: 'Seconds' });
+@@ -96,27 +96,27 @@
+   const scheduler = environment({ fetch: async () => { hardwareCalls++; return { json: async () => ({}) }; } });
+   scheduler.window.EcoToast = { success: text => toasts.push(['success', text]), error: text => toasts.push(['error', text]) };
+   scheduler.window.EcoDataBus = { invalidate() { refreshes++; } };
+-  scheduler.window.electron = { invoke: async () => ({ success: false, error: 'Permission denied' }) };
+-  scheduler.document.getElementById = id => ({ value: id.startsWith('wake-') ? '08:00' : id.startsWith('sleep-') ? '18:00' : id.startsWith('interval-val-') ? '30' : 'Seconds' });
++  scheduler.window.EcoTrackHardwareCloud = { describe: () => 'offline', listStatus: async () => [], request: async () => { throw Error('Permission denied'); } };
++  scheduler.document.getElementById = id => ({ classList: {toggle(){}}, value: id.startsWith('wake-') ? '08:00' : id.startsWith('sleep-') ? '18:00' : id.startsWith('interval-val-') ? '30' : 'Seconds' });
+   vm.runInContext(read('public/js/scheduler.js'), scheduler);
+   vm.runInContext("savedRooms = { r1: { name: 'Room A', nodes: [{ id: 'node-4', pb_id: 'canonical' }] } };", scheduler);
+   await scheduler.applyNodeSchedule('node-4');
+   assert.equal(toasts[0][0], 'error');
+   assert.equal(refreshes, 0);
+   assert.equal(hardwareCalls, 0);
+-  scheduler.window.electron.invoke = async () => ({ success: true, data: [{ id: 'canonical' }] });
++  scheduler.window.EcoTrackHardwareCloud.request = async () => ({ id: 'command-1', node_id: 'canonical' });
+   await scheduler.applyNodeSchedule('node-4');
+   assert.equal(toasts.at(-1)[0], 'success');
+   assert(refreshes > 0);
+-  assert.equal(hardwareCalls, 1);
++  assert.equal(hardwareCalls, 0, 'Schedules use cloud commands without direct LAN writes');
+   let schedulerData = { buildingRecords: [{ id: 'b1', name: 'Campus' }], floorRecords: [], roomRecords: [{ id: 'r1', name: 'Room A', building_id: 'b1' }], nodeRecords: [{ id: 'canonical', name: 'node-4', room_id: 'r1', wake_time: '06:00', sleep_time: '22:00', interval_val: 15, interval_unit: 'Minutes' }] };
+   scheduler.window.ensureLocationHierarchy = shared.window.ensureLocationHierarchy;
+   scheduler.window.EcoDataBus.getCached = () => schedulerData;
+   scheduler.window.EcoDataBus.query = async () => schedulerData;
+   scheduler.document.getElementById = () => null;
+   await scheduler.loadSchedulerWithSWR(true);
+-  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].wakeTime", scheduler), '08:00');
+-  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].intervalVal", scheduler), 30);
++  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].wakeTime", scheduler), '06:00');
++  assert.equal(vm.runInContext("savedRooms.r1.nodes[0].intervalVal", scheduler), 15);
+   schedulerData = { buildingRecords: [], floorRecords: [], roomRecords: [], nodeRecords: [] };
+   await scheduler.loadSchedulerWithSWR(true);
+   assert.equal(vm.runInContext('Object.keys(savedRooms).length', scheduler), 0);
+--- before/desktop/scripts/test_maintenance_photo_render.js
++++ after/desktop/scripts/test_maintenance_photo_render.js
+@@ -0,0 +1,118 @@
++'use strict';
++// Actual app bundles/renderers with isolated browser storage and intercepted cloud APIs.
++// Every person, record and command response below is a test fixture, never production data.
++const {chromium}=require('playwright');
++const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
++const desktop=path.resolve(__dirname,'..'),mobile=path.resolve(desktop,'../EcoTrackAppMobileNew-master-control');
++const out=path.join(desktop,'reports/panel-repairs/photo-browser');fs.mkdirSync(out,{recursive:true});
++const mobileWeb=path.join(mobile,'artifacts/panel-repairs/build');
++const userId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
++const profile={id:'panel-staff',authUserId:userId,name:'Panel Test Technician',email:'panel@example.invalid',phone:'',role:'HVAC Technician',userType:'staff',assignment:'Demo Room'};
++const authUser={id:userId,aud:'authenticated',role:'authenticated',email:profile.email,app_metadata:{provider:'email',providers:['email']},user_metadata:{},created_at:'2026-10-01T00:00:00Z'};
++const encode=data=>Buffer.from(JSON.stringify(data)).toString('base64url');
++const token=encode({alg:'HS256',typ:'JWT'})+'.'+encode({sub:userId,aud:'authenticated',role:'authenticated',exp:Math.floor(Date.now()/1000)+3600})+'.fixture';
++const session={access_token:token,refresh_token:'isolated-fixture',token_type:'bearer',expires_in:3600,expires_at:Math.floor(Date.now()/1000)+3600,user:authUser};
++const urlText=fs.readFileSync(path.join(mobile,'.env'),'utf8').match(/^EXPO_PUBLIC_SUPABASE_URL\s*=\s*["']?([^\s"']+)/m)?.[1];
++const project=urlText?new URL(urlText).hostname.split('.')[0]:'ynopdmfhngooknybyahq';
++function records(){return {
++ staff:[{id:profile.id,auth_user_id:userId,name:profile.name,email:profile.email,room_id:'room-one',room_name:'Demo Room',assignment:'Demo Room',status:'offline'}],
++ rooms:[{id:'room-one',name:'Demo Room',floor_id:'floor-one',node_limit:10}],floors:[{id:'floor-one',name:'Demo Floor',building_id:'building-one'}],buildings:[{id:'building-one',name:'Demo Building'}],
++ nodes:[{id:'node-one',name:'Demo Controller',room_id:'room-one',aircon_type:'Split Type',temp:null,photo_url:JSON.stringify({addedByUserId:profile.id})}],
++ aircons:[{id:'ac-one',asset_tag:'DEMO-AC',name:'Demo AC',controller_node_id:'node-one',node_id:'node-one',room_id:'room-one',brand:'TCL',aircon_type:'Split Type',protocol_name:'TCL112AC'}],
++ ecotrack_device_state:[{node_id:'node-one',device_id:'esp32s3-111111111111',last_seen:new Date().toISOString(),capabilities:{cloud_protocol:1},latest_ir:null}],
++ maintenance_reports:[{id:'MR-PHOTO',aircon_id:'ac-one',aircon_name:'Demo AC',room_id:'room-one',staff_id:profile.id,staff_name:profile.name,
++ status:'In Progress',type:'Preventive Maintenance',tasks:[{id:'task-photo',name:'Inspect filter photo',status:'In Progress',photoUris:['storage://maintenance-photos/fixture/photo.png']}]}],mobile_notifications:[],rules:[],telemetry:[],notifications:[],ir_profiles:[],ir_captures:[],
++};}
++const mime=file=>({'.html':'text/html','.js':'application/javascript','.css':'text/css','.png':'image/png','.svg':'image/svg+xml','.ico':'image/x-icon','.json':'application/json','.ttf':'font/ttf'})[path.extname(file)]||'application/octet-stream';
++const server=http.createServer((req,res)=>{
++ const url=new URL(req.url,'http://localhost');const isMobile=!url.pathname.startsWith('/desktop');
++ const root=isMobile?mobileWeb:path.join(desktop,'public');
++ const rel=decodeURIComponent(url.pathname.replace(/^\/desktop\/?/,'').replace(/^\//,''));
++ let file=path.resolve(root,rel||'index.html');
++ if(!file.startsWith(root+path.sep)&&file!==root){res.writeHead(403);return res.end();}
++ if(!fs.existsSync(file)||fs.statSync(file).isDirectory())file=isMobile?path.join(root,'index.html'):file;
++ if(!fs.existsSync(file)){res.writeHead(404);return res.end();}
++ res.setHeader('content-type',mime(file));res.end(fs.readFileSync(file));
++});
++async function main(){
++ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const base='http://127.0.0.1:'+server.address().port;
++ const browser=await chromium.launch({executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
++ const results=[];
++ try{
++  for(const app of ['mobile']){
++   const context=await browser.newContext({viewport:app==='mobile'?{width:390,height:844}:{width:1460,height:1000},colorScheme:'dark',reducedMotion:'reduce'});
++   await context.addInitScript(({session,project,profile})=>{
++    localStorage.setItem('sb-'+project+'-auth-token',JSON.stringify(session));
++    localStorage.setItem('ecoTrack_auth_token',session.access_token);localStorage.setItem('ecoTrack_refresh_token',session.refresh_token);
++    localStorage.setItem('ecoTrack_profile_user',JSON.stringify(profile));localStorage.setItem('ecoTrackTheme','dark');
++   },{session,project,profile});
++   let stage='loaded',gateRelease;const cloudCalls=[];let signCalls=0, releasePhoto;
++   const page=await context.newPage();const errors=[];
++   page.on('pageerror',error=>errors.push(error.message));
++   if(page.routeWebSocket)await page.routeWebSocket('**/*',socket=>socket.close());
++   await page.route('**/*',async route=>{
++    const request=route.request(),url=new URL(request.url());
++    if(request.url().startsWith(base)){
++     return route.continue();
++    }
++    if(!/^https?:/.test(request.url()))return route.continue();
++    cloudCalls.push({path:url.pathname,method:request.method()});
++    const json=(data,status=200,headers={})=>route.fulfill({status,contentType:'application/json',headers:{'access-control-allow-origin':'*',...headers},body:JSON.stringify(data)});
++    if(request.method()==='OPTIONS')return route.fulfill({status:204,headers:{'access-control-allow-origin':'*','access-control-allow-headers':'*','access-control-allow-methods':'*'}});
++    if(request.method()==='POST' && url.pathname.startsWith('/storage/v1/object/sign/')){
++     signCalls++; if(signCalls===1)await new Promise(resolve=>releasePhoto=resolve);
++     return json({signedURL:'/object/sign/maintenance-photos/fixture/result-'+signCalls+'.png?token=fixture'});
++    }
++    if(url.pathname.includes('/storage/v1/object/sign/maintenance-photos/fixture/result-')){
++     if(signCalls===1)return route.fulfill({status:404,body:''});
++     return route.fulfill({status:200,contentType:'image/png',body:fs.readFileSync(path.join(mobile,'assets/images/ecoTrack.png'))});
++    }
++    if(url.pathname==='/auth/v1/user')return json(authUser);
++    if(url.pathname==='/auth/v1/token')return json(session);
++    if(url.pathname.includes('/rpc/ecotrack_my_profile'))return json(profile);
++    if(url.pathname.includes('/rpc/ecotrack_list_notifications')){
++     if(stage==='slow')await new Promise(resolve=>{gateRelease=(previous=>()=>{previous?.();resolve();})(gateRelease);});
++     return json({items:[],next_cursor:null});
++    }
++    if(url.pathname.includes('/rpc/ecotrack_admin_list_staff'))return json(records().staff);
++    if(url.pathname.startsWith('/rest/v1/')&&!url.pathname.includes('/rpc/')){
++     if(stage==='slow')await new Promise(resolve=>{gateRelease=(previous=>()=>{previous?.();resolve();})(gateRelease);});
++     if(stage==='failed')return json({message:'Fixture network failure',code:'fixture_failure'},503);
++     const table=url.pathname.split('/').pop();let rows=stage==='empty'?[]:records()[table]||[];
++     for(const [key,value]of url.searchParams){if(value.startsWith('eq.'))rows=rows.filter(row=>String(row[key])===value.slice(3));if(value.startsWith('gt.'))rows=rows.filter(row=>String(row[key])>value.slice(3));}
++     const count=rows.length;const limit=Number(url.searchParams.get('limit')||250);rows=rows.slice(0,limit);
++     if(request.headers().accept?.includes('application/vnd.pgrst.object'))return json(rows[0]||null);
++     return json(rows,200,{'content-range':rows.length?'0-'+(rows.length-1)+'/'+count:'*/0'});
++    }
++    if(url.pathname==='/api/health')return json({status:'healthy',models_available:['random_forest']});
++    if(url.pathname==='/api/telemetry')return json({items:[],totalItems:0,page:1,perPage:50,totalPages:0});
++    if(/tailwind/.test(url.hostname))return route.fulfill({contentType:'application/javascript',body:fs.readFileSync(path.join(desktop,'scratch/step3-qa-tailwind.js'),'utf8')});
++    // All unexpected remote calls, including real cloud/IR writes, are blocked.
++    return json({message:'Blocked by isolated panel simulation'},403);
++   });
++   await page.goto(base+'/Maintenance?reportId=MR-PHOTO');
++   await page.getByText('Inspect filter photo',{exact:true}).waitFor({timeout:15000});
++   assert.equal(signCalls,0,'Closed photo editors must not request private image URLs');
++   results.push({app,stage:'report renders without signing hidden photos',page_errors:[...errors]});
++   await page.getByText('Inspect filter photo',{exact:true}).click();
++   await page.getByLabel('Loading photo').waitFor({timeout:15000});
++   await page.waitForFunction(()=>document.querySelector('[aria-label="Loading photo"]'));
++   await page.screenshot({path:path.join(out,'photo-loading.png')});
++   assert.equal(signCalls,1);releasePhoto();
++   await page.getByRole('button',{name:'Retry loading photo'}).waitFor({timeout:15000});
++   await page.screenshot({path:path.join(out,'photo-error.png')});
++   results.push({app,stage:'failed photo shows retry without blocking the editable report',page_errors:[...errors]});
++   await page.getByRole('button',{name:'Retry loading photo'}).click();
++   await page.waitForFunction(()=>[...document.images].some(image=>image.src.includes('result-2.png')&&image.complete&&image.naturalWidth>0));
++   await page.waitForTimeout(600);
++   assert.equal(signCalls,2,'Retry must renew the signature');
++   assert.equal(await page.getByRole('button',{name:'Retry loading photo'}).count(),0);
++   await page.screenshot({path:path.join(out,'photo-recovered.png')});
++   assert.deepEqual(errors,[]);
++   results.push({app,stage:'retry signs again and displays the photo',page_errors:[...errors]});
++   await context.close();
++  }
++ }finally{await browser.close();await new Promise(resolve=>server.close(resolve));fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(results,null,2));}
++ console.log(JSON.stringify({checks:results.length,page_errors:results.filter(row=>row.page_errors.length),output:out},null,2));
++}
++main().catch(error=>{console.error(error);server.close();process.exitCode=1;});
+--- before/desktop/scripts/test_native_startup.js
++++ after/desktop/scripts/test_native_startup.js
+@@ -0,0 +1,54 @@
++'use strict';
++// Actual Electron, temporary profile, local pages only. No live login or database writes.
++const path = require('node:path'), fs = require('node:fs'), os = require('node:os');
++const { spawn } = require('node:child_process');
++const assert = require('node:assert/strict');
++if (!process.versions.electron) {
++  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ecotrack-native-'));
++  const child = spawn(require('electron'), [__filename, '--noerrdialogs'], {
++    env: { ...process.env, ECOTRACK_TEST_PROFILE: profile }, windowsHide: true,
++    stdio: ['ignore', 'pipe', 'pipe']
++  });
++  const output = [];
++  for (const stream of [child.stdout, child.stderr]) stream.on('data', data => output.push(data.toString()));
++  const timer = setTimeout(() => { child.kill(); }, 40000);
++  child.on('exit', (code, signal) => {
++    clearTimeout(timer);
++    const dir = path.join(__dirname, '../reports/panel-repairs'); fs.mkdirSync(dir, { recursive: true });
++    fs.writeFileSync(path.join(dir, 'native-startup.log'), output.join(''));
++    console.log(output.join('').slice(-5000));
++    console.log(JSON.stringify({ code, signal, profile })); process.exitCode = code || (signal ? 1 : 0);
++  });
++} else {
++  const { app, BrowserWindow, session } = require('electron');
++  app.setPath('userData', process.env.ECOTRACK_TEST_PROFILE);
++  app.on('browser-window-created', (_event, window) => window.hide());
++  app.once('ready', () => session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
++    callback({ cancel: /^https?:|^wss?:/i.test(details.url) });
++  }));
++  require('../src/main.js');
++  if (!process.argv.includes('--second-test-instance')) {
++    app.whenReady().then(async () => {
++      const window = BrowserWindow.getAllWindows()[0];
++      assert.ok(window);
++      let loads = 0;
++      window.webContents.on('did-finish-load', () => loads++);
++      if (window.webContents.isLoading()) await new Promise(resolve => window.webContents.once('did-finish-load', resolve));
++      assert.match(window.webContents.getURL(), /login\.html$/);
++      const preferences = window.webContents.getLastWebPreferences();
++      assert.equal(preferences.contextIsolation, true); assert.equal(preferences.nodeIntegration, false);
++      assert.equal(await window.webContents.executeJavaScript('typeof window.electron'), 'object');
++      const before = loads;
++      const secondEvent = new Promise(resolve => app.once('second-instance', resolve));
++      const second = spawn(process.execPath, [__filename, '--second-test-instance', '--noerrdialogs'], {
++        env: process.env, windowsHide: true, stdio: 'ignore'
++      });
++      const exit = new Promise(resolve => second.once('exit', code => resolve(code)));
++      await secondEvent; assert.equal(await exit, 0);
++      assert.equal(BrowserWindow.getAllWindows().length, 1); assert.equal(loads, before);
++      window.hide();
++      console.log('PASS: native login renderer, isolated preload, single-instance focus without reload, temporary profile.');
++      app.exit(0);
++    }).catch(error => { console.error(error); app.exit(1); });
++  }
++}
+--- before/desktop/scripts/test_panel_workflow_render.js
++++ after/desktop/scripts/test_panel_workflow_render.js
+@@ -4,8 +4,8 @@
+ const {chromium}=require('playwright');
+ const fs=require('node:fs'),path=require('node:path'),http=require('node:http'),assert=require('node:assert/strict');
+ const desktop=path.resolve(__dirname,'..'),mobile=path.resolve(desktop,'../EcoTrackAppMobileNew-master-control');
+-const out=path.join(desktop,'reports/panel-workflow-review/browser');fs.mkdirSync(out,{recursive:true});
+-const mobileWeb=path.join(mobile,'artifacts/panel-workflow-review/build');
++const out=path.join(desktop,'reports/panel-repairs/browser');fs.mkdirSync(out,{recursive:true});
++const mobileWeb=path.join(mobile,'artifacts/panel-repairs/build');
+ const userId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const profile={id:'panel-staff',authUserId:userId,name:'Panel Test Technician',email:'panel@example.invalid',phone:'',role:'HVAC Technician',userType:'staff',assignment:'Demo Room'};
+ const authUser={id:userId,aud:'authenticated',role:'authenticated',email:profile.email,app_metadata:{provider:'email',providers:['email']},user_metadata:{},created_at:'2026-10-01T00:00:00Z'};
+--- before/desktop/scripts/test_rf_frontend_render.js
++++ after/desktop/scripts/test_rf_frontend_render.js
+@@ -5,7 +5,7 @@
+ const assert = require('node:assert/strict'), net = require('node:net');
+ const { spawn } = require('node:child_process'), { pathToFileURL } = require('node:url');
+ const root = path.resolve(__dirname, '..'), read = file => fs.readFileSync(path.join(root, file), 'utf8');
+-const out = path.join(root, 'reports/research-energy-model/frontend');
++const out = path.join(root, 'reports/panel-repairs/prediction-browser');
+ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ecotrack-rf-browser-'));
+ let server, browser;
+ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+--- before/desktop/scripts/test_runtime_engine.js
++++ after/desktop/scripts/test_runtime_engine.js
+@@ -16,7 +16,7 @@
+   return context;
+ }
+ const time = value => new Date(`2026-10-01T${value}+08:00`);
+-const reading = (value, extra = {}) => ({ nodeId: 'n1', timestamp: time(value), status: 'online', acOn: true, temperature: 24, ...extra });
++const reading = (value, extra = {}) => ({ nodeId: 'n1', timestamp: time(value), status: 'online', acOn: true, temperature: 24, intervalSeconds: 30, ...extra });
+ const near = (actual, expected, message) => assert(Math.abs(actual - expected) < 1e-9, `${message}: ${actual} != ${expected}`);
+ 
+ function testCadenceAndEvidence() {
+@@ -27,9 +27,9 @@
+   near(result.runtimeHrs, 0.5, 'Facility span follows observed timestamps and final cadence pulse');
+   near(result.perUnitUtil, 0.5, 'Per-unit average is independent of log count assumptions');
+   near(context.calculateRuntimeFromLogs([reading('06:00:00', { interval_seconds: 30 })]).totalRuntimeSum, 30 / 3600, 'Recorded cadence takes precedence');
+-  near(context.calculateRuntimeFromLogs([reading('06:00:00')]).totalRuntimeSum, 5 / 60, 'Use configured node cadence');
++  near(context.calculateRuntimeFromLogs([reading('06:00:00', { intervalSeconds: undefined })]).totalRuntimeSum, 5 / 60, 'Use configured node cadence');
+   const fallback = engine();
+-  near(fallback.calculateRuntimeFromLogs([reading('06:00:00')]).totalRuntimeSum, 30 / 3600, 'Missing cadence defaults to thirty seconds');
++  near(fallback.calculateRuntimeFromLogs([reading('06:00:00', { intervalSeconds: undefined })]).totalRuntimeSum, 0, 'Missing cadence cannot establish runtime');
+   assert.equal(fallback.calculateRuntimeFromLogs([reading('06:00:00', { acOn: undefined })]).activeUnits, 0, 'Online low-temperature readings are unconfirmed');
+   assert.equal(fallback.getDisplayAcState(reading('06:00:00', { acOn: undefined, temperature: null })), 'STATE NOT RECORDED');
+   assert.equal(fallback.getDisplayAcState(reading('06:00:00', { temperature: 35 })), 'ON', 'Ambient temperature cannot override confirmed power');
+@@ -49,7 +49,7 @@
+   const result = context.calculateRuntimeFromLogs([reading('06:00:00'), reading('06:10:00')]);
+   near(result.nodeRuntimes.n1, 60 / 3600, 'A ten-minute outage contributes two pulses, not the idle gap');
+   near(result.facilityActiveHrs, 60 / 3600, 'Facility active time excludes the gap');
+-  near(result.runtimeHrs, 10.5 / 60, 'Observed operational span is separate from accumulated utilization');
++  near(result.runtimeHrs, 60 / 3600, 'Facility active time excludes unobserved gaps');
+   const stopped = context.calculateRuntimeFromLogs([reading('06:00:00'), reading('06:00:20', { acOn: false }), reading('06:30:00'), reading('06:30:15', { acOn: false })]);
+   near(stopped.totalRuntimeSum, 35 / 3600, 'Explicit off readings end on sessions');
+   const fleet = context.calculateRuntimeFromLogs([reading('06:00:00'), reading('06:00:30'), reading('06:00:15', { nodeId: 'n2' }), reading('06:00:45', { nodeId: 'n2' })]);
+@@ -87,7 +87,7 @@
+   Object.assign(context, { AbortController, currentPeriod: 'daily', currentNodeFilter: '', BACKEND_URL: 'http://backend',
+     selectedDateKey: '2026-10-01', nodeDataLogs: [], controlNameMap: {},
+     getPreviousPeriodDateKey: () => '2026-09-30', getDefaultDateKey: () => '2026-10-01',
+-    currentEvaluatedKwh: null, currentEvaluatedCost: null, currentAnalyticsResult: null, getActiveTariffRate: () => 10,
++    formatTariffRate: () => '₱10/kWh', currentEvaluatedKwh: null, currentEvaluatedCost: null, currentAnalyticsResult: null, getActiveTariffRate: () => 10,
+     getAirconFleetCount: () => ({ total: 1, online: 1 }), updateKpiCardsTrends() {}, updateAnalyticsCharts() {},
+     document: { getElementById: () => null }, fetch: async () => { requests++; throw new Error('No prediction expected'); } });
+   vm.runInContext(section('let currentPredictionSession', '// Convert 24-hour'), context);
+@@ -104,6 +104,7 @@
+     ac_on: 1, interval_seconds: 30, wake_time: '06:00', sleep_time: '18:00' }];
+   Object.assign(context, { window: {}, document: { getElementById: () => null }, pb: null,
+     nodeDataLogs: [], controlNameMap: {}, locationMap: {}, globalAirconMap: {}, lastTelemetryTotalItems: null,
++    getTelemetryRevision: data => JSON.stringify(data),
+     fetch: async () => ({ ok: true, json: async () => ({ items: records, totalItems: 1 }) }) });
+   vm.runInContext(section('async function fetchLogsFromDB(', '// Get filtered logs'), context);
+   await context.fetchLogsFromDB(true);
+--- before/desktop/scripts/test_telemetry_cadence.js
++++ after/desktop/scripts/test_telemetry_cadence.js
+@@ -29,7 +29,7 @@
+   } };
+   const window = { supabaseClient: sb, dispatchEvent: event => events.push(event), addEventListener() {} };
+   const context = vm.createContext({ window, document: { readyState: 'loading', addEventListener() {} }, Date: Clock,
+-    console, setTimeout() {}, setInterval() {}, CustomEvent: class { constructor(type, args) { this.type = type; this.detail = args.detail; } },
++    console, AbortController, clearTimeout, setTimeout() {}, setInterval() {}, CustomEvent: class { constructor(type, args) { this.type = type; this.detail = args.detail; } },
+     fetch: async (_, options) => {
+       writes.push(JSON.parse(options.body));
+       return { ok: !failWrites, status: failWrites ? 500 : 201, json: async () => ({ id: `saved_${writes.length}` }) };
+@@ -37,67 +37,32 @@
+   vm.runInContext(read('public/js/node-sync.js'), context);
+   const flush = () => new Promise(setImmediate);
+   const step = window.EcoTrackNodeSync.stepBackgroundTelemetryCadence;
+-  await step(); await flush();
+-  assert.equal(writes.length, 1, 'Cadence logging must work without a rule evaluator');
+-  assert.equal(writes[0].temperature, 25.2);
+-  assert.equal(writes[0].node_id, 'node_db_1');
+-  assert.equal(writes[0].room_name, 'Lab');
+-  assert.equal(writes[0].interval_seconds, 30);
+-  assert.equal(writes[0].ac_on, true, 'Preserve the explicit ON setting used to authorize recording');
+-  assert.equal(events[0].type, 'ecotrack:telemetry-saved');
+-  assert.equal(events[0].detail.sensor_name, 'node-1');
+-  now += 29000;
+-  await step(); await flush();
+-  assert.equal(writes.length, 1, 'Do not log before the 30-second interval');
+-  now += 1000;
+-  window.evaluateRulesForTelemetry = () => { throw new Error('Rule evaluator unavailable'); };
+-  await step(); await flush();
+-  assert.equal(writes.length, 2, 'Rule failures must not interrupt logging');
+-  assert.notEqual(writes[0].id, writes[1].id);
+-  failWrites = true;
+-  now += 30000;
+-  await step(); await flush();
+-  assert.equal(events.length, 2, 'Failed SQLite writes must not dispatch success events');
+-  failWrites = false;
+-  now += 30000;
+-  await step(); await flush();
+-  assert.equal(events.length, 3);
+-  nodes = [];
+-  now += 30000;
+-  await step(); await flush();
+-  assert.equal(writes.length, 4, 'Removed/unassigned nodes must stop generating cadence rows');
+-
+-  nodes = Array.from({ length: 11 }, (_, index) => ({ id: `burst_db_${index}`, name: `burst-${index}`,
+-    room_id: 'room1', interval_val: 30, interval_unit: 'Seconds', temp: 25, pressure: 0.4, ac_on: true, status: 'online' }));
+-  now += 15000;
+-  const beforeBurst = writes.length;
+-  await step(); await flush();
+-  assert.equal(writes.length - beforeBurst, 1, 'Only the first controller is due at startup');
+-  for (let count = 2; count <= 11; count++) {
+-    now += 250;
+-    await step(); await flush();
+-    assert.equal(writes.length - beforeBurst, count, 'Quarter-second ticks retain staggered controller phases');
+-  }
+-  await window.EcoTrackNodeSync.saveNodeTelemetryToSqlite({ id: 'confirmed-state', room_name: 'Lab', aircon_type: 'Split Type',
+-    temp: 25, ac_on: false, intervalVal: 2, intervalUnit: 'Minutes' });
+-  assert.equal(writes.length, beforeBurst + 11, 'An OFF sample must not produce a write or save event');
+-  vm.runInContext(read('public/js/aircon-state.js'), context);
+-  const basePacket = { id: 'guarded', room_name: 'Lab', aircon_type: 'Split Type', ac_on: true, intervalVal: 2, intervalUnit: 'Minutes' };
+-  const off = { desired_state: { power: true }, commanded_at: '2026-10-10T09:00:00Z',
+-    observed_remote_state: { power: false }, observed_remote_at: '2026-10-10T09:01:00Z' };
+-  const beforeOff = writes.length;
+-  await window.EcoTrackNodeSync.saveNodeTelemetryToSqlite({ ...basePacket, control_snapshot: off });
+-  await window.EcoTrackNodeSync.saveNodeTelemetryToSqlite({ ...basePacket, id: 'unknown', ac_on: undefined });
+-  await window.EcoTrackNodeSync.saveNodeTelemetryToSqlite({ ...basePacket, id: 'sleeping', status: 'sleeping' });
+-  assert.equal(writes.length, beforeOff, 'Remote OFF, unknown power and sleeping hardware do not create analytics');
+-  await window.EcoTrackNodeSync.saveNodeTelemetryToSqlite({ ...basePacket, control_snapshot: { ...off,
+-    desired_state: { power: false }, observed_remote_state: { power: true } } });
+-  assert.equal(writes.length, beforeOff + 1, 'A newer remote ON resumes recording without a page reload');
+-  assert.equal(writes.at(-1).interval_seconds, 120, 'Save the cadence used by the reading');
+-  window.EcoTrackHardwareCloud = {};
+-  now += 30000;
+-  await step(); await flush();
+-  assert.equal(writes.length, beforeOff + 1, 'Cloud heartbeats never mint duplicate desktop samples');
++  for (let n=0;n<5;n++) { await step(); await flush(); now+=30000; }
++  assert.equal(writes.length, 0, 'Cached node readings cannot become new measurements on a timer');
++  const save=window.EcoTrackNodeSync.saveNodeTelemetryToSqlite;
++  const packet={id:'node-1',pb_id:'node_db_1',temp:25.2,pressure:0.4,battery:3.9,rssi:-61,
++    ac_on:true,status:'online',intervalVal:30,intervalUnit:'Seconds',telemetry_id:'real-1'};
++  await save(packet);
++  assert.equal(writes.length,1); assert.equal(writes[0].temperature,25.2);
++  assert.equal(writes[0].node_id,'node_db_1'); assert.equal(writes[0].room_name,'Lab');
++  assert.equal(writes[0].interval_seconds,30); assert.equal(writes[0].ac_on,true);
++  assert.equal(writes[0].id,'real-1'); assert.equal(writes[0].pressure,0.4);
++  assert.equal(events[0].type,'ecotrack:telemetry-saved');
++  await save(packet); assert.equal(writes.length,1,'Burst is throttled');
++  now+=1000; failWrites=true; await save({...packet,telemetry_id:'real-2'});
++  assert.equal(events.length,1,'Failed persistence cannot dispatch success');
++  failWrites=false; await save({...packet,telemetry_id:'real-2'});
++  assert.equal(writes.length,3,'A failed save can be retried immediately');
++  assert.equal(events.length,2);
++  now+=1000;
++  await save({...packet,ac_on:false,telemetry_id:'real-off',control_snapshot:{desired_state:{power:true}}});
++  assert.equal(writes.at(-1).ac_on,false,'Selected ON must not suppress a measured OFF boundary');
++  now+=1000;
++  await save({...packet,ac_on:undefined,temp:undefined,pressure:undefined,telemetry_id:'real-unknown'});
++  assert.equal(writes.at(-1).ac_on,undefined); assert.equal(writes.at(-1).temperature,null);
++  const saved=writes.length; now+=1000;
++  await save({...packet,status:'sleeping'}); assert.equal(writes.length,saved);
++  nodes=[]; now+=30000; await step(); await flush(); assert.equal(writes.length,saved);
+ 
+   const source = read('public/js/logs.js');
+   let refreshCalls = 0; let renders = 0;
+@@ -118,6 +83,6 @@
+   logs.selectedDateKey = logs.getPeriodDateKey(new Clock(), 'monthly');
+   await logs.refreshLogsAfterTelemetrySaved();
+   assert.equal(refreshCalls, 2);
+-  console.log('Telemetry cadence tests passed: 30-second writes, rule failure isolation, confirmed-save events, assignment removal, and daily/monthly refresh filters.');
++  console.log('Telemetry tests passed: actual readings, OFF/unknown evidence, failed-save retry, no synthetic timer rows, and history filters.');
+ }
+ main().catch(error => { console.error(error); process.exitCode = 1; });
+--- before/desktop/scripts/test_telemetry_history.js
++++ after/desktop/scripts/test_telemetry_history.js
+@@ -0,0 +1,24 @@
++'use strict';
++const test = require('node:test'), assert = require('node:assert/strict');
++require('../public/js/telemetry-history.js');
++test('incremental reader retains past periods, replaces full snapshots, and shares overlapping reads', async () => {
++  const reader = global.EcoTrackTelemetryHistory.createReader();
++  let payload = { items: [{ id: 'old', created: '2022-01-01' }], history_cursor: 'first', history_total: 1, history_full: true };
++  const urls = [];
++  const fetcher = async url => { urls.push(url); return { ok: true, json: async () => payload }; };
++  const [a, b] = await Promise.all([reader('http://local', fetcher), reader('http://local', fetcher)]);
++  assert.equal(urls.length, 1); assert.equal(a, b);
++  payload = { items: [{ id: 'new', created: '2026-10-13' }], history_cursor: 'second', history_total: 2, history_full: false };
++  const delta = await reader('http://local', fetcher);
++  assert.deepEqual(delta.items.map(r => r.id), ['new', 'old']); assert.match(urls[1], /cursor=first/);
++  payload = { items: [], history_cursor: 'clear', history_total: 0, history_full: true };
++  assert.deepEqual((await reader('http://local', fetcher)).items, []);
++});
++test('failed reads do not replace valid history; inconsistent deltas force a complete retry', async () => {
++  const reader = global.EcoTrackTelemetryHistory.createReader();
++  const response = data => async () => ({ ok: true, json: async () => data });
++  await reader('http://local', response({ items: [{ id: 'a', created: '2026-01-01' }], history_cursor: 'x', history_total: 1 }));
++  await assert.rejects(reader('http://local', async () => { throw Error('offline'); }), /offline/);
++  await assert.rejects(reader('http://local', response({ items: [], history_total: 0, history_full: false })), /Retry/);
++  await reader('http://local', async url => { assert.doesNotMatch(url, /cursor/); return { ok: true, json: async () => ({ items: [], history_total: 0 }) }; });
++});
+--- before/desktop/scripts/test_telemetry_history.py
++++ after/desktop/scripts/test_telemetry_history.py
+@@ -0,0 +1,84 @@
++"""History transfer correctness; all records live in a disposable SQLite file."""
++import importlib.util
++import os
++from pathlib import Path
++import tempfile
++import unittest
++
++sandbox = tempfile.TemporaryDirectory(prefix='ecotrack-history-')
++os.environ['ECOTRACK_SQLITE_DB_PATH'] = str(Path(sandbox.name) / 'history.db')
++os.environ['ECOTRACK_TELEMETRY_SYNC'] = '0'
++spec = importlib.util.spec_from_file_location('history_backend', Path(__file__).resolve().parents[1] / 'backend/app.py')
++backend = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(backend)
++
++
++class HistoryTests(unittest.TestCase):
++    def setUp(self):
++        self.api = backend.app.test_client()
++        conn = backend.get_db_connection()
++        with conn:
++            conn.execute('DELETE FROM telemetry')
++            conn.executemany('INSERT INTO telemetry (id,node_id,created,ac_on,interval_seconds) VALUES (?,?,?,?,?)',
++                [(f'row-{i}', 'node-1', f'2026-10-01T00:{i % 60:02}:00+00:00', i % 2, 30) for i in range(1000)])
++        conn.close()
++
++    def history(self, cursor=None):
++        args = {'history': 1, 'perPage': 0}
++        if cursor: args['cursor'] = cursor
++        result = self.api.get('/api/telemetry', query_string=args)
++        self.assertEqual(result.status_code, 200, result.get_json())
++        return result.get_json()
++
++    def test_append_and_backfill_preserve_entire_history(self):
++        first = self.history()
++        self.assertTrue(first['history_full'])
++        self.assertEqual(len(first['items']), 1000)
++        self.assertEqual(self.history(first['history_cursor'])['items'], [])
++        # A newly imported row can have an older created timestamp.
++        self.assertEqual(self.api.post('/api/telemetry', json={'id': 'backfill', 'node_id': 'node-1',
++            'created': '2022-01-01T00:00:00Z', 'ac_on': False}).status_code, 201)
++        delta = self.history(first['history_cursor'])
++        self.assertFalse(delta['history_full'])
++        self.assertEqual([r['id'] for r in delta['items']], ['backfill'])
++        combined = {r['id']: r for r in first['items'] + delta['items']}
++        self.assertEqual(combined, {r['id']: r for r in self.history()['items']})
++        self.assertEqual(delta['history_total'], 1001)
++        print('Transfer evidence: 1 appended row instead of 1001 full-history rows; identical merged history.')
++
++    def test_updates_deletes_and_clear_invalidate_cursor(self):
++        for operation in ['update', 'delete', 'clear']:
++            old = self.history()
++            conn = backend.get_db_connection()
++            with conn:
++                if operation == 'update': conn.execute("UPDATE telemetry SET ac_on=0 WHERE id='row-1'")
++                elif operation == 'delete': conn.execute("DELETE FROM telemetry WHERE id='row-999'")
++                else: conn.execute('DELETE FROM telemetry')
++            conn.close()
++            changed = self.history(old['history_cursor'])
++            self.assertTrue(changed['history_full'])
++            self.assertNotEqual(old['history_revision'], changed['history_revision'])
++            self.assertEqual(changed['items'], self.history()['items'])
++
++    def test_validation_and_legacy_queries(self):
++        for args in [{'history': 1}, {'history': 1, 'perPage': 0, 'node': 'node-1'},
++                     {'history': 1, 'perPage': 0, 'cursor': 'invalid'}]:
++            self.assertEqual(self.api.get('/api/telemetry', query_string=args).status_code, 400)
++        self.assertEqual(len(self.api.get('/api/telemetry?perPage=1').get_json()['items']), 1)
++        self.assertEqual(self.api.get('/api/telemetry?perPage=0').get_json()['totalItems'], 1000)
++
++    def test_received_states_and_operating_window_survive_ingestion(self):
++        for index, power in enumerate([True, False, None]):
++            response = self.api.post('/api/telemetry', json={'id': f'state-{index}', 'node_id': 'node-1',
++                'ac_on': power, 'interval_seconds': 30, 'pressure': 0.4,
++                'wake_time': '22:00', 'sleep_time': '06:00',
++                'control_snapshot': {'desired_state': {'power': True}}})
++            self.assertEqual(response.status_code, 201)
++            row = response.get_json()
++            self.assertEqual(row['ac_on'], power)
++            self.assertEqual(row['pressure'], 0.4)
++            self.assertEqual((row['wake_time'], row['sleep_time']), ('22:00', '06:00'))
++
++
++if __name__ == '__main__':
++    unittest.main()
+--- before/mobile/src/app/Maintenance.tsx
++++ after/mobile/src/app/Maintenance.tsx
+@@ -23,6 +23,7 @@
+ import { SafeAreaView } from 'react-native-safe-area-context';
+ 
+ import { AppIcon } from '@/components/app-icon';
++import { MaintenancePhoto } from '@/components/maintenance-photo';
+ import { FloatingBottomNavbar } from '@/components/floating-navbar';
+ import { LocationIcon } from '@/components/location-icon';
+ import { ThemedText } from '@/components/themed-text';
+@@ -3077,7 +3078,7 @@
+                       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoScrollContent}>
+                         {itemPhotoUris.map((uri, idx) => (
+                           <View key={`photo_${idx}_${uri.slice(-10)}`} style={[styles.photoThumbnailCard, { borderColor: isDark ? '#334155' : '#e2e8f0', backgroundColor: isDark ? '#0f172a' : '#f8fafc' }]}>
+-                            <Image source={{ uri }} style={styles.photoThumbnailImage} contentFit="cover" />
++                            <MaintenancePhoto uri={uri} style={styles.photoThumbnailImage} />
+                             {/* Photo Index Badge */}
+                             <View style={styles.photoIndexBadge}>
+                               <ThemedText style={styles.photoIndexBadgeText}>#{idx + 1}</ThemedText>
+--- before/mobile/src/components/maintenance-photo.tsx
++++ after/mobile/src/components/maintenance-photo.tsx
+@@ -0,0 +1,38 @@
++import { Image } from 'expo-image';
++import { useEffect, useState } from 'react';
++import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
++import { useAuth } from '@/context/auth-context';
++import { readWithTimeout } from '@/services/query-utils';
++import { resolveImageUrl } from '@/services/supabase';
++
++/** Resolve display URLs without replacing the original reference in an editable draft. */
++export function MaintenancePhoto({ uri, style }: { uri: string; style?: StyleProp<ViewStyle> }) {
++  const { userId } = useAuth();
++  const [attempt, setAttempt] = useState(0);
++  const key = JSON.stringify([uri, userId, attempt]);
++  const [result, setResult] = useState<{ key: string; url: string | null; failed: boolean } | null>(null);
++  useEffect(() => {
++    let active = true;
++    const local = /^(file|content|data|blob):/i.test(uri);
++    void readWithTimeout(() => local ? Promise.resolve(uri) : resolveImageUrl(uri, attempt > 0), 15000)
++      .then(url => { if (active) setResult({ key, url, failed: !url }); })
++      .catch(() => { if (active) setResult({ key, url: null, failed: true }); });
++    return () => { active = false; };
++  }, [key, uri, attempt]);
++  const current = result?.key === key ? result : null;
++  return <View style={[style, styles.frame]}>
++    {!current ? <ActivityIndicator accessibilityLabel="Loading photo" color="#10b981" />
++      : current.failed ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading photo"
++        onPress={() => setAttempt(value => value + 1)} style={styles.retry}>
++        <Text style={styles.text}>Photo unavailable</Text><Text style={styles.text}>Tap to retry</Text>
++      </Pressable>
++      : <Image source={{ uri: current.url! }} style={StyleSheet.absoluteFill} contentFit="cover"
++        accessibilityLabel="Checklist photo" onError={() => setResult({ key, url: null, failed: true })} />}
++  </View>;
++}
++
++const styles = StyleSheet.create({
++  frame: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
++  retry: { padding: 8 },
++  text: { color: '#64748b', textAlign: 'center', fontSize: 12 },
++});
+--- before/mobile/src/services/private-images.ts
++++ after/mobile/src/services/private-images.ts
+@@ -1,4 +1,5 @@
+ import type { SupabaseClient } from '@supabase/supabase-js';
++import { readWithTimeout } from './query-utils';
+ 
+ const buckets = new Set(['avatars', 'photos', 'maintenance-photos']);
+ type ImageClient = Pick<SupabaseClient, 'storage'>;
+@@ -25,13 +26,14 @@
+   return reference;
+ }
+ 
+-export async function displayImage(client: ImageClient, value: string | null | undefined, projectUrl: string): Promise<string | null> {
++export async function displayImage(client: ImageClient, value: string | null | undefined, projectUrl: string, refresh = false): Promise<string | null> {
+   if (!value) return null;
+   try {
+     const ref = imageReference(value, projectUrl)!;
+     const [, bucket, path] = ref.match(/^storage:\/\/([^/]+)\/(.+)$/)!;
+     let cache = imageCaches.get(client);
+     if (!cache) { cache = new Map(); imageCaches.set(client, cache); }
++    if (refresh) cache.delete(ref);
+     const cached = cache.get(ref);
+     if (cached && cached.expiresAt > Date.now()) return cached.promise;
+     const currentCache = cache;
+@@ -39,7 +41,7 @@
+       expiresAt: Date.now() + 3540_000,
+       promise: Promise.resolve().then(async () => {
+         try {
+-          const { data, error } = await client.storage.from(bucket).createSignedUrl(path, 3600);
++          const { data, error } = await readWithTimeout(() => client.storage.from(bucket).createSignedUrl(path, 3600));
+           if (!error && data?.signedUrl) return data.signedUrl;
+           if (currentCache.get(ref) === entry) currentCache.delete(ref);
+           const { data: pubData } = client.storage.from(bucket).getPublicUrl(path);
+--- before/mobile/src/services/supabase.ts
++++ after/mobile/src/services/supabase.ts
+@@ -1142,7 +1142,7 @@
+ 
+ // Restore saved user session from AsyncStorage or real staff from Supabase
+ // IMPORTANT: Does NOT auto-login if no active session was previously saved.
+-export const resolveImageUrl = (value: string | null | undefined) => displayImage(supabase, value, SUPABASE_URL);
++export const resolveImageUrl = (value: string | null | undefined, refresh = false) => displayImage(supabase, value, SUPABASE_URL, refresh);
+ export async function getSavedSession(): Promise<AppUser | null> {
+   const user = await accountAuth.getSavedSession();
+   return user ? { ...user, photoUrl: await resolveImageUrl(user.photoUrl) } : null;
+@@ -1611,16 +1611,8 @@
+       }
+     }
+     const synchronizedReports = Array.from(reportsMap.values());
+-    const signedImages = new Map<string, Promise<string | null>>();
+-    const sign = (uri: string) => {
+-      if (!signedImages.has(uri)) signedImages.set(uri, resolveImageUrl(uri));
+-      return signedImages.get(uri)!;
+-    };
+-    await Promise.all(synchronizedReports.flatMap(report => report.items.map(async item => {
+-      // Keep unavailable references for persistence; image requests remain private.
+-      if (item.photoUri) item.photoUri = await sign(item.photoUri) || item.photoUri;
+-      if (item.photoUris) item.photoUris = await Promise.all(item.photoUris.map(async uri => await sign(uri) || uri));
+-    })));
++    // Keep storage references in the report. Only visible photos request signed
++    // URLs, so storage latency cannot block the checklist list or its refresh.
+     const reportsList = synchronizedReports.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+     return reportsList;
+   } catch (e) {
+--- before/mobile/scripts/test-aircon-state.cjs
++++ after/mobile/scripts/test-aircon-state.cjs
+@@ -89,7 +89,7 @@
+     CustomEvent:class{},setTimeout(){},setInterval(){},
+     fetch:async(_url,options)=>{const payload=JSON.parse(options.body);payloads.push(payload);return {ok:true,json:async()=>({...payload,id:'saved'})};}});
+   vm.runInContext(fs.readFileSync(path.join(desktop,'public/js/node-sync.js'),'utf8'),sync);
+-  const save=window.EcoTrackNodeSync.saveNodeTelemetryToPocketBase;
++  const save=window.EcoTrackNodeSync.saveNodeTelemetryToSqlite;
+   const packet=name=>({id:name,temp:24,status:'online',room_name:'Room',aircon_type:'Split Type'});
+   await save(packet('node-1'));
+   const first=payloads[0];
+--- before/mobile/scripts/test-dashboard-power.cjs
++++ after/mobile/scripts/test-dashboard-power.cjs
+@@ -3,7 +3,7 @@
+ const root=path.resolve('../EcoTrackDesktopDashboardNew-main-control');
+ const html=fs.readFileSync(process.env.ECOTRACK_DASHBOARD_SOURCE || path.join(root,'public/dashboard.html'),'utf8');
+ function fixture(aircons){
+- const elements=new Map();const context=vm.createContext({window:{},Date,AirconProfileManager:{getAll:()=>aircons},NodeService:{getNodes:()=>[]},CentralLogService:{getLogs:()=>[]},
++ const elements=new Map();const context=vm.createContext({window:{},Date,AirconProfileManager:{getAll:()=>aircons},NodeService:{getNodes:()=>[],isNodeOnline:id=>id==='verified-node'},CentralLogService:{getLogs:()=>[]},
+   document:{getElementById:id=>{if(!elements.has(id))elements.set(id,{textContent:''});return elements.get(id);}}});
+  vm.runInContext(fs.readFileSync(path.join(root,'public/js/aircon-state.js'),'utf8'),context);
+  const helper=html.slice(html.indexOf('      function getDashboardPowerState('),html.indexOf('      function renderDashboard()'));
+@@ -11,19 +11,19 @@
+  vm.runInContext(helper+render,context);context.renderDashboard();return {context,text:id=>elements.get(id)?.textContent};
+ }
+ test('connected controllers and default selected power never count as physically ON',()=>{
+- const profiles=Array.from({length:11},()=>({status:'online',state:{power:true},control_snapshot:{desired_state:{power:'on',mode:'cool'},command_status:'queued'}}));
++ const profiles=Array.from({length:11},()=>({node_id:'verified-node',status:'online',state:{power:true},control_snapshot:{desired_state:{power:'on',mode:'cool'},command_status:'queued'}}));
+  const before=JSON.stringify(profiles),f=fixture(profiles);assert.equal(f.text('kpiTotalUnits'),11);assert.equal(f.text('kpiOnlineUnits'),11);
+- assert.equal(f.text('kpiActivePower'),'Unknown');assert.equal(f.text('kpiStandby'),'Unknown');assert.equal(f.text('kpiActivePowerCaption'),'11 awaiting feedback');
++ assert.equal(f.text('kpiActivePower'),'—');assert.equal(f.text('kpiStandby'),'—');assert.equal(f.text('kpiActivePowerCaption'),'11 awaiting feedback');
+  assert.equal(f.context.getDashboardPowerState(profiles[0]).label,'Power unconfirmed');assert.equal(JSON.stringify(profiles),before,'Summary rendering must not alter control settings or commands');
+ });
+ test('dashboard counts explicit reported on/off and rejects stale or disconnected feedback',()=>{
+- const profiles=[{status:'online',control_snapshot:{reported_state:{power:'on',mode:'cool'}}},{status:'online',control_snapshot:{reported_state:{power:'off'}}},
+-  {status:'offline',control_snapshot:{reported_state:{power:true}}},{status:'online',control_snapshot:{reported_state:{power:true},reported_at:'2026-10-03T00:00:00Z',desired_state:{power:'off'},commanded_at:'2026-10-04T00:00:00Z'}}];
++ const profiles=[{node_id:'verified-node',status:'online',control_snapshot:{reported_state:{power:'on',mode:'cool'}}},{node_id:'verified-node',status:'online',control_snapshot:{reported_state:{power:'off'}}},
++  {status:'offline',control_snapshot:{reported_state:{power:true}}},{node_id:'verified-node',status:'online',control_snapshot:{reported_state:{power:true},reported_at:'2026-10-03T00:00:00Z',desired_state:{power:'off'},commanded_at:'2026-10-04T00:00:00Z'}}];
+  const f=fixture(profiles);assert.equal(f.text('kpiActivePower'),1);assert.equal(f.text('kpiStandby'),1);assert.equal(f.text('kpiActivePowerCaption'),'2 awaiting feedback');
+  assert.equal(f.context.getDashboardPowerState(profiles[0]).label,'Active');assert.equal(f.context.getDashboardPowerState(profiles[1]).label,'Standby');
+ });
+ test('empty and confirmed-all-off fleets have genuine zero counts',()=>{
+- for(const profiles of [[],[{status:'online',control_snapshot:{reported_state:{power:false}}}]]){const f=fixture(profiles);assert.equal(f.text('kpiActivePower'),0);assert.equal(f.text('kpiStandby'),profiles.length);}
++ for(const profiles of [[],[{node_id:'verified-node',status:'online',control_snapshot:{reported_state:{power:false}}}]]){const f=fixture(profiles);assert.equal(f.text('kpiActivePower'),0);assert.equal(f.text('kpiStandby'),profiles.length);}
+ });
+ test('changed dashboard and analytics markup contain valid JavaScript and unique new label IDs',()=>{
+  for(const page of [html,fs.readFileSync(process.env.ECOTRACK_LOGS_HTML || path.join(root,'public/logs.html'),'utf8')]){
+@@ -31,3 +31,8 @@
+   for(const id of ['kpiRuntimeLabel','kpiActiveLabel','kpiIdleLabel','kpiActivePowerCaption','kpiStandbyCaption'])assert.ok((page.match(new RegExp('id="'+id+'"','g'))||[]).length<=1);
+  }
+ });
++
++test('a received remote ON command is not physical power feedback',()=>{
++ const f=fixture([{node_id:'verified-node',status:'online',control_snapshot:{observed_remote_state:{power:true},observed_remote_at:new Date().toISOString()}}]);
++ assert.equal(f.text('kpiActivePower'),'—');assert.equal(f.text('kpiActivePowerCaption'),'1 awaiting feedback');
++});
+--- before/mobile/scripts/test-desktop-startup.cjs
++++ after/mobile/scripts/test-desktop-startup.cjs
+@@ -23,7 +23,7 @@
+     constructor() {
+       super(); events.push('window'); windows.push(this);
+       this.destroyed = false; this.minimized = false; this.visible = true; this.focusCount = 0; this.urls = [];
+-      this.webContents = new EventEmitter(); this.webContents.setWindowOpenHandler = () => {};
++      this.webContents = new EventEmitter(); this.webContents.session = { setBluetoothPairingHandler() {} }; this.webContents.setWindowOpenHandler = () => {};
+     }
+     loadURL(url) { this.urls.push(url); }
+     isDestroyed() { return this.destroyed; }
+--- before/mobile/scripts/test-energy-analytics.cjs
++++ after/mobile/scripts/test-energy-analytics.cjs
+@@ -11,219 +11,147 @@
+ const names=['getPeriodDateKey','getPreviousPeriodDateKey','getDefaultDateKey'];
+ const functions=tree.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.includes(node.name?.text)).map(node=>node.getText(tree));
+ const flush=()=>new Promise(setImmediate);
+-const reading=(time,acOn,extra={})=>({nodeId:'node-1',timestamp:new Date(`2026-10-04T${time}+08:00`),temperature:25,status:'online',...(acOn===undefined?{}:{acOn}),...extra});
++const settings=(temp=24)=>({power:true,temp,mode:'cool',fan:'medium',eco:false,turbo:false,swing_vertical:false,quiet:false,swing_horizontal:false,display:true});
++const reading=(time,acOn,extra={})=>({nodeId:'node-1',timestamp:new Date(`2026-10-04T${time}+08:00`),temperature:25,status:'online',intervalSeconds:3600,controlSnapshot:{reported_state:settings(),reported_at:'2026-10-04T00:00:00+08:00'},...(acOn===undefined?{}:{acOn}),...extra});
+ function fixture({fleet=11,now=null,fetch=async()=>({ok:true,json:async()=>({kwh:2})})}={}){
+  const elements=new Map(),charts=[],requests=[];
+  class Clock extends Date {constructor(...args){super(...(args.length?args:now?[Date.parse(now)]:[]));}static now(){return now?Date.parse(now):Date.now();}}
+- const context=vm.createContext({Date:Clock,AbortController,console,BACKEND_URL:'http://backend',currentPeriod:'daily',selectedDateKey:'2026-10-04',currentPage:1,
++ const context=vm.createContext({Date:Clock,AbortController,setTimeout,clearTimeout,console,BACKEND_URL:'http://backend',currentPeriod:'daily',selectedDateKey:'2026-10-04',currentPage:1,
+   currentNodeFilter:'',startTimeFilter:'',endTimeFilter:'',currentEvaluatedKwh:null,currentEvaluatedCost:null,currentAnalyticsResult:null,
+   nodeDataLogs:[],globalNodeRecords:[],controlNameMap:{},window:{},getActiveTariffRate:()=>10,getAirconFleetCount:()=>({total:fleet,online:fleet}),
+   getDateRangeText:()=> 'October 4, 2026',getFilteredLogs:()=>context.nodeDataLogs,
+-  fetch:async(url,options)=>{requests.push(JSON.parse(options.body));return fetch(url,options);},
++  fetch:async(url,options)=>{
++   const meta={model:'random_forest',output_unit:'kWh',horizon_hours:1,training_data_type:'research_informed_estimates',physical_accuracy_validated:false,environment_scenarios:[{scenario_id:'lab_hot'}]};
++   if(url.includes('prediction-features'))return {ok:true,json:async()=>meta};
++   const body=JSON.parse(options.body);assert.equal(body.model,'random_forest');assert.equal(body.scenario_id,'lab_hot');requests.push(body);
++   const response=await fetch(url,options);return {ok:response.ok,json:async()=>({...meta,prediction_status:'research_estimate',scenario_id:'lab_hot',...(response.json?await response.json():{error:'offline'})})};
++  },
+   document:{documentElement:{classList:{contains:()=>true}},getElementById:id=>{
+    if(!elements.has(id))elements.set(id,{textContent:'previous',innerHTML:'',style:{},className:'',classList:{contains:()=>true,toggle(){}},
+     getContext:()=>({createLinearGradient:()=>({addColorStop(){}})})});return elements.get(id);
+   }},Chart:class{constructor(canvas,configuration){this.data=configuration.data;this.options=configuration.options;this.updates=[];charts.push(this);}update(mode){this.updates.push(mode);}destroy(){throw Error('Do not destroy charts');}}
+  });
++ context.window=context;
++ vm.runInContext(fs.readFileSync(path.resolve('../EcoTrackDesktopDashboardNew-main-control/public/js/aircon-state.js'),'utf8'),context);
++ vm.runInContext(fs.readFileSync(path.resolve('../EcoTrackDesktopDashboardNew-main-control/public/js/energy-prediction.js'),'utf8'),context);
++ vm.runInContext(section('function calculateEnergyCost(', 'function saveTariffSettings('),context);
+  vm.runInContext(functions.join('\n'),context);
+  vm.runInContext(section('function getConfirmedAcOnState(', '// Helper: Calculate previous period'),context);
+  vm.runInContext(section('let currentPredictionSession', '// Convert 24-hour'),context);
+  vm.runInContext(section('let energyTrendChartInstance','// ─── ENERGY CONSUMPTION PREDICTION'),context);
++ vm.runInContext('selectedEnergyScenario="lab_hot"',context);
+  const text=id=>elements.get(id)?.textContent;
+  const run=async logs=>{context.nodeDataLogs=logs;await context.predictEnergyConsumption({totalRecords:logs.length,onlineNodes:`${fleet}/${fleet}`},logs);};
+  return {context,elements,charts,requests,text,run};
+ }
+ 
+-test('unknown-only online controllers and selected settings show Unavailable without model requests or zero lines',async()=>{
+- const f=fixture();
+- await f.run([reading('01:25:00',undefined,{controlSnapshot:{configured_state:{power:true,mode:'cool',fan:'quiet'}}}),
+-  reading('01:26:00',undefined,{nodeId:'node-2',controlSnapshot:{desired_state:{power:'on',mode:'cool'},command_status:'queued'}})]);
+- for(const id of ['kpiEnergyVal','kpiCostVal','kpiRuntimeVal','kpiActiveUnits','costTodayCost','costCurrentCycle','costPrevPeriod','costVariance','trendTotal','correlationScore'])assert.equal(f.text(id),'Unavailable',id);
+- assert.equal(f.requests.length,0);assert.equal(f.context.currentEvaluatedKwh,null);
+- assert.match(f.text('kpiIdleUnits'),/0 confirmed off · 11 unknown/);
+- for(const chart of f.charts)for(const dataset of chart.data.datasets)assert.ok(dataset.data.every(value=>value===null));
+- for(const id of ['energyTrendEmpty','estimatedCostEmpty','dualAxisEmpty'])assert.equal(f.elements.get(id).style.display,'flex');
+- assert.equal(f.elements.get('kpiEnergyUnit').style.display,'none');
++
++const near=(a,b)=>assert.ok(Math.abs(a-b)<1e-8,`${a} != ${b}`);
++const total=values=>values.reduce((sum,v)=>sum+(v??0),0);
++test('unknown-only connectivity and requested controls do not invent confirmed power',async()=>{
++ const f=fixture();await f.run([reading('06:00:00',undefined,{controlSnapshot:{desired_state:settings(),command_status:'queued'}})]);
++ assert.equal(f.requests.length,0);assert.equal(f.context.currentEvaluatedKwh,null);assert.equal(f.text('kpiActiveUnits'),'Unavailable');
++ assert.ok(f.charts[0].data.datasets[0].data.every(v=>v===null));
+ });
+-
+-test('empty selections and invalid records are unavailable instead of a confirmed all-off fleet',async()=>{
+- const f=fixture();await f.run([]);assert.equal(f.text('kpiActiveUnits'),'Unavailable');assert.equal(f.text('kpiRuntimeVal'),'Unavailable');
+- await f.run([reading('01:25:00',true,{timestamp:'invalid'}),reading('01:25:00',true,{eventType:'schedule_updated'})]);
+- assert.equal(f.text('kpiEnergyVal'),'Unavailable');assert.equal(f.requests.length,0);
++test('empty and invalid selections are unavailable',async()=>{
++ const f=fixture();for(const rows of [[],[reading('06:00:00',true,{timestamp:'invalid'})],[reading('06:00:00',true,{eventType:'schedule_updated'})]]){
++ await f.run(rows);assert.equal(f.context.currentEvaluatedKwh,null);assert.equal(f.requests.length,0);}
+ });
+-
+-test('confirmed off keeps genuine zero and unobserved time buckets remain gaps',async()=>{
+- const f=fixture({fleet:1});await f.run([reading('01:25:00',false),reading('01:26:00',false)]);
+- assert.equal(f.text('kpiEnergyVal'),'0.0');assert.equal(f.text('kpiCostVal'),'₱0.00');assert.equal(f.text('kpiActiveUnits'),'0');
+- assert.equal(f.text('kpiRuntimeVal'),'0.0');assert.equal(f.requests.length,0);
+- assert.equal(f.charts[0].data.datasets[0].data[0],0);assert.equal(f.charts[0].data.datasets[0].data[1],null);
+- assert.equal(f.text('correlationScore'),'Unavailable','A constant zero series has no Pearson correlation');
+- assert.equal(f.elements.get('energyTrendEmpty').style.display,'none');
++test('confirmed OFF yields zero excluding standby and leaves unobserved buckets empty',async()=>{
++ const f=fixture({fleet:1});await f.run([reading('01:25:00',false,{controlSnapshot:null})]);
++ assert.equal(f.context.currentEvaluatedKwh,0);assert.equal(f.requests.length,0);assert.equal(f.text('kpiActiveUnits'),'0');
++ assert.equal(f.charts[0].data.datasets[0].data[0],0);assert.equal(f.charts[0].data.datasets[0].data[8],null);
+ });
+-
+-test('a valid zero model result remains zero while the active count follows actual latest power',async()=>{
+- const f=fixture({fleet:1,fetch:async()=>({ok:true,json:async()=>({kwh:0})})});
+- await f.run([reading('06:00:00',true,{intervalSeconds:30}),reading('06:00:30',true)]);
+- assert.equal(f.requests.length,1);assert.equal(f.text('kpiEnergyVal'),'0.0');assert.equal(f.text('kpiActiveUnits'),'1');
+- assert.equal(f.context.currentEvaluatedKwh,0);assert.equal(f.elements.get('kpiEnergyUnit').style.display,'');
++test('a valid zero model result stays zero',async()=>{
++ const f=fixture({fleet:1,fetch:async()=>({ok:true,json:async()=>({kwh:0})})});await f.run([reading('06:00:00',true)]);
++ assert.equal(f.requests.length,1);assert.equal(f.context.currentEvaluatedKwh,0);assert.equal(f.text('kpiActiveUnits'),'1');
+ });
+-
+-test('partial feedback counts only confirmed active/off units and labels partial energy coverage',async()=>{
+- const f=fixture();await f.run([reading('06:00:00',true),reading('06:00:30',false,{nodeId:'node-2'}),reading('06:00:30',undefined,{nodeId:'node-3'})]);
+- assert.equal(f.text('kpiActiveUnits'),'1');assert.equal(f.text('kpiTotalUnits'),'/11');
+- assert.equal(f.text('kpiIdleUnits'),'1 confirmed off · 9 unknown');assert.match(f.text('analyticsDataStatus'),/Partial estimate/);
+- assert.equal(f.text('kpiEnergyVal'),'2.0');assert.equal(f.text('costVariance'),'Unavailable');
++test('partial confirmed coverage counts ON, OFF and unknown separately',async()=>{
++ const f=fixture();await f.run([reading('06:00:00',true),reading('06:00:00',false,{nodeId:'n2',controlSnapshot:null}),reading('06:00:00',undefined,{nodeId:'n3',controlSnapshot:null})]);
++ near(f.context.currentEvaluatedKwh,2);assert.equal(f.text('kpiIdleUnits'),'1 confirmed off · 9 unknown');assert.match(f.text('analyticsDataStatus'),/Partial estimate/);
+ });
+-
+-test('latest off or unknown feedback never becomes active merely because historical power or connectivity was on',async()=>{
+- const f=fixture({fleet:1});await f.run([reading('06:00:00',true),reading('06:00:30',false)]);
+- assert.equal(f.text('kpiActiveUnits'),'0');assert.ok(f.context.currentAnalyticsResult.runtime.totalRuntimeSum>0);
+- await f.run([reading('06:00:00',true),reading('06:00:30',undefined)]);assert.equal(f.text('kpiActiveUnits'),'Unavailable');
+- await f.run([reading('06:00:00',true),reading('06:00:30',true,{status:'offline'})]);assert.equal(f.text('kpiActiveUnits'),'Unavailable');
++test('latest OFF or unknown feedback is not overridden by historical ON',async()=>{
++ const f=fixture({fleet:1});for(const power of [false,undefined]){await f.run([reading('06:00:00',true),reading('06:30:00',power,{controlSnapshot:null})]);
++ assert.equal(f.text('kpiActiveUnits'),power===false?'0':'Unavailable');assert.ok(f.context.currentAnalyticsResult.runtime.totalRuntimeSum>0);}
+ });
+-
+-test('missing temperature does not become zero degrees or a zero-energy estimate',async()=>{
+- const log=reading('06:00:00',true,{temperature:null}),f=fixture({fleet:1});await f.run([log]);
+- assert.equal(f.text('kpiActiveUnits'),'1');assert.equal(f.text('kpiEnergyVal'),'2.0');assert.equal(f.requests[0].avg_temp,24);
+- assert.match(f.text('analyticsDataStatus'),/Temperature missing.*nominal 24°C/);assert.equal(log.temperature,null);
++test('ambient temperature is not substituted for the commanded setpoint',async()=>{
++ const f=fixture({fleet:1});await f.run([reading('06:00:00',true,{temperature:null})]);
++ assert.equal(f.requests[0].settings.setpoint_c,24);assert.equal(Object.hasOwn(f.requests[0],'avg_temp'),false);near(f.context.currentEvaluatedKwh,2);
+ });
+-
+-test('charts split confirmed runtime across bucket boundaries and preserve the estimated energy and cost totals',async()=>{
++test('incomplete control functions block prediction instead of becoming assumed OFF',async()=>{
++ const f=fixture({fleet:1});const row=reading('06:00:00',true);delete row.controlSnapshot.reported_state.eco;
++ await f.run([row]);assert.equal(f.requests.length,0);assert.equal(f.context.currentEvaluatedKwh,null);
++});
++test('chart buckets conserve energy when an interval crosses a boundary',async()=>{
+  const f=fixture({fleet:1,fetch:async()=>({ok:true,json:async()=>({kwh:8})})});
+- await f.run([reading('01:29:00',true,{intervalSeconds:120}),reading('01:31:00',false)]);
+- const energy=Array.from(f.charts[0].data.datasets[0].data),cost=Array.from(f.charts[1].data.datasets[0].data);
+- assert.deepEqual(energy.slice(0,2),[4,4]);assert.equal(energy.slice(2).every(value=>value===null),true);
+- assert.equal(energy.reduce((sum,value)=>sum+(value||0),0),8);assert.equal(cost.reduce((sum,value)=>sum+(value||0),0),80);
+- const segment=f.context.calculateRuntimeFromLogs([reading('01:30:00',true,{intervalSeconds:60})]);
+- assert.ok(segment.totalRuntimeSum>0);assert.equal(f.context.getAnalyticsChartSeries([{logs:[reading('01:30:00',true,{intervalSeconds:60})],kwh:2}],'daily')[1],2);
++ await f.run([reading('01:29:00',true,{intervalSeconds:120}),reading('01:31:00',false,{controlSnapshot:null})]);
++ const values=f.charts[0].data.datasets[0].data;near(values[0],8/60);near(values[1],8/60);near(total(values),8/30);near(total(f.charts[1].data.datasets[0].data),80/30);
+ });
+-
+-test('previous-period comparisons use recorded estimates and are unavailable when prior coverage is missing',async()=>{
+- const f=fixture({fleet:1,fetch:async(_url,options)=>({ok:true,json:async()=>({kwh:JSON.parse(options.body).avg_temp===25?8:4})})});
+- const current=[reading('06:00:00',true)],prior=[reading('06:00:00',true,{timestamp:new Date('2026-10-03T06:00:00+08:00'),temperature:26})];
+- f.context.nodeDataLogs=[...current,...prior];
+- await f.context.predictEnergyConsumption({totalRecords:1,onlineNodes:'1/1'},current);
+- assert.equal(f.text('costPrevPeriod'),'₱40.00');assert.equal(f.text('costVariance'),'+₱40.00');assert.equal(f.text('kpiEnergyTrend'),'+100.0%');
+- assert.equal(f.charts[0].data.datasets[1].data.reduce((sum,value)=>sum+(value||0),0),4);
+- await f.run(current);assert.equal(f.text('costPrevPeriod'),'Unavailable');assert.equal(f.text('costVariance'),'Unavailable');
+- assert.ok(f.charts[0].data.datasets[1].data.every(value=>value===null));
++test('previous-period cost uses that periods actual controls and hours',async()=>{
++ const f=fixture({fleet:1,fetch:async(_u,o)=>({ok:true,json:async()=>({kwh:JSON.parse(o.body).settings.setpoint_c===24?8:4})})});
++ const rows=[reading('06:00:00',true)],prior=reading('06:00:00',true,{timestamp:new Date('2026-10-03T06:00:00+08:00'),controlSnapshot:{reported_state:settings(26)}});
++ f.context.nodeDataLogs=[...rows,prior];await f.context.predictEnergyConsumption({},rows);
++ near(f.context.currentAnalyticsResult.previous.kwh,4);assert.equal(f.text('costVariance'),'+₱40.00');
++ await f.run(rows);assert.equal(f.text('costPrevPeriod'),'Unavailable');
+ });
+-
+-test('a late model response cannot replace a newer unavailable selection and charts are reused',async()=>{
+- let resolve;const f=fixture({fleet:1,fetch:()=>new Promise(done=>{resolve=done;})});
+- const pending=f.run([reading('06:00:00',true)]);await flush();
+- await f.run([reading('06:30:00',undefined)]);assert.equal(f.text('kpiEnergyVal'),'Unavailable');
+- resolve({ok:true,json:async()=>({kwh:99})});await pending;assert.equal(f.text('kpiEnergyVal'),'Unavailable');
++test('late predictions cannot overwrite a new unavailable selection',async()=>{
++ let release;const f=fixture({fleet:1,fetch:()=>new Promise(r=>release=r)});
++ const pending=f.run([reading('06:00:00',true)]);await flush();await f.run([]);release({ok:true,json:async()=>({kwh:99})});await pending;
++ assert.equal(f.context.currentEvaluatedKwh,null);assert.equal(f.charts.length,3);
++});
++test('model failures remain unavailable; concurrency is at most three',async()=>{
++ let active=0,peak=0;const f=fixture({fetch:async()=>{active++;peak=Math.max(peak,active);await flush();active--;return {ok:false};}});
++ await f.run(Array.from({length:11},(_,i)=>reading('06:00:00',true,{nodeId:'n'+i,controlSnapshot:{reported_state:settings(16+i)}})));
++ assert.equal(f.requests.length,11);assert.equal(peak,3);assert.equal(f.context.currentEvaluatedKwh,null);
++});
++test('aliases and duplicate readings cannot double-count energy',async()=>{
++ const f=fixture({fleet:1});f.context.globalNodeRecords=[{id:'db',name:'node-1'}];
++ await f.run([reading('06:00:00',true),reading('06:00:00',true,{nodeId:'db'})]);
++ near(f.context.currentEvaluatedKwh,2);assert.equal(f.requests.length,1);assert.equal(f.text('kpiActiveUnits'),'1');
++});
++test('daily, weekly, monthly and yearly chart totals equal the estimate',async()=>{
++ const f=fixture({fleet:1});for(const [period,key,size] of [['daily','2026-10-04',9],['weekly','2026-09-28',7],['monthly','2026-10',4],['yearly','2026',12]]){
++ f.context.currentPeriod=period;f.context.selectedDateKey=key;await f.run([reading('06:00:00',true)]);
++ const values=f.charts[0].data.datasets[0].data;assert.equal(values.length,size);near(total(values),2);}
+  assert.equal(f.charts.length,3);
+ });
+-
+-test('model requests remain bounded and failed predictions use only usable confirmed runtime',async()=>{
+- let active=0,peak=0,count=0;
+- const f=fixture({fetch:async()=>{active++;peak=Math.max(peak,active);count++;await flush();active--;return {ok:false};}});
+- const logs=Array.from({length:11},(_,index)=>reading('06:00:00',true,{nodeId:'node-'+index,intervalSeconds:30}));
+- await f.run(logs);assert.equal(count,11);assert.equal(peak,3);
+- assert.ok(Math.abs(f.context.currentEvaluatedKwh-11*30/3600*1.5)<1e-10);
+- assert.equal(f.text('kpiActiveUnits'),'11');assert.equal(f.text('kpiIdleUnits'),'0 confirmed off · 0 unknown');
++function forecast(){const f=fixture({fleet:1});f.context.globalNodeRecords=[{id:'node-1',wake_time:'06:00',sleep_time:'22:00'}];
++ f.rows=[reading('03:00:00',undefined,{controlSnapshot:{desired_state:settings(),command_status:'queued'}})];return f;}
++test('a complete schedule and requested state produce an explicitly labeled projection',async()=>{
++ const f=forecast();await f.run(f.rows);near(f.context.currentEvaluatedKwh,32);assert.equal(f.text('kpiEnergyLabel'),'FORECAST ENERGY');
++ assert.equal(f.text('kpiRuntimeVal'),'16.0');assert.equal(f.context.getConfirmedAcOnState(f.rows[0]),null);assert.equal(f.rows[0].controlSnapshot.command_status,'queued');
+ });
+-
+-test('controller ID/name aliases are counted once and invalid previous control rows are excluded',async()=>{
+- const f=fixture({fleet:1});f.context.globalNodeRecords=[{id:'db-node',name:'node-1'}];
+- await f.run([reading('06:00:00',true),reading('06:00:30',true,{nodeId:'db-node'})]);
+- assert.equal(f.text('kpiActiveUnits'),'1');assert.equal(f.requests.length,1);
+- f.context.currentNodeFilter='db-node';f.context.nodeDataLogs=[reading('06:00:00',true,{timestamp:new Date('2026-10-03T06:00:00+08:00')})];
+- assert.equal(f.context.getPreviousAnalyticsLogs().length,1,'Previous periods preserve controller aliases');
+- f.context.currentNodeFilter='node-1';f.context.nodeDataLogs=[reading('06:00:00',true,{nodeId:'unrelated',timestamp:new Date('2026-10-03T06:00:00+08:00')})];
+- assert.equal(f.context.getPreviousAnalyticsLogs().length,0);
++test('missing schedule or power cannot produce a projection',async()=>{
++ for(const alter of [f=>f.context.globalNodeRecords=[],f=>delete f.rows[0].controlSnapshot.desired_state.power]){
++ const f=forecast();alter(f);await f.run(f.rows);assert.equal(f.requests.length,0);assert.equal(f.context.currentEvaluatedKwh,null);}
+ });
+-
+-test('weekly, monthly and yearly charts keep energy totals and gaps when changing periods',async()=>{
+- const f=fixture({fleet:1});
+- for(const [period,key,size,index] of [['weekly','2026-09-28',7,6],['monthly','2026-10',4,0],['yearly','2026',12,9]]){
+-  f.context.currentPeriod=period;f.context.selectedDateKey=key;
+-  await f.run([reading('23:59:50',true,{intervalSeconds:30})]);
+-  const values=f.charts[0].data.datasets[0].data;
+-  assert.equal(values.length,size);assert.equal(values[index],2);assert.equal(values.reduce((sum,value)=>sum+(value??0),0),2);
+-  assert.equal(values.filter(Number.isFinite).length,1,'Unobserved periods remain gaps');
+-  assert.equal(f.charts[1].data.datasets[0].data[index],20);
+- }
+- assert.equal(f.charts.length,3,'Changing periods reuses the three charts');
++test('requested OFF yields a zero schedule projection without confirming physical OFF',async()=>{
++ const f=forecast();f.rows[0].controlSnapshot.desired_state.power=false;await f.run(f.rows);
++ assert.equal(f.context.currentEvaluatedKwh,0);assert.equal(f.requests.length,0);assert.equal(f.context.getConfirmedAcOnState(f.rows[0]),null);
+ });
+-
+-function forecastFixture(options={}){
+- const f=fixture({fleet:1,now:'2026-10-04T03:00:00+08:00',fetch:async(_url,options)=>({ok:true,json:async()=>({kwh:JSON.parse(options.body).hours_used*2})}),...options});
+- f.context.globalNodeRecords=[{id:'db-node',name:'node-1',wake_time:'06:00',sleep_time:'22:00'}];
+- f.logs=[reading('03:00:00',undefined,{controlSnapshot:{configured_state:{mode:'cool',fan:'medium',temp:25}}})];
+- return f;
+-}
+-test('unknown power produces an explicitly labeled schedule forecast without inventing actual runtime',async()=>{
+- const f=forecastFixture();await f.run(f.logs);
+- assert.equal(f.requests[0].hours_used,16);assert.equal(f.requests[0].ac_on_ratio,1);assert.equal(f.text('kpiEnergyVal'),'32.0');assert.equal(f.text('kpiCostVal'),'₱320.00');
+- assert.equal(f.text('kpiEnergyLabel'),'FORECAST ENERGY');assert.equal(f.text('kpiCostLabel'),'FORECAST COST');assert.match(f.text('analyticsDataStatus'),/Schedule-based forecast.*actual power is unconfirmed/);
+- assert.equal(f.text('kpiRuntimeVal'),'16.0');assert.equal(f.text('kpiActiveUnits'),'1');assert.equal(f.context.getConfirmedAcOnState(f.logs[0]),null);
+- assert.equal(f.text('kpiRuntimeLabel'),'FORECAST OPERATING HOURS');assert.equal(f.text('kpiActiveLabel'),'FORECAST ACTIVE UNITS');
+- assert.equal(f.text('kpiIdleUnits'),'0 planned idle');assert.equal(f.text('kpiAvgLoad'),'1.3 kW');assert.equal(f.context.currentAnalyticsResult.coverage.confirmedSamples,0);
+- const series=f.charts[0].data.datasets[0].data;assert.equal(series[0],0);assert.equal(series[1],0);assert.ok(series[3]>0);assert.equal(series.reduce((a,b)=>a+b,0),32);
+- assert.equal(f.charts[1].data.datasets[0].data.reduce((a,b)=>a+b,0),320);assert.equal(f.text('costVariance'),'Unavailable');
+- assert.match(f.text('energyTrendSubtitle'),/Forecast/);
++test('overnight schedules, time filters and calendar lengths bound projections',async()=>{
++ const f=forecast();Object.assign(f.context.globalNodeRecords[0],{wake_time:'22:00',sleep_time:'06:00'});
++ for(const [period,key,hours] of [['daily','2026-10-04',8],['weekly','2026-09-28',56],['monthly','2026-10',248],['yearly','2026',2920]]){
++ f.context.currentPeriod=period;f.context.selectedDateKey=key;await f.run(f.rows);near(f.context.currentEvaluatedKwh,hours*2);near(total(f.charts[0].data.datasets[0].data),hours*2);}
++ f.context.currentPeriod='daily';f.context.selectedDateKey='2026-10-04';f.context.startTimeFilter='02:00';f.context.endTimeFilter='04:00';await f.run(f.rows);near(f.context.currentEvaluatedKwh,4);
+ });
+-test('pending requested settings can be forecast while their command and physical-power status remain unchanged',async()=>{
+- const f=forecastFixture();f.logs[0].controlSnapshot={desired_state:{power:'on',mode:'dry',fan:'auto'},command_status:'queued'};
+- await f.run(f.logs);assert.equal(f.text('kpiEnergyVal'),'32.0');assert.equal(f.logs[0].controlSnapshot.command_status,'queued');assert.equal(f.context.getConfirmedAcOnState(f.logs[0]),null);
+- f.logs[0].controlSnapshot.desired_state.power='off';await f.run(f.logs);assert.equal(f.text('kpiEnergyVal'),'0.0');assert.equal(f.text('kpiEnergyLabel'),'FORECAST ENERGY');assert.equal(f.requests.length,1);
+- assert.ok(f.charts[0].data.datasets[0].data.every(value=>value===0));assert.equal(f.text('kpiActiveUnits'),'0');assert.equal(f.text('kpiIdleUnits'),'1 planned idle');assert.equal(f.text('kpiRuntimeVal'),'0.0');
++test('confirmed reported controls take precedence over schedule projections',async()=>{
++ const f=forecast();await f.run([reading('06:00:00',true,{intervalSeconds:30})]);near(f.context.currentEvaluatedKwh,2/120);assert.equal(f.context.currentAnalyticsResult.forecast,false);
+ });
+-test('forecasts honor overnight schedules, time filters, and calendar lengths without changing chart totals',async()=>{
+- const f=forecastFixture();f.context.globalNodeRecords[0].wake_time='22:00';f.context.globalNodeRecords[0].sleep_time='06:00';
+- await f.run(f.logs);assert.equal(f.requests.at(-1).hours_used,8);assert.equal(f.text('kpiEnergyVal'),'16.0');
+- f.context.startTimeFilter='02:00';f.context.endTimeFilter='04:00';await f.run(f.logs);assert.equal(f.requests.at(-1).hours_used,2);
+- f.context.startTimeFilter='';f.context.endTimeFilter='';
+- for(const [period,key,hours,size] of [['weekly','2026-09-28',56,7],['monthly','2026-10',248,4],['yearly','2026',2920,12]]){
+-  f.context.currentPeriod=period;f.context.selectedDateKey=key;await f.run(f.logs);assert.equal(f.requests.at(-1).hours_used,hours);
+-  const values=f.charts[0].data.datasets[0].data;assert.equal(values.length,size);assert.ok(Math.abs(values.reduce((a,b)=>a+b,0)-hours*2)<1e-8);
+- }
++test('failed forecast requests cannot fall back to invented power rates',async()=>{
++ const f=fixture({fleet:1,fetch:async()=>({ok:false})});f.context.globalNodeRecords=[{id:'node-1',wake_time:'06:00',sleep_time:'22:00'}];
++ await f.run([reading('03:00:00',undefined,{controlSnapshot:{desired_state:settings()}})]);assert.equal(f.context.currentEvaluatedKwh,null);
+ });
+-test('missing schedules, bindings or historical unconfirmed records cannot create predictions',async()=>{
+- for(const alter of [f=>{f.context.globalNodeRecords[0].wake_time=null;},f=>{f.context.globalNodeRecords=[];},f=>{f.context.selectedDateKey='2026-10-03';f.logs[0].timestamp=new Date('2026-10-03T03:00:00+08:00');}]){
+-  const f=forecastFixture();alter(f);await f.run(f.logs);assert.equal(f.requests.length,0);assert.equal(f.text('kpiEnergyVal'),'Unavailable');assert.equal(f.text('kpiEnergyLabel'),'ESTIMATED ENERGY');assert.match(f.text('analyticsDataStatus'),/^Unavailable/);
+- }
++test('missing cadence produces no energy while OFF evidence remains genuine zero',async()=>{
++ const f=fixture({fleet:1});await f.run([reading('06:00:00',true,{intervalSeconds:null})]);assert.equal(f.requests.length,0);assert.equal(f.context.currentEvaluatedKwh,null);
++ assert.equal(f.text('kpiRuntimeVal'),'Unavailable');
++ await f.run([reading('06:00:00',false,{intervalSeconds:null,controlSnapshot:null})]);assert.equal(f.context.currentEvaluatedKwh,0);
+ });
+-test('usable confirmed feedback takes precedence over forecasts and restores actual estimate labels',async()=>{
+- const f=forecastFixture();await f.run(f.logs);f.logs=[reading('06:00:00',true,{intervalSeconds:30,controlSnapshot:{configured_state:{mode:'cool'}}})];
+- await f.run(f.logs);assert.equal(f.text('kpiEnergyLabel'),'ESTIMATED ENERGY');assert.equal(f.text('kpiActiveUnits'),'1');assert.ok(f.requests.at(-1).hours_used<1);
+- assert.match(f.text('analyticsDataStatus'),/confirmed operating data/);assert.equal(f.context.currentAnalyticsResult.forecast,false);
++test('no selected environment scenario cannot quietly become a default',async()=>{
++ const f=forecast();vm.runInContext('selectedEnergyScenario=""',f.context);await f.run(f.rows);assert.equal(f.requests.length,0);assert.equal(f.context.currentEvaluatedKwh,null);
+ });
+-test('partial forecasts and model failures stay labeled and never mark units confirmed',async()=>{
+- const f=forecastFixture({fleet:11,fetch:async()=>({ok:false})});await f.run(f.logs);
+- assert.equal(f.text('kpiEnergyVal'),'24.0');assert.match(f.text('analyticsDataStatus'),/^Partial schedule-based forecast/);assert.equal(f.text('kpiActiveUnits'),'1');
+- assert.match(f.text('kpiIdleUnits'),/10 without estimate/);assert.equal(f.context.currentAnalyticsResult.coverage.knownUnits,0);
++test('a projection is not a validated change against past confirmed consumption',async()=>{
++ const f=forecast(),prior=reading('06:00:00',true,{timestamp:new Date('2026-10-03T06:00:00+08:00')});
++ f.context.nodeDataLogs=[...f.rows,prior];await f.context.predictEnergyConsumption({},f.rows);assert.equal(f.context.currentAnalyticsResult.previous.complete,true);
++ assert.equal(f.text('costVariance'),'Unavailable');assert.equal(f.text('kpiEnergyTrend'),'Unavailable');
+ });
+-
+-test('forecast facility hours merge overlapping schedules while utilization stays per unit',async()=>{
+- const f=forecastFixture({fleet:3});f.context.globalNodeRecords=[{id:'node-1',name:'node-1',wake_time:'06:00',sleep_time:'22:00'},
+-  {id:'node-2',name:'node-2',wake_time:'08:00',sleep_time:'20:00'},{id:'node-3',name:'node-3',wake_time:'06:00',sleep_time:'22:00'}];
+- await f.run([f.logs[0],reading('03:00:00',undefined,{nodeId:'node-2',controlSnapshot:{desired_state:{power:'on',mode:'dry'}}}),
+-  reading('03:00:00',undefined,{nodeId:'node-3',controlSnapshot:{desired_state:{power:'off',mode:'cool'}}})]);
+- assert.equal(f.text('kpiEnergyVal'),'56.0');assert.equal(f.text('kpiRuntimeVal'),'16.0','Facility hours are not the sum of controller hours');
+- assert.equal(f.text('kpiUtilization'),'14.0 hrs / unit');assert.equal(f.text('kpiActiveUnits'),'2');assert.equal(f.text('kpiTotalUnits'),'/3');
+- assert.equal(f.text('kpiIdleUnits'),'1 planned idle');assert.equal(f.text('kpiCapacityPct'),'66.7% projected active');assert.equal(f.context.currentAnalyticsResult.coverage.knownUnits,0);
+- f.context.startTimeFilter='23:00';f.context.endTimeFilter='23:30';await f.run(f.context.nodeDataLogs);
+- assert.equal(f.text('kpiRuntimeVal'),'0.0');assert.equal(f.text('kpiActiveUnits'),'0');
+-});
+-test('partial forecasts exclude units without a usable schedule from projected runtime and active counts',async()=>{
+- const f=forecastFixture({fleet:2});f.context.globalNodeRecords.push({id:'node-2',name:'node-2',wake_time:null,sleep_time:'23:59'});
+- await f.run([...f.logs,reading('03:00:00',undefined,{nodeId:'node-2',temperature:null,controlSnapshot:{configured_state:{mode:'cool'}}})]);
+- assert.equal(f.text('kpiRuntimeVal'),'16.0');assert.equal(f.text('kpiActiveUnits'),'1');assert.match(f.text('kpiIdleUnits'),/1 without estimate/);assert.match(f.text('kpiAvgLoad'),/partial/);
+-});
+-test('average hourly forecast uses actual month and leap-year lengths',async()=>{
+- for(const [now,key,days] of [['2026-02-10T03:00:00+08:00','2026-02',28],['2028-02-10T03:00:00+08:00','2028-02',29]]){
+-  const f=forecastFixture({now});f.context.currentPeriod='monthly';f.context.selectedDateKey=key;
+-  f.logs[0].timestamp=new Date(now);await f.run(f.logs);assert.equal(f.context.getAnalyticsPeriodHours(),days*24);assert.equal(f.text('kpiAvgLoad'),'1.3 kW');
+- }
+-});
+-
+-test('a full schedule forecast does not imply a confirmed change against previous actual consumption',async()=>{
+- const f=forecastFixture(),prior=reading('06:00:00',true,{timestamp:new Date('2026-10-03T06:00:00+08:00'),intervalSeconds:30});
+- f.context.nodeDataLogs=[...f.logs,prior];await f.context.predictEnergyConsumption({},f.logs);
+- assert.ok(f.context.currentAnalyticsResult.previous.complete);assert.notEqual(f.text('costPrevPeriod'),'Unavailable');
+- assert.equal(f.text('costVariance'),'Unavailable');assert.equal(f.text('kpiEnergyTrend'),'Unavailable');assert.doesNotMatch(f.text('kpiAvgLoad'),/partial/);
+-});
+--- before/mobile/scripts/test-fetching.cjs
++++ after/mobile/scripts/test-fetching.cjs
+@@ -4,7 +4,7 @@
+ const read=f=>fs.readFileSync(f,'utf8');
+ const desktop=path.resolve('..','EcoTrackDesktopDashboardNew-main-control');
+ const js=s=>ts.transpileModule(s,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,esModuleInterop:true}}).outputText;
+-function load(file,context={}){const module={exports:{}};vm.runInNewContext(js(read(file)),{module,exports:module.exports,require,console,Date,setTimeout,clearTimeout,AbortController,...context},{filename:file});return module.exports;}
++function load(file,context={}){const module={exports:{}};vm.runInNewContext(js(read(file)),{module,exports:module.exports,require:spec=>spec.startsWith('.')?load(path.resolve(path.dirname(file),spec+'.ts'),context):require(spec),console,Date,setTimeout,clearTimeout,AbortController,...context},{filename:file});return module.exports;}
+ function declaration(file,name){const source=ts.createSourceFile(file,read(file),ts.ScriptTarget.Latest,true,file.endsWith('tsx')?ts.ScriptKind.TSX:ts.ScriptKind.JS);let found;function visit(n){if((ts.isFunctionDeclaration(n)||ts.isVariableDeclaration(n))&&n.name?.getText(source)===name)found=n.getText(source);ts.forEachChild(n,visit);}visit(source);assert.ok(found,name);return found;}
+ function backend(){const prefix=read('scripts/test-backend.cjs').split('const service = h =>')[0].replace('auth: { getUser:','auth: { onAuthStateChange: callback => { client.authListener = callback; }, getUser:');return vm.runInNewContext(prefix+';harness;',{require,console,process,Response,Blob,URL,Date,Uint8Array,ArrayBuffer,setTimeout,clearTimeout});}
+ function devices(){const prefix=read('scripts/test-device-integration.cjs').split('const ac = h =>')[0];return vm.runInNewContext(prefix+';harness;',{require,console,process,setTimeout,clearTimeout,Date,AbortController});}
+@@ -120,3 +120,13 @@
+ test('desktop startup node sharing ends with the startup scope',async()=>{
+  const f=path.join(desktop,'public/js/telemetry-new.js');let reads=0;const sb={from:()=>({select:()=>{reads++;return Promise.resolve({data:[{id:'n1'}],error:null});}})};const fn=vm.runInNewContext(declaration(f,'readStartupNodes')+';readStartupNodes;',{sb});const scope=new Map();await fn(scope);await fn(scope);assert.equal(reads,1);await fn(new Map());assert.equal(reads,2);
+ });
++
++test('maintenance lists do not wait for photo signing and retry renews signed URLs',async()=>{
++ const data=fixture();data.maintenance_reports[0].tasks=[{id:'task1',photos:['storage://maintenance-photos/a.jpg']}];
++ const h=backend()(respond(data)),svc=h.load('src/services/supabase.ts');let signs=0;
++ svc.supabase.storage.from=()=>({createSignedUrl:async()=>{signs++;return {data:{signedUrl:'https://test.invalid/'+signs},error:null};}});
++ const rows=await svc.fetchLiveMaintenanceReports();assert.equal(rows.length,1);assert.equal(signs,0);
++ assert.ok(JSON.stringify(rows).includes('storage://maintenance-photos/a.jpg'));
++ const uri='storage://maintenance-photos/a.jpg';await svc.resolveImageUrl(uri);await svc.resolveImageUrl(uri);assert.equal(signs,1);
++ await svc.resolveImageUrl(uri,true);assert.equal(signs,2);
++});
+--- before/mobile/scripts/test-operating-window.cjs
++++ after/mobile/scripts/test-operating-window.cjs
+@@ -1,69 +1,61 @@
+ const {test}=require('node:test');
+ const assert=require('node:assert/strict');
+ const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+-const source=fs.readFileSync(process.env.ECOTRACK_NODE_SYNC_SOURCE || path.resolve('../EcoTrackDesktopDashboardNew-main-control/public/js/node-sync.js'),'utf8');
+-function fixture({time='2026-10-04T03:00:00+08:00',receipt={},responseOk=true,rpcError=null}={}){
+- let now=Date.parse(time),pending=null;
+- class Clock extends Date { constructor(...args){super(...(args.length?args:[now]));} static now(){return now;} }
+- const node={id:'db-node',name:'node-1',room_id:'room-1',interval_val:20,interval_unit:'Seconds',temp:25,status:'online',wake_time:'06:00',sleep_time:'22:00',ip_address:'192.168.1.6'};
+- const profile={aircon_id:'db-ac',device_id:'AC-1',node_id:node.id,state:{power:true,mode:'cool',fan:'medium'},control_snapshot:{command_id:'cmd-1',command_status:'queued',desired_state:{power:'on',mode:'cool',fan:'medium'},reported_state:null}};
+- let profiles=[profile];const writes=[],gets=[],rpcs=[],updates=[],events=[];
+- const sb={from(table){let field,value,updated=false;const q={select(){return q;},not(){return q;},eq(f,v){field=f;value=v;return q;},maybeSingle(){return q;},update(){updated=true;return q;},then(resolve,reject){return Promise.resolve({data:updated?[]:table==='nodes'?(field?(node[field]===value?node:null):[node]):table==='rooms'?{name:'Lab',floor_id:'floor'}:table==='floors'?{name:'Floor',building_id:'building'}:{name:'Building'}}).then(resolve,reject);}};return q;},rpc:async(name,args)=>{rpcs.push({name,args});if(pending)await pending();return {error:rpcError,data:{command_id:args.p_command_id,command_status:'transmitted'}};}};
+- const window={supabaseClient:sb,addEventListener(){},dispatchEvent:e=>events.push(e),EcoTrackAirconSystem:{AirconProfileManager:{getAll:()=>profiles,updateState:(id,state,snapshot)=>{updates.push({id,state,snapshot});profile.control_snapshot=snapshot;}}}};
+- const context=vm.createContext({window,Date:Clock,AbortSignal,console:{log(){},warn(){},error(){}},setTimeout(){},setInterval(){},document:{readyState:'loading',addEventListener(){}},CustomEvent:class{constructor(type,args){this.type=type;this.detail=args.detail;}},fetch:async(url,options)=>{
+-  if(url.endsWith('/ir/delivery')){gets.push({url,options});return {ok:responseOk,json:async()=>typeof receipt==='function'?receipt():receipt};}
+-  writes.push(JSON.parse(options.body));return {ok:true,status:201,json:async()=>({id:'saved-'+writes.length})};
+- }});vm.runInContext(source,context);
+- return {api:window.EcoTrackNodeSync,node,profile,writes,gets,rpcs,updates,events,setTime:t=>{now=Date.parse(t);},setProfiles:p=>{profiles=p;},setRpcWait:fn=>{pending=fn;}};
++const source=fs.readFileSync(path.resolve('../EcoTrackDesktopDashboardNew-main-control/public/js/node-sync.js'),'utf8');
++const good={id:'cmd-1',node_id:'db-node',kind:'ac_intent',payload:{aircon_id:'db-ac'},status:'completed',result:{success:true,command_id:'cmd-1',delivery_status:'transmitted'}};
++function fixture({receipt=good,timeout=false}={}){
++ let now=Date.parse('2026-10-04T06:00:00+08:00'),profiles,hold;
++ class Clock extends Date{constructor(...args){super(...(args.length?args:[now]));}static now(){return now;}}
++ const node={id:'db-node',name:'node-1',room_id:'room-1',wake_time:'06:00',sleep_time:'22:00',status:'online',temp:25};
++ const profile={aircon_id:'db-ac',device_id:'AC-1',node_id:'db-node',state:{power:true},control_snapshot:{command_id:'cmd-1',command_status:'queued',desired_state:{power:'on'},reported_state:null}};
++ profiles=[profile];const reads=[],writes=[],updates=[];
++ const sb={from(table){const q={select(){return q},not(){return q},eq(){return q},maybeSingle(){return q},update(){return q},then(resolve,reject){return Promise.resolve().then(async()=>{
++  if(table==='ecotrack_device_commands'){reads.push(table);if(hold)await hold();return {data:typeof receipt==='function'?receipt():receipt};}
++  return {data:table==='nodes'?[node]:null};}).then(resolve,reject);}};return q;}};
++ const window={supabaseClient:sb,EcoTrackAirconSystem:{AirconProfileManager:{getAll:()=>profiles,updateState:(_id,state,snapshot)=>{updates.push({state,snapshot});profile.control_snapshot=snapshot;}}},dispatchEvent(){}};
++ const ctx=vm.createContext({window,Date:Clock,console,AbortController,clearTimeout,document:{readyState:'loading',addEventListener(){}},setTimeout:timeout?(fn)=>setTimeout(fn,5):()=>undefined,setInterval(){},CustomEvent:class{},fetch:async(_url,o)=>{writes.push(JSON.parse(o.body));return {ok:true,json:async()=>({id:'saved'})};}});
++ vm.runInContext(source,ctx);
++ return {api:window.EcoTrackNodeSync,node,profile,reads,writes,updates,setTime:t=>now=Date.parse(t),setProfiles:v=>profiles=v,setWait:v=>hold=v};
+ }
+-const flush=()=>new Promise(setImmediate);
+-const goodReceipt={success:true,result:'SUCCESS',command_id:'cmd-1',aircon_id:'db-ac',node_id:'node-1'};
+ test('UTC+8 sleep boundaries are inclusive at wake, exclusive at sleep, including overnight and legacy schedules',()=>{
+  const f=fixture(),awake=t=>f.api.isNodeWithinOperatingWindow(f.node,Date.parse(`2026-10-04T${t}+08:00`));
+  assert.equal(awake('03:00:00'),false);assert.equal(awake('05:59:59'),false);assert.equal(awake('06:00:00'),true);assert.equal(awake('21:59:59'),true);assert.equal(awake('22:00:00'),false);
+  f.node.wake_time='22:00';f.node.sleep_time='06:00';assert.equal(awake('03:00:00'),true);assert.equal(awake('06:00:00'),false);assert.equal(awake('22:00:00'),true);
+  for(const [wake,sleep] of [[null,null],['bad','06:00'],['25:00','06:00'],['06:00','06:00']]){f.node.wake_time=wake;f.node.sleep_time=sleep;assert.equal(awake('03:00:00'),true);}
+ });
+-test('background cadence stops during sleep, resumes at wake, records schedules, and preserves genuine incoming readings',async()=>{
+- const f=fixture();await f.api.stepBackgroundTelemetryCadence();await flush();assert.equal(f.writes.length,0);assert.equal(f.gets.length,0);
+- f.setTime('2026-10-04T06:00:00+08:00');await f.api.stepBackgroundTelemetryCadence();await flush();assert.equal(f.writes.length,1);
+- assert.equal(f.writes[0].wake_time,'06:00');assert.equal(f.writes[0].sleep_time,'22:00');assert.equal(Object.hasOwn(f.writes[0],'ac_on'),false);
+- f.setTime('2026-10-04T22:00:00+08:00');await f.api.stepBackgroundTelemetryCadence();await flush();assert.equal(f.writes.length,1);
+- await f.api.saveNodeTelemetryToPocketBase({id:'real-sleep-reading',pb_id:'db-node',node_id:'node-1',room_name:'Lab',aircon_type:'Split Type',temp:24,ac_on:false});
+- assert.equal(f.writes.length,2);assert.equal(f.writes[1].ac_on,false,'A genuine hardware reading is preserved even during a schedule recheck');
+- f.setTime('2026-10-05T06:00:00+08:00');await f.api.stepBackgroundTelemetryCadence();await flush();assert.equal(f.writes.length,3);
++
++test('background polling never mints sensor history from a cached node, awake or asleep',async()=>{
++ const f=fixture();for(const t of ['03:00:00','06:00:00','06:01:00','22:00:00']){f.setTime('2026-10-04T'+t+'+08:00');await f.api.stepBackgroundTelemetryCadence();}assert.equal(f.writes.length,0);
+ });
+-test('a matching actual IR receipt acknowledges only the exact queued command and leaves physical power unconfirmed',async()=>{
+- const f=fixture({time:'2026-10-04T06:00:00+08:00',receipt:goodReceipt});await f.api.reconcilePendingCommandReceipt(f.node);
+- assert.equal(f.gets.length,1);assert.equal(f.gets[0].options.body,undefined,'Receipt checks never resend IR');
+- assert.deepEqual(JSON.parse(JSON.stringify(f.rpcs[0])),{name:'ecotrack_ack_aircon_intent',args:{p_aircon_id:'db-ac',p_command_id:'cmd-1',p_status:'transmitted'}});
+- assert.equal(f.updates.length,1);assert.equal(f.profile.control_snapshot.command_status,'transmitted');assert.equal(f.profile.control_snapshot.reported_state,null);
+- assert.deepEqual(Object.keys(f.updates[0].state),[]);assert.equal(f.profile.state.mode,'cool');
+- await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.gets.length,1);
++test('matching authenticated cloud receipt marks transmission without confirming physical power',async()=>{
++ const f=fixture();await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.reads.length,1);assert.equal(f.updates.length,1);
++ assert.equal(f.profile.control_snapshot.command_status,'transmitted');assert.equal(f.profile.control_snapshot.reported_state,null);assert.deepEqual(Object.keys(f.updates[0].state),[]);
+ });
+-test('stale, mismatched, failed and unavailable receipts retain the queue without acknowledgements',async()=>{
+- for(const receipt of [{...goodReceipt,command_id:'old'},{...goodReceipt,aircon_id:'other'},{...goodReceipt,node_id:'other'},{...goodReceipt,success:false},{...goodReceipt,result:'FAILED'}]){
+-  const f=fixture({time:'2026-10-04T06:00:00+08:00',receipt});await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.rpcs.length,0);assert.equal(f.updates.length,0);
+- }
+- for(const options of [{responseOk:false},{rpcError:{message:'Not authorized'}}]){
+-  const f=fixture({time:'2026-10-04T06:00:00+08:00',receipt:goodReceipt,...options});await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.updates.length,0);assert.equal(f.profile.control_snapshot.command_status,'queued');
+- }
++test('mismatched or incomplete receipt cannot acknowledge another command or device',async()=>{
++ for(const receipt of [{...good,id:'old'},{...good,node_id:'other'},{...good,kind:'configure'},{...good,payload:{aircon_id:'other'}},{...good,result:{...good.result,command_id:'other'}},{...good,result:{success:true,command_id:'cmd-1'}},{...good,status:'queued'}]){
++ const f=fixture({receipt});await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.updates.length,0);assert.equal(f.profile.control_snapshot.command_status,'queued');}
+ });
+-test('sleeping, offline, unbound, ambiguous or IP-less nodes do not attempt receipts',async()=>{
+- for(const alter of [f=>{},f=>{f.setTime('2026-10-04T06:00:00+08:00');f.node.status='offline';},f=>{f.setTime('2026-10-04T06:00:00+08:00');f.node.ip_address=null;},f=>{f.setTime('2026-10-04T06:00:00+08:00');f.setProfiles([]);},f=>{f.setTime('2026-10-04T06:00:00+08:00');f.setProfiles([f.profile,{...f.profile,aircon_id:'other'}]);}]){
+-  const f=fixture({receipt:goodReceipt});alter(f);await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.gets.length,0);assert.equal(f.rpcs.length,0);
+- }
++test('authenticated failed and expired commands surface failed delivery',async()=>{
++ for(const status of ['failed','expired']){const f=fixture({receipt:{...good,status}});await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.profile.control_snapshot.command_status,'failed');assert.equal(f.profile.control_snapshot.reported_state,null);}
+ });
+-test('polling is throttled while pending, and a new command is checked independently',async()=>{
+- const f=fixture({time:'2026-10-04T06:00:00+08:00',receipt:{}});await f.api.reconcilePendingCommandReceipt(f.node);await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.gets.length,1);
+- f.setTime('2026-10-04T06:00:14+08:00');await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.gets.length,1);
+- f.setTime('2026-10-04T06:00:15+08:00');await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.gets.length,2);
+- f.profile.control_snapshot={...f.profile.control_snapshot,command_id:'cmd-2'};await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.gets.length,3);
++test('unbound and ambiguous profiles never request a receipt',async()=>{
++ for(const profiles of [[],[{},{}]]){const f=fixture();f.setProfiles(profiles.map(()=>({...f.profile})));await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.reads.length,0);}
+ });
+-test('superseded commands cannot be restored by a late receipt or acknowledgement',async()=>{
+- let f=fixture({time:'2026-10-04T06:00:00+08:00',receipt:()=>{f.profile.control_snapshot={...f.profile.control_snapshot,command_id:'cmd-new'};return goodReceipt;}});
+- await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.rpcs.length,0);
+- let release;f=fixture({time:'2026-10-04T06:00:00+08:00',receipt:goodReceipt});f.setRpcWait(()=>new Promise(resolve=>{release=resolve;}));
+- const work=f.api.reconcilePendingCommandReceipt(f.node);await flush();f.profile.control_snapshot={...f.profile.control_snapshot,command_id:'cmd-new'};release();await work;
+- assert.equal(f.updates.length,0);assert.equal(f.profile.control_snapshot.command_id,'cmd-new');
++test('pending cloud reads are throttled, while a new command gets its own check',async()=>{
++ const f=fixture({receipt:null});await f.api.reconcilePendingCommandReceipt(f.node);await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.reads.length,1);
++ f.setTime('2026-10-04T06:00:05+08:00');await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.reads.length,2);
++ f.profile.control_snapshot.command_id='cmd-new';await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.reads.length,3);
+ });
++test('an in-flight receipt cannot overlap or restore a superseded command',async()=>{
++ const f=fixture();let release;f.setWait(()=>new Promise(r=>release=r));const pending=f.api.reconcilePendingCommandReceipt(f.node);await new Promise(setImmediate);
++ f.setTime('2026-10-04T06:00:10+08:00');await f.api.reconcilePendingCommandReceipt(f.node);assert.equal(f.reads.length,1);
++ f.profile.control_snapshot={...f.profile.control_snapshot,command_id:'cmd-new'};release();await pending;assert.equal(f.updates.length,0);
++});
++
++test('a hung receipt releases the read guard and ignores a late success',async()=>{
++ const f=fixture({timeout:true});let release;f.setWait(()=>new Promise(r=>release=r));
++ await f.api.stepBackgroundTelemetryCadence();assert.equal(f.updates.length,0);
++ f.setTime('2026-10-04T06:00:20+08:00');f.setWait(null);
++ await f.api.stepBackgroundTelemetryCadence();assert.equal(f.updates.length,1);
++ release();await new Promise(setImmediate);assert.equal(f.updates.length,1);
++});
+--- before/mobile/scripts/test-scheduler-controls.cjs
++++ after/mobile/scripts/test-scheduler-controls.cjs
+@@ -7,7 +7,7 @@
+ const root=process.env.ECOTRACK_CONTROL_SOURCE_ROOT || path.resolve('../EcoTrackDesktopDashboardNew-main-control');
+ const scheduler=fs.readFileSync(process.env.ECOTRACK_SCHEDULER_SOURCE || path.join(root,'public/js/scheduler.js'),'utf8');
+ const tree=ts.createSourceFile('scheduler.js',scheduler,ts.ScriptTarget.Latest,true);
+-const names=['getSchedulerControlSnapshot','getSchedulerControlMode','refreshSchedulerControlModes','createTableRow','formatTimeDisplay'];
++const names=['normalizeScheduleTime','nodeSleepNote','schedulerSelectedSettings','getSchedulerTargetTemperature','getSchedulerPowerMode','getSchedulerControlSnapshot','getSchedulerControlMode','refreshSchedulerControlModes','createTableRow','formatTimeDisplay'];
+ const functions=[];
+ const find=node=>{if(ts.isFunctionDeclaration(node) && names.includes(node.name?.text))functions.push(node.getText(tree));ts.forEachChild(node,find);};find(tree);
+ function fixture() {
+@@ -15,7 +15,8 @@
+   const localStorage={getItem:key=>storage[key]??null,setItem:(key,value)=>storage[key]=String(value),removeItem:key=>delete storage[key]};
+   let profiles=[];
+   const context=vm.createContext({window:{EcoTrackAirconSystem:{AirconProfileManager:{getAll:()=>profiles}}},Date,console,AbortController,
+-    localStorage,schedulerAirconRecords:null,savedRooms:{},currentRoomNodes:[],document:{querySelectorAll:()=>[]}});
++    localStorage,schedulerAirconRecords:null,scheduleDrafts:new Map(),scheduleDeliveries:new Map(),savedRooms:{},currentRoomNodes:[],document:{querySelectorAll:()=>[]}});
++  vm.runInContext(fs.readFileSync(path.join(root,'public/js/aircon-state.js'),'utf8'),context);
+   vm.runInContext(functions.join('\n'),context);
+   const node={id:'node-1',name:'node-1',pb_id:'db-node',status:'online',temp:24,intervalVal:30,intervalUnit:'Seconds'};
+   const snapshot={desired_state:{power:'on',mode:'cool',fan:'quiet',temp:24},commanded_at:'2026-10-04T00:00:00Z'};
+@@ -38,9 +39,9 @@
+   f.snapshot.commanded_at='2026-10-04T00:02:00Z';
+   assert.equal(f.context.getSchedulerControlMode(f.node),'COOL / QUIET FAN','A fresh local command is visible before the cloud refresh');
+   f.context.schedulerAirconRecords.push({id:'other',controller_node_id:'node-1',desired_state:{mode:'auto',fan:'auto'}});
+-  assert.equal(f.context.getSchedulerControlMode(f.node),'UNCONFIRMED');
++  assert.equal(f.context.getSchedulerControlMode(f.node),'—');
+   f.context.schedulerAirconRecords=[];
+-  assert.equal(f.context.getSchedulerControlMode(f.node),'UNCONFIRMED','Stale cached profiles cannot recreate a deleted binding');
++  assert.equal(f.context.getSchedulerControlMode(f.node),'—','Stale cached profiles cannot recreate a deleted binding');
+ });
+ 
+ test('a verified controller without a command shows its selected control settings',()=>{
+@@ -65,29 +66,21 @@
+   f.snapshot.desired_state.fan='high';f.context.refreshSchedulerControlModes();
+   assert.equal(label.textContent,'COOL / HIGH FAN');
+ });
+-test('rapid mode and fan commands retain both settings in the full cloud and LAN state',async()=>{
+-  const f=fixture();const context=f.context;
++test('rapid mode and fan commands retain both settings in the full cloud state',async()=>{
++  const f=fixture(),context=f.context;
+   context.window={localStorage:context.localStorage};
+-  context.setTimeout=()=>0;context.setInterval=()=>0;context.clearTimeout=()=>{};
+-  vm.runInContext(fs.readFileSync(process.env.ECOTRACK_AIRCON_SYSTEM_SOURCE || path.join(root,'public/js/aircon-system.js'),'utf8'),context);
++  Object.assign(context,{setTimeout,clearTimeout,setInterval:()=>0,clearInterval(){}});
++  vm.runInContext(fs.readFileSync(path.join(root,'public/js/aircon-system.js'),'utf8'),context);
+   const {NodeService,AirconProfileManager,CommandManager}=context.window.EcoTrackAirconSystem;
+-  NodeService.saveNode({node_id:'node-1',name:'node-1',status:'Connected',ip_address:'192.168.1.6'});
+-  await AirconProfileManager.save({device_id:'AC-1',name:'Fixture',node_id:'node-1',brand:'Daikin',protocol_name:'daikin',status:'online',
+-    state:{power:true,temperature:24,mode:'cool',fan:'quiet'},capabilities:{modes:['cool','dry','fan'],fans:['auto','quiet','high'],power:true,temperature:true}});
+-  const intents=[],acks=[],lan=[];
+-  context.window.supabaseClient={from:()=>({select(){return this;},eq(){return this;},maybeSingle:async()=>({data:{id:'db-ac'}}),insert(){return this;},then(resolve){return Promise.resolve({data:[]}).then(resolve);}}),
+-    rpc:async(name,args)=>{
+-      if(name==='ecotrack_set_aircon_intent') {intents.push(args.p_state);await new Promise(setImmediate);return {data:{id:'db-ac',command_id:'command-'+intents.length,commanded_at:new Date().toISOString()}};}
+-      acks.push(args);return {data:{}};
+-    }};
+-  context.fetch=async(_,options)=>{lan.push(JSON.parse(options.body));return {ok:true,json:async()=>({success:true,result:'SUCCESS'})};};
++  await NodeService.saveNode({node_id:'node-1',db_id:'db-node',name:'node-1',status:'Connected'});
++  context.localStorage.setItem('ecoTrack_aircons',JSON.stringify([{device_id:'AC-1',aircon_id:'db-ac',node_id:'node-1',brand:'Daikin',protocol_name:'DAIKIN2',status:'online',state:{power:true,temperature:24,mode:'cool',fan:'quiet'}}]));
++  const intents=[];
++  context.window.supabaseClient={from:()=>({select(){return this;},eq(){return this;},maybeSingle:async()=>({data:{id:'db-ac'}})})};
++  context.window.EcoTrackHardwareCloud={describe:()=> 'online',control:async(node,payload)=>{intents.push(JSON.parse(JSON.stringify(payload)));await new Promise(setImmediate);return {command_id:'cmd-'+intents.length,commanded_at:new Date().toISOString()};}};
++  context.fetch=async()=>{throw Error('Do not send direct LAN commands');};
+   const results=await Promise.all([CommandManager.dispatch({device_id:'AC-1',command:'MODE',value:'dry'}),CommandManager.dispatch({device_id:'AC-1',command:'FAN',value:'high'})]);
+-  assert.ok(results.every(result=>result.success));
+-  assert.equal(intents.at(-1).mode,'dry');assert.equal(intents.at(-1).fan,'high');
+-  assert.equal(lan.at(-1).state.mode,'dry');assert.equal(lan.at(-1).state.fan,'high');
+-  assert.deepEqual(lan.map(payload=>payload.command_id),['command-1','command-2']);
+-  assert.ok(lan.every(payload=>payload.aircon_id==='db-ac'));
+-  assert.deepEqual(acks.map(ack=>ack.p_status),['transmitted','transmitted']);
+-  assert.equal(AirconProfileManager.getById('AC-1').state.mode,'dry');
+-  assert.equal(AirconProfileManager.getById('AC-1').state.fan,'high');
++  assert.ok(results.every(result=>result.success),JSON.stringify(results));
++  assert.equal(intents.length,2);assert.equal(intents.at(-1).state.mode,'dry');assert.equal(intents.at(-1).state.fan,'high');
++  assert.equal(AirconProfileManager.getById('AC-1').control_snapshot.command_status,'queued');
++  assert.equal(AirconProfileManager.getById('AC-1').control_snapshot.reported_state,undefined);
+ });

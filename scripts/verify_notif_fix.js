@@ -4,6 +4,11 @@ const profileJs = fs.readFileSync('public/js/profile.js', 'utf8');
 const globalNotifJs = fs.readFileSync('public/js/global-notifications.js', 'utf8');
 const notifJs = fs.readFileSync('public/js/notifications.js', 'utf8');
 
+const assert=require('node:assert/strict'),vm=require('node:vm');
+const classes=new Set();let enabled='false';const badge={classList:{toggle:(key,on)=>on?classes.add(key):classes.delete(key)},style:{},parentElement:{setAttribute(){}}};
+const context=vm.createContext({document:{getElementById:()=>badge},localStorage:{getItem:()=>enabled}});
+vm.runInContext(globalNotifJs.slice(globalNotifJs.indexOf('function renderSidebarNotificationBadge('),globalNotifJs.indexOf('// Update badge on all pages')),context);
+for(const [setting,count,expected] of [['false',4,'0'],['true',4,'4'],['true',120,'99+'],['true',0,'0']]){enabled=setting;context.renderSidebarNotificationBadge(count);assert.equal(badge.textContent,expected);assert.equal(badge.style.display,expected==='0'?'none':'inline-flex');}
 const tests = [
   {
     name: 'profile.js: renderNotifToggleState hides badge when Alerts OFF',
@@ -37,7 +42,7 @@ const tests = [
   {
     name: 'notifications.js: showGlobalNotification & updateNotificationBadge respect muted state',
     pass: notifJs.includes("if (localStorage.getItem('ecoTrack_notifications_enabled') === 'false') return;") &&
-          notifJs.includes("const isNotifEnabled = localStorage.getItem('ecoTrack_notifications_enabled') !== 'false'")
+          notifJs.includes('renderSidebarNotificationBadge(getTriggeredNotificationCount())')
   }
 ];
 

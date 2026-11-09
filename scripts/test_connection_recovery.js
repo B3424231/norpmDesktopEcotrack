@@ -69,6 +69,8 @@ function harness() {
     setTimeout(callback, ms) { timers.set(++timerId, {callback, ms}); return timerId; },
     clearTimeout(id) { timers.delete(id); }
   });
+  vm.runInContext(fs.readFileSync('public/js/device-labels.js','utf8'),context);
+  context.ecoDeviceDisplayName=window.ecoDeviceDisplayName;
   vm.runInContext(source, context);
   const select = supplied => context.selectBleDevice({
     id:'EcoTrack-'+supplied.device_id, nodeId:supplied.device_id, ip:supplied.ip_address||'', info:supplied
@@ -93,7 +95,7 @@ async function main() {
   assert.equal(app.get('nodeFormPassword').required,false);
   assert.equal(app.get('registrationWifiPassword').required,true);
   assert.equal(app.get('existingWifiPanel').classList.contains('hidden'),false);
-  assert.match(app.get('existingWifiMessage').textContent,/ESP32 Connected/);
+  assert.match(app.get('existingWifiMessage').textContent,/device Connected/);
   assert.equal(app.get('existingCloudMessage').textContent,'');
   assert.equal(app.context.registrationCloudState,'pending');
   checks.push('A real connected ESP32 skips to Controller Info while cloud access remains unverified');
@@ -113,7 +115,7 @@ async function main() {
   assert.equal(app.get('verifyWifiBtn').disabled,true);
   assert.equal(app.get('verifyWifiBtn').attributes['aria-busy'],'true');
   assert.equal(app.get('chkBle').dataset.state,'checking');
-  assert.equal(app.get('verifyWifiLabel').textContent,'Checking ESP32...');
+  assert.equal(app.get('verifyWifiLabel').textContent,'Checking device...');
   assert.equal(app.get('autoAssignIpBtn').disabled,true);
   app.reply.resolve(info());
   await checking;
@@ -212,7 +214,7 @@ async function main() {
   await timed;
   assert.equal(app.context.selectedBleDevice,null);
   assert.equal(app.get('scanBleBtn').disabled,false);
-  assert.equal(app.get('scanBleLabel').textContent,'Connect Nearby ESP32');
+  assert.equal(app.get('scanBleLabel').textContent,'Connect Nearby device');
   checks.push('An unavailable previous device releases the normal Bluetooth picker after a bounded check');
 
   app = harness();
@@ -224,7 +226,7 @@ async function main() {
   assert.equal(app.get('existingWifiPanel').classList.contains('hidden'),true);
   checks.push('Editing the target network invalidates previous Wi-Fi confirmation');
 
-  const out=path.resolve('reports/connection-recovery');
+  const out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.resolve('reports/connection-recovery');
   fs.mkdirSync(out,{recursive:true});
   fs.writeFileSync(path.join(out,'wizard-tests.json'),JSON.stringify({passed:checks.length,checks,physical_hardware_tested:false,live_supabase_tested:false},null,2));
   console.log('Connection recovery wizard: '+checks.length+' checks passed.');

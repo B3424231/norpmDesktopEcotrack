@@ -1,0 +1,167 @@
+[
+  {
+    "path": "scratch/(files)",
+    "MiB": 1.13,
+    "files": 43
+  },
+  {
+    "path": "scratch/aircon-state",
+    "MiB": 1.07,
+    "files": 23
+  },
+  {
+    "path": "scratch/android-build-check",
+    "MiB": 9.93,
+    "files": 33
+  },
+  {
+    "path": "scratch/backend-audit",
+    "MiB": 15.75,
+    "files": 70
+  },
+  {
+    "path": "scratch/bounded-log-dates",
+    "MiB": 0.26,
+    "files": 3
+  },
+  {
+    "path": "scratch/daily-log-refresh",
+    "MiB": 0.27,
+    "files": 6
+  },
+  {
+    "path": "scratch/desktop-integration",
+    "MiB": 3.85,
+    "files": 69
+  },
+  {
+    "path": "scratch/desktop-startup",
+    "MiB": 0.05,
+    "files": 17
+  },
+  {
+    "path": "scratch/energy-analytics",
+    "MiB": 0.27,
+    "files": 5
+  },
+  {
+    "path": "scratch/energy-audit",
+    "MiB": 0.26,
+    "files": 4
+  },
+  {
+    "path": "scratch/firmware-build",
+    "MiB": 99.6,
+    "files": 581
+  },
+  {
+    "path": "scratch/firmware-output",
+    "MiB": 51.4,
+    "files": 6
+  },
+  {
+    "path": "scratch/fixed-desktop-start",
+    "MiB": 0.26,
+    "files": 6
+  },
+  {
+    "path": "scratch/forecast-cards",
+    "MiB": 0.33,
+    "files": 4
+  },
+  {
+    "path": "scratch/ipc-and-logged-settings",
+    "MiB": 0.41,
+    "files": 8
+  },
+  {
+    "path": "scratch/operating-data",
+    "MiB": 51.96,
+    "files": 18
+  },
+  {
+    "path": "scratch/scheduler-controls",
+    "MiB": 0.31,
+    "files": 5
+  },
+  {
+    "path": "scratch/telemetry-reset-20261004-012200",
+    "MiB": 5.63,
+    "files": 2
+  },
+  {
+    "path": "scratch/unconfirmed-settings",
+    "MiB": 0.06,
+    "files": 3
+  },
+  {
+    "path": "artifacts/(files)",
+    "MiB": 752.93,
+    "files": 60
+  },
+  {
+    "path": "artifacts/cloud-integration-android",
+    "MiB": 10.01,
+    "files": 33
+  },
+  {
+    "path": "artifacts/cloud-integration-upload",
+    "MiB": 10.25,
+    "files": 129
+  },
+  {
+    "path": "artifacts/cloud-integration-upload-final",
+    "MiB": 10.25,
+    "files": 129
+  },
+  {
+    "path": "artifacts/cloud-integration-web",
+    "MiB": 7.96,
+    "files": 29
+  },
+  {
+    "path": "artifacts/mobile-home-android",
+    "MiB": 9.96,
+    "files": 33
+  },
+  {
+    "path": "artifacts/mobile-home-upload",
+    "MiB": 10.17,
+    "files": 131
+  },
+  {
+    "path": "artifacts/mobile-home-upload-final",
+    "MiB": 5.83,
+    "files": 103
+  },
+  {
+    "path": "artifacts/mobile-home-visual",
+    "MiB": 0.31,
+    "files": 13
+  },
+  {
+    "path": "artifacts/mobile-ui-cleanup-android",
+    "MiB": 9.96,
+    "files": 33
+  },
+  {
+    "path": "artifacts/mobile-ui-cleanup-upload",
+    "MiB": 10.19,
+    "files": 128
+  },
+  {
+    "path": "artifacts/mobile-ui-cleanup-web",
+    "MiB": 7.92,
+    "files": 29
+  },
+  {
+    "path": "firmware/(files)",
+    "MiB": 0.0,
+    "files": 1
+  },
+  {
+    "path": "firmware/ecotrack_esp32_s3",
+    "MiB": 0.05,
+    "files": 1
+  }
+]

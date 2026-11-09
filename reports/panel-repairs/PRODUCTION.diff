@@ -1,0 +1,606 @@
+--- before/desktop/src/main.js
++++ after/desktop/src/main.js
+@@ -582,7 +582,9 @@
+     });
+     // Validation, authorization and version checks belong to the transactional RPC.
+     // A rejected operation must never fall through to a direct table write.
+-    if (error) return { success: false, error: error.message, code: error.code };
++    if (error) return { success: false, error: error.code === '40001'
++        ? 'This report changed on another device. Refresh it and review your changes before retrying.'
++        : error.message, code: error.code };
+     if (data?.report?.id !== report.id) {
+       return { success: false, error: 'Database did not confirm the report save.', code: 'INVALID_RESPONSE' };
+     }
+--- before/desktop/public/dashboard.html
++++ after/desktop/public/dashboard.html
+@@ -425,11 +425,10 @@
+ 
+       function getDashboardPowerState(ac) {
+         const observation = window.EcoTrackAirconState.describeAirconState(ac.control_snapshot);
+-        const settings = window.EcoTrackAirconState.displaySettings(ac.control_snapshot);
+-        const online = !['offline', 'disconnected'].includes(String(ac.status).toLowerCase());
+-        const power = online && observation.confirmed ? observation.power :
+-          online && observation.remoteObserved ? observation.observedPower : null;
+-        return {power,label:settings.powerLabel};
++        const online = String(ac.status).toLowerCase() === 'online' &&
++          !!ac.node_id && NodeService.isNodeOnline(ac.node_id);
++        const power = online && observation.confirmed ? observation.power : null;
++        return {power,label:power === true ? 'Active' : power === false ? 'Standby' : 'Power unconfirmed'};
+       }
+ 
+       function renderDashboard() {
+@@ -456,8 +455,8 @@
+         document.getElementById('kpiOnlineUnits').textContent = onlineCount;
+         document.getElementById('kpiActivePower').textContent = total && unknownPowerCount === total ? '—' : activePowerCount;
+         document.getElementById('kpiStandby').textContent = total && unknownPowerCount === total ? '—' : standbyCount;
+-        document.getElementById('kpiActivePowerCaption').textContent = 'Units with power ON';
+-        document.getElementById('kpiStandbyCaption').textContent = 'Units with power OFF';
++        document.getElementById('kpiActivePowerCaption').textContent = unknownPowerCount ? `${unknownPowerCount} awaiting feedback` : 'Units with confirmed power ON';
++        document.getElementById('kpiStandbyCaption').textContent = unknownPowerCount ? `${unknownPowerCount} awaiting feedback` : 'Units with confirmed power OFF';
+         document.getElementById('kpiNodesOnline').textContent = `${onlineNodesCount} / ${nodes.length}`;
+         document.getElementById('kpiCommandsSent').textContent = commandsSent;
+         document.getElementById('kpiCommandsSuccess').textContent = commandsSuccess;
+--- before/desktop/public/logs.html
++++ after/desktop/public/logs.html
+@@ -1264,7 +1264,8 @@
+   <script src="./js/sidebar.js"></script>
+   <script src="./js/clear-logs-dialog.js?v=1"></script>
+   <script src="./js/energy-prediction.js?v=1"></script>
+-  <script src="./js/logs.js?v=44"></script>
++  <script src="./js/telemetry-history.js?v=1"></script>
++  <script src="./js/logs.js?v=45"></script>
+ </body>
+ 
+ </html>
+--- before/desktop/public/js/logs.js
++++ after/desktop/public/js/logs.js
+@@ -74,6 +74,7 @@
+ window.addEventListener('focus', onTelemetrySavedDebounced);
+ 
+ function getTelemetryRevision(data) {
++  if (data.history_revision) return data.history_revision;
+   const latest = data.items?.[0];
+   return JSON.stringify([data.totalItems, latest?.id, latest?.created, latest?.updated, data.reset_at]);
+ }
+@@ -784,9 +785,15 @@
+   }
+   try {
+     const backendUrl = window.ECOTRACK_CONFIG?.backendUrl || 'http://localhost:5000';
+-    const res = await (window.EcoNetwork?.fetch.bind(window.EcoNetwork) || fetch)(`${backendUrl}/api/telemetry?perPage=0&sort=-created`, { cache: 'no-store' }, { timeout: 8000, retries: 0, silent: true });
+-    if (!res.ok) throw new Error(`Telemetry request failed (HTTP ${res.status})`);
+-    const data = await res.json();
++    const requestHistory = url => (window.EcoNetwork?.fetch.bind(window.EcoNetwork) || fetch)(url,
++      { cache: 'no-store' }, { timeout: 8000, retries: 0, silent: true });
++    let data;
++    if (window.EcoTrackTelemetryHistory) data = await window.EcoTrackTelemetryHistory.read(backendUrl, requestHistory);
++    else {
++      const res = await requestHistory(`${backendUrl}/api/telemetry?perPage=0&sort=-created`);
++      if (!res.ok) throw new Error(`Telemetry request failed (HTTP ${res.status})`);
++      data = await res.json();
++    }
+     if (!Array.isArray(data.items)) throw new Error('Telemetry response must contain an items array');
+     const records = data.items;
+     document.getElementById('logsLoadError')?.remove();
+@@ -1826,7 +1833,8 @@
+   const value = Number(log.intervalVal ?? log.interval_val ?? node.interval_val ?? node.intervalVal);
+   const unit = String(log.intervalUnit ?? log.interval_unit ?? node.interval_unit ?? node.intervalUnit ?? '').toLowerCase();
+   const multiplier = unit.startsWith('sec') ? 1000 : unit.startsWith('min') ? 60000 : (unit.startsWith('hour') || unit.startsWith('hr')) ? 3600000 : 0;
+-  const calcMs = Number.isFinite(value) && value > 0 && multiplier ? value * multiplier : 900000;
++  // An absent historical cadence cannot establish a thirty-second or fifteen-minute interval.
++  const calcMs = Number.isFinite(value) && value > 0 && multiplier ? value * multiplier : 0;
+   return Math.min(calcMs, 3600000);
+ }
+ 
+@@ -1858,17 +1866,13 @@
+     const daySegmentStart = Math.max(start, dayBoundaryStart);
+     const daySegmentEnd = Math.min(end, dayBoundaryEnd);
+     
+-    if (daySegmentEnd > daySegmentStart) {
+-      if (filterStart !== null || filterEnd !== null) {
+-        const filteredWindows = runtimeDayWindows(day, filterStart ?? 0, filterEnd ?? 1440);
+-        filteredWindows.forEach(([f, t]) => {
+-          const clippedStart = Math.max(daySegmentStart, f);
+-          const clippedEnd = Math.min(daySegmentEnd, t);
+-          if (clippedEnd > clippedStart) segments.push([clippedStart, clippedEnd]);
+-        });
+-      } else {
+-        segments.push([daySegmentStart, daySegmentEnd]);
+-      }
++    const operatingWindows = runtimeDayWindows(day, runtimeClockMinutes(node.wake_time ?? node.wakeTime),
++      runtimeClockMinutes(node.sleep_time ?? node.sleepTime));
++    const filteredWindows = runtimeDayWindows(day, filterStart ?? 0, filterEnd ?? 1440);
++    for (const [wake, sleep] of operatingWindows) for (const [f, t] of filteredWindows) {
++      const clippedStart = Math.max(daySegmentStart, wake, f);
++      const clippedEnd = Math.min(daySegmentEnd, sleep, t);
++      if (clippedEnd > clippedStart) segments.push([clippedStart, clippedEnd]);
+     }
+     day.setDate(day.getDate() + 1);
+   }
+@@ -1904,6 +1908,7 @@
+   const allFacilitySegments = [];
+   const settingsSegments = [];
+   let totalRuntimeSum = 0;
++  let missingCadenceSamples = 0;
+ 
+   logsByNode.forEach(({ node, samples }, id) => {
+     let config = { ...node };
+@@ -1920,10 +1925,11 @@
+     readings.forEach(({ log, timestamp, config }, index) => {
+       if (getConfirmedAcOnState(log) !== true) return;
+       const intervalMs = getRuntimeIntervalMs(log, config);
++      if (!intervalMs) { missingCadenceSamples++; return; }
+       const next = readings[index + 1];
+       const gap = next ? next.timestamp - timestamp : Infinity;
+       const dayEnd = new Date(timestamp); dayEnd.setHours(24, 0, 0, 0);
+-      const maxSessionGap = Math.max(intervalMs * 2.5, 1800000);
++      const maxSessionGap = intervalMs * 2.5;
+       const end = (gap > 0 && gap <= maxSessionGap)
+         ? next.timestamp : Math.min(timestamp + intervalMs, dayEnd.getTime());
+       const clipped = clipRuntimeSegment(timestamp, end, config);
+@@ -1971,6 +1977,7 @@
+     runtimeHrs: totalFacilityActiveHrs || facilitySpanHrs,
+     perUnitUtil: activeUnits ? totalRuntimeSum / activeUnits : 0,
+     totalRuntimeSum,
++    missingCadenceSamples,
+     activeUnits,
+     nodeRuntimes,
+     dailyNodeRuntimes,
+@@ -2248,7 +2255,10 @@
+ }
+ 
+ function updateKpiCardsTrends(period, isSingleNode, kwh, cost, runtimeHrs, activeUnits, totalUnits, idleUnits, capacityPct) {
+-  const previous = currentAnalyticsResult?.previous;
++  const result = currentAnalyticsResult;
++  const previous = !result?.forecast && result?.previous?.complete &&
++    !result?.missingEstimates && !result?.coverage?.unknownUnits && !result?.coverage?.unknownSamples
++    ? result.previous : null;
+   const labels = { daily: 'vs previous day', weekly: 'vs previous week', monthly: 'vs previous month', yearly: 'vs previous year' };
+   const compare = (id, value, prior, unit) => {
+     let text = '--';
+@@ -2298,8 +2308,9 @@
+   const energy = value => Number.isFinite(value) ? value.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : 'Unavailable';
+   const operating = result.forecast ? getForecastOperatingMetrics(result) : { ...runtime, ...coverage };
+   const partial = result.forecast ? operating.unknownUnits > 0 || result.missingEstimates > 0
+-    : coverage.unknownUnits > 0 || coverage.unknownSamples > 0 || result.missingEstimates > 0;
+-  const hasRuntime = result.forecast ? operating.knownUnits > 0 : coverage.confirmedSamples > 0;
++    : coverage.unknownUnits > 0 || coverage.unknownSamples > 0 || result.missingEstimates > 0 || runtime.missingCadenceSamples > 0;
++  const hasRuntime = result.forecast ? operating.knownUnits > 0
++    : coverage.confirmedSamples > 0 && !(runtime.missingCadenceSamples > 0 && !runtime.totalRuntimeSum);
+   setAnalyticsText('energyConsumption', Number.isFinite(kwh) ? energy(kwh) + ' kWh' : 'Unavailable');
+   setAnalyticsValue('kpiEnergyVal', energy(kwh), 'kpiEnergyUnit');
+   for (const id of ['kpiCostVal', 'estBillValue', 'costTodayCost', 'costCurrentCycle']) setAnalyticsValue(id, money(cost));
+@@ -2381,7 +2392,8 @@
+         if (!job.projection) { job.reason = 'No confirmed AC-on feedback or complete saved schedule is available.'; continue; }
+       }
+       const operating = job.projection || features;
+-      if (operating.acOnRatio === 0 || operating.hoursUsed <= 0) { job.kwh = 0; continue; }
++      if (operating.acOnRatio === 0 || (job.projection && operating.hoursUsed <= 0)) { job.kwh = 0; continue; }
++      if (operating.hoursUsed <= 0) { job.reason = 'No bounded operating interval is available; check the recorded cadence and schedule.'; continue; }
+       if (!scenarioId) { job.reason = 'Choose conditions in Prediction options.'; continue; }
+       if (!client) { job.reason = 'The Random Forest client is unavailable. Reload this page.'; continue; }
+       let segments;
+--- before/desktop/public/js/node-sync.js
++++ after/desktop/public/js/node-sync.js
+@@ -105,8 +105,8 @@
+       const aircon = matches.length === 1 ? matches[0] : null;
+       const hasPacketSnapshot = Object.prototype.hasOwnProperty.call(packet, 'control_snapshot');
+       let controlSnapshot = hasPacketSnapshot ? packet.control_snapshot : aircon?.control_snapshot;
+-      const selectedPower = window.EcoTrackAirconState?.displaySettings?.(controlSnapshot)?.power;
+-      if ((selectedPower ?? resolvedAcOn) !== true) return null;
++      // A received measurement is valid even when the AC is OFF or its power is
++      // unknown. Selected settings must never suppress physical OFF evidence.
+       // Capture selected settings at ingestion, without treating them as a command or feedback.
+       // A null snapshot on an unbound profile cannot supply historical state.
+       if (!hasPacketSnapshot && aircon?.aircon_id && controlSnapshot &&
+@@ -133,6 +133,7 @@
+         building_name: loc.buildingName,
+         aircon_type: airconType,
+         temperature: measurement(packet.temp ?? packet.temperature),
++        pressure: measurement(packet.pressure),
+         battery: measurement(packet.battery),
+         rssi: measurement(packet.rssi),
+         status: packet.status || 'online',
+@@ -181,13 +182,25 @@
+   }
+ 
+   // ===== BACKGROUND TELEMETRY CADENCE SERVICE =====
+-  // Runs continuous telemetry logging based on each node's interval setting
+-  // when the user is on Daily Logs, Scheduler, or other pages where telemetry.html is not active.
++  // Reconcile pending cloud command receipts on pages without the telemetry view.
++  // Cached node values are never turned into new measurements by this timer.
+   let _bgCadenceTimer = null;
+-  const _nodeLastSendTime = {};
+-  const _nodeInitialSendAt = {};
+   let _assignedNodesCache = null;
+   let _assignedNodesCacheTime = 0;
++
++  function readCloudWithDeadline(query) {
++    const controller = new AbortController();
++    let timer;
++    const timeout = new Promise((_, reject) => {
++      timer = setTimeout(() => {
++        reject(new Error('Cloud status read timed out'));
++        controller.abort();
++      }, 15000);
++    });
++    const read = Promise.resolve().then(() => typeof query.abortSignal === 'function'
++      ? query.abortSignal(controller.signal) : query);
++    return Promise.race([read, timeout]).finally(() => clearTimeout(timer));
++  }
+ 
+   async function getAssignedNodesWithSchedule() {
+     const now = Date.now();
+@@ -197,7 +210,7 @@
+     const sb = getSupabase();
+     if (!sb) return [];
+     try {
+-      const { data: nodes, error } = await sb.from('nodes').select('*').not('room_id', 'is', null);
++      const { data: nodes, error } = await readCloudWithDeadline(sb.from('nodes').select('*').not('room_id', 'is', null));
+       if (!error && Array.isArray(nodes)) {
+         _assignedNodesCache = nodes;
+         _assignedNodesCacheTime = now;
+@@ -220,6 +233,7 @@
+   }
+ 
+   const _commandReceiptChecks = new Map();
++  const _commandReceiptInFlight = new Set();
+   async function reconcilePendingCommandReceipt(node, now = Date.now()) {
+     if (typeof window === 'undefined') return;
+     const system = window.EcoTrackAirconSystem, sb = getSupabase();
+@@ -227,12 +241,14 @@
+     if (matches.length !== 1 || !sb?.from) return;
+     const ac = matches[0], snapshot = ac.control_snapshot;
+     if (!ac.aircon_id || !snapshot?.command_id || snapshot.command_status !== 'queued') return;
++    if (_commandReceiptInFlight.has(ac.aircon_id)) return;
+     const previous = _commandReceiptChecks.get(ac.aircon_id);
+     if (previous?.command_id === snapshot.command_id && now - previous.checkedAt < 5000) return;
+     _commandReceiptChecks.set(ac.aircon_id, { command_id: snapshot.command_id, checkedAt: now });
++    _commandReceiptInFlight.add(ac.aircon_id);
+     try {
+-      const { data: command, error } = await sb.from('ecotrack_device_commands').select('id,node_id,kind,payload,status,result')
+-        .eq('id', snapshot.command_id).maybeSingle();
++      const { data: command, error } = await readCloudWithDeadline(sb.from('ecotrack_device_commands').select('id,node_id,kind,payload,status,result')
++        .eq('id', snapshot.command_id).maybeSingle());
+       if (error || command?.id !== snapshot.command_id || command.node_id !== node.id || command.kind !== 'ac_intent' || command.payload?.aircon_id !== ac.aircon_id) return;
+       const current = system.AirconProfileManager.getAll().find(profile => profile.aircon_id === ac.aircon_id);
+       if (current?.control_snapshot?.command_id !== snapshot.command_id || current.control_snapshot.command_status !== 'queued') return;
+@@ -241,75 +257,24 @@
+         ['failed','expired'].includes(command.status) ? 'failed' : null;
+       if (status) system.AirconProfileManager.updateState(ac.device_id, {}, { ...current.control_snapshot, command_status: status });
+     } catch (_) { /* Preserve queued status until an authenticated cloud receipt is available. */ }
+-  }
+-
++    finally { _commandReceiptInFlight.delete(ac.aircon_id); }
++  }
++
++  let _backgroundReadPending = false;
+   async function stepBackgroundTelemetryCadence() {
+-    const assignedNodes = await getAssignedNodesWithSchedule();
+-    if (!assignedNodes.length) return;
+-
+-    // The cloud receiver writes its actual reports. Browser timers must not mint new sensor history from cached node snapshots.
+-    if (typeof window !== 'undefined' && window.EcoTrackHardwareCloud) {
+-      for (const node of assignedNodes) void reconcilePendingCommandReceipt(node);
+-      return;
+-    }
+-
+-    const now = Date.now();
+-
+-    for (const [index, node] of assignedNodes.entries()) {
+-      if (!isNodeWithinOperatingWindow(node, now)) continue;
+-      void reconcilePendingCommandReceipt(node, now);
+-      const val = parseInt(node.interval_val) || 15;
+-      const unit = (node.interval_unit || 'Minutes').toLowerCase();
+-      let intervalMs = 15 * 60 * 1000;
+-
+-      if (unit.startsWith('second') || unit.startsWith('sec')) {
+-        intervalMs = Math.max(1000, val * 1000);
+-      } else if (unit.startsWith('minute') || unit.startsWith('min')) {
+-        intervalMs = Math.max(1000, val * 60 * 1000);
+-      } else if (unit.startsWith('hour') || unit.startsWith('hr')) {
+-        intervalMs = Math.max(1000, val * 3600 * 1000);
+-      }
+-
+-      const nodeKey = node.name || node.id;
+-      if (_nodeInitialSendAt[nodeKey] === undefined) {
+-        _nodeInitialSendAt[nodeKey] = now + (index * 250) % intervalMs;
+-      }
+-      const lastSend = _nodeLastSendTime[nodeKey];
+-      const isDue = lastSend === undefined ? now >= _nodeInitialSendAt[nodeKey] : now - lastSend >= intervalMs;
+-      if (isDue) {
+-        _nodeLastSendTime[nodeKey] = now;
+-
+-        // Log the last reported node readings at the configured cadence.
+-        const actualPacket = {
+-          id: node.name || node.id,
+-          name: node.name || node.id,
+-          pb_id: node.id,
+-          telemetry_id: `telem_cadence_${node.id}_${Math.floor(now / intervalMs)}`,
+-          temp: measurement(node.temp),
+-          battery: measurement(node.battery),
+-          rssi: measurement(node.rssi),
+-          status: node.status || 'offline',
+-          ac_on: node.ac_on ?? node.acOn ?? node.power_state,
+-          intervalVal: val,
+-          intervalUnit: node.interval_unit || 'Minutes',
+-          wake_time: node.wake_time, sleep_time: node.sleep_time,
+-          room_id: node.room_id || null
+-        };
+-        if (typeof window !== 'undefined' && typeof window.evaluateRulesForTelemetry === 'function') {
+-          try {
+-            Promise.resolve(window.evaluateRulesForTelemetry(actualPacket)).catch(() => {});
+-          } catch (_) {}
+-        }
+-        saveNodeTelemetryToSqlite(actualPacket).catch(() => {});
+-      }
+-    }
++    if (_backgroundReadPending) return;
++    _backgroundReadPending = true;
++    try {
++      const assignedNodes = await getAssignedNodesWithSchedule();
++      await Promise.all(assignedNodes.map(node => reconcilePendingCommandReceipt(node)));
++    } finally { _backgroundReadPending = false; }
+   }
+ 
+   function startBackgroundTelemetryCadence() {
+     if (_bgCadenceTimer) return;
+-    // Quarter-second checks preserve startup offsets so saves stay within one debounce window.
++    // Only reconcile delivery receipts; new telemetry comes from actual received reports.
+     stepBackgroundTelemetryCadence();
+-    _bgCadenceTimer = setInterval(stepBackgroundTelemetryCadence, 250);
++    _bgCadenceTimer = setInterval(stepBackgroundTelemetryCadence, 5000);
+   }
+ 
+   if (typeof window !== 'undefined') {
+--- before/desktop/public/js/telemetry-history.js
++++ after/desktop/public/js/telemetry-history.js
+@@ -0,0 +1,31 @@
++(function (root) {
++  'use strict';
++  function createReader() {
++    let rows = new Map(), cursor = null, backend = null, pending = null;
++    async function read(url, fetcher) {
++      if (url !== backend) { rows = new Map(); cursor = null; backend = url; }
++      const query = new URLSearchParams({ perPage: '0', sort: '-created', history: '1' });
++      if (cursor) query.set('cursor', cursor);
++      const response = await fetcher(`${url}/api/telemetry?${query}`);
++      if (!response.ok) throw new Error(`Telemetry request failed (HTTP ${response.status})`);
++      const data = await response.json();
++      if (!Array.isArray(data.items)) throw new Error('Telemetry response must contain an items array');
++      const next = data.history_full === false ? new Map(rows) : new Map();
++      for (const row of data.items) {
++        if (!row || typeof row.id !== 'string' || !row.id) throw new Error('Telemetry row is missing its identity');
++        next.set(row.id, row);
++      }
++      if (Number.isInteger(data.history_total) && next.size !== data.history_total) {
++        cursor = null;
++        throw new Error('Telemetry history changed while loading. Retry to refresh the complete snapshot.');
++      }
++      rows = next; cursor = data.history_cursor || null;
++      return { ...data, items: [...rows.values()].sort((a, b) => String(b.created).localeCompare(String(a.created)) || b.id.localeCompare(a.id)) };
++    }
++    return (url, fetcher) => {
++      if (!pending) pending = read(url, fetcher).finally(() => { pending = null; });
++      return pending;
++    };
++  }
++  root.EcoTrackTelemetryHistory = { createReader, read: createReader() };
++})(typeof window !== 'undefined' ? window : globalThis);
+--- before/desktop/backend/app.py
++++ after/desktop/backend/app.py
+@@ -81,6 +81,17 @@
+             conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_local_reset (
+                 id INTEGER PRIMARY KEY CHECK (id = 1), deleted_through TEXT NOT NULL
+             )''')
++            # Inserts append rowids. Any edit/deletion invalidates incremental
++            # snapshots, including backfilled imports and rowid reuse after clears.
++            conn.execute('''CREATE TABLE IF NOT EXISTS telemetry_history_generation (
++                id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL
++            )''')
++            conn.execute('INSERT OR IGNORE INTO telemetry_history_generation VALUES (1, ?)', (uuid.uuid4().hex,))
++            for operation in ('UPDATE', 'DELETE'):
++                conn.execute(f'''CREATE TRIGGER IF NOT EXISTS telemetry_history_{operation.lower()}
++                    AFTER {operation} ON telemetry BEGIN
++                    UPDATE telemetry_history_generation SET token=lower(hex(randomblob(16))) WHERE id=1;
++                    END''')
+         print(f"[*] SQLite3 Sensor Logs Database initialized at: {SQLITE_DB_PATH}")
+     finally:
+         conn.close()
+@@ -495,6 +506,13 @@
+             if page < 1 or per_page < 0 or column not in TELEMETRY_FIELDS:
+                 raise ValueError('Invalid telemetry pagination or sort')
+             filter_sql, filter_params = compile_telemetry_filter(request.args.get('filter'))
++            history = request.args.get('history') == '1'
++            cursor = request.args.get('cursor', '')
++            if cursor and not re.fullmatch(r'[0-9a-f]{32}:\d+', cursor):
++                raise ValueError('Invalid history cursor')
++            if history and (per_page != 0 or page != 1 or any(request.args.get(k) for k in
++                    ('filter', 'node_id', 'node', 'sensor_name', 'date', 'start_time', 'end_time'))):
++                raise ValueError('Incremental history requires an unfiltered complete snapshot')
+         except (ValueError, TypeError) as error:
+             return {'error': str(error)}, 400
+         node_id = request.args.get('node_id', request.args.get('node', None))
+@@ -544,6 +562,18 @@
+ 
+         conn = get_db_connection()
+         try:
++            conn.execute('BEGIN')  # The rows and cursor must describe the same snapshot.
++            generation = conn.execute('SELECT token FROM telemetry_history_generation WHERE id=1').fetchone()[0]
++            history_count, last_rowid = conn.execute('SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM telemetry').fetchone()
++            history_cursor = f'{generation}:{last_rowid}'
++            full_history = True
++            if history and cursor:
++                token, after = cursor.split(':')
++                if token == generation and int(after) <= last_rowid:
++                    full_history = False
++                    # Insert before ORDER BY to keep the existing indexed sort contract.
++                    query = query.replace(' ORDER BY ', ' AND rowid > ? ORDER BY ', 1)
++                    params.append(int(after))
+             total_items = conn.execute(count_query, count_params).fetchone()[0]
+ 
+             if per_page > 0:
+@@ -559,6 +589,10 @@
+             return {
+                 "items": items,
+                 "totalItems": total_items,
++                "history_total": history_count,
++                "history_cursor": history_cursor,
++                "history_revision": f'{history_cursor}:{history_count}',
++                "history_full": full_history,
+                 "reset_at": telemetry_reset_at(conn),
+                 "page": page,
+                 "perPage": per_page,
+@@ -621,22 +655,22 @@
+                     if existing is not None:
+                         inserted_items.append(row_to_dict(existing))
+                         continue
+-                    # Management events keep their audit path; routine samples require AC ON.
+-                    if item.get('event_type') != 'schedule_updated' and (analytics_recording_power(item) is not True
+-                            or str(item.get('status') or '').lower() in ('off', 'offline', 'disconnected', 'sleeping', 'asleep')):
+-                        skipped_items += 1
+-                        continue
++                    # Preserve received OFF/unknown samples as evidence, just like cloud
++                    # imports. Only the runtime calculation decides which intervals are
++                    # confirmed ON; selected controls must never discard an OFF boundary.
+ 
+                     conn.execute("""
+                         INSERT OR IGNORE INTO telemetry (
+                             id, node_id, sensor_name, room_name, floor_name, building_name,
+                             aircon_type, temperature, pressure, battery, rssi, status, created, updated,
+-                            ac_on, interval_seconds, aircon_id, control_snapshot, ac_state
+-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                            ac_on, interval_seconds, aircon_id, control_snapshot, ac_state,
++                            event_type, wake_time, sleep_time
++                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     """, (
+                         record_id, node_id, sensor_name, room_name, floor_name, building_name,
+                         aircon_type, temperature, pressure, battery, rssi, status, created, updated,
+-                        ac_on, interval_seconds, item.get("aircon_id"), serialize_control_snapshot(item.get("control_snapshot")), item.get("ac_state")
++                        ac_on, interval_seconds, item.get("aircon_id"), serialize_control_snapshot(item.get("control_snapshot")), item.get("ac_state"),
++                        item.get('event_type'), item.get('wake_time'), item.get('sleep_time')
+                     ))
+ 
+                     inserted_items.append({
+--- before/mobile/src/app/Maintenance.tsx
++++ after/mobile/src/app/Maintenance.tsx
+@@ -23,6 +23,7 @@
+ import { SafeAreaView } from 'react-native-safe-area-context';
+ 
+ import { AppIcon } from '@/components/app-icon';
++import { MaintenancePhoto } from '@/components/maintenance-photo';
+ import { FloatingBottomNavbar } from '@/components/floating-navbar';
+ import { LocationIcon } from '@/components/location-icon';
+ import { ThemedText } from '@/components/themed-text';
+@@ -3077,7 +3078,7 @@
+                       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoScrollContent}>
+                         {itemPhotoUris.map((uri, idx) => (
+                           <View key={`photo_${idx}_${uri.slice(-10)}`} style={[styles.photoThumbnailCard, { borderColor: isDark ? '#334155' : '#e2e8f0', backgroundColor: isDark ? '#0f172a' : '#f8fafc' }]}>
+-                            <Image source={{ uri }} style={styles.photoThumbnailImage} contentFit="cover" />
++                            <MaintenancePhoto uri={uri} style={styles.photoThumbnailImage} />
+                             {/* Photo Index Badge */}
+                             <View style={styles.photoIndexBadge}>
+                               <ThemedText style={styles.photoIndexBadgeText}>#{idx + 1}</ThemedText>
+--- before/mobile/src/components/maintenance-photo.tsx
++++ after/mobile/src/components/maintenance-photo.tsx
+@@ -0,0 +1,38 @@
++import { Image } from 'expo-image';
++import { useEffect, useState } from 'react';
++import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
++import { useAuth } from '@/context/auth-context';
++import { readWithTimeout } from '@/services/query-utils';
++import { resolveImageUrl } from '@/services/supabase';
++
++/** Resolve display URLs without replacing the original reference in an editable draft. */
++export function MaintenancePhoto({ uri, style }: { uri: string; style?: StyleProp<ViewStyle> }) {
++  const { userId } = useAuth();
++  const [attempt, setAttempt] = useState(0);
++  const key = JSON.stringify([uri, userId, attempt]);
++  const [result, setResult] = useState<{ key: string; url: string | null; failed: boolean } | null>(null);
++  useEffect(() => {
++    let active = true;
++    const local = /^(file|content|data|blob):/i.test(uri);
++    void readWithTimeout(() => local ? Promise.resolve(uri) : resolveImageUrl(uri, attempt > 0), 15000)
++      .then(url => { if (active) setResult({ key, url, failed: !url }); })
++      .catch(() => { if (active) setResult({ key, url: null, failed: true }); });
++    return () => { active = false; };
++  }, [key, uri, attempt]);
++  const current = result?.key === key ? result : null;
++  return <View style={[style, styles.frame]}>
++    {!current ? <ActivityIndicator accessibilityLabel="Loading photo" color="#10b981" />
++      : current.failed ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading photo"
++        onPress={() => setAttempt(value => value + 1)} style={styles.retry}>
++        <Text style={styles.text}>Photo unavailable</Text><Text style={styles.text}>Tap to retry</Text>
++      </Pressable>
++      : <Image source={{ uri: current.url! }} style={StyleSheet.absoluteFill} contentFit="cover"
++        accessibilityLabel="Checklist photo" onError={() => setResult({ key, url: null, failed: true })} />}
++  </View>;
++}
++
++const styles = StyleSheet.create({
++  frame: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
++  retry: { padding: 8 },
++  text: { color: '#64748b', textAlign: 'center', fontSize: 12 },
++});
+--- before/mobile/src/services/private-images.ts
++++ after/mobile/src/services/private-images.ts
+@@ -1,4 +1,5 @@
+ import type { SupabaseClient } from '@supabase/supabase-js';
++import { readWithTimeout } from './query-utils';
+ 
+ const buckets = new Set(['avatars', 'photos', 'maintenance-photos']);
+ type ImageClient = Pick<SupabaseClient, 'storage'>;
+@@ -25,13 +26,14 @@
+   return reference;
+ }
+ 
+-export async function displayImage(client: ImageClient, value: string | null | undefined, projectUrl: string): Promise<string | null> {
++export async function displayImage(client: ImageClient, value: string | null | undefined, projectUrl: string, refresh = false): Promise<string | null> {
+   if (!value) return null;
+   try {
+     const ref = imageReference(value, projectUrl)!;
+     const [, bucket, path] = ref.match(/^storage:\/\/([^/]+)\/(.+)$/)!;
+     let cache = imageCaches.get(client);
+     if (!cache) { cache = new Map(); imageCaches.set(client, cache); }
++    if (refresh) cache.delete(ref);
+     const cached = cache.get(ref);
+     if (cached && cached.expiresAt > Date.now()) return cached.promise;
+     const currentCache = cache;
+@@ -39,7 +41,7 @@
+       expiresAt: Date.now() + 3540_000,
+       promise: Promise.resolve().then(async () => {
+         try {
+-          const { data, error } = await client.storage.from(bucket).createSignedUrl(path, 3600);
++          const { data, error } = await readWithTimeout(() => client.storage.from(bucket).createSignedUrl(path, 3600));
+           if (!error && data?.signedUrl) return data.signedUrl;
+           if (currentCache.get(ref) === entry) currentCache.delete(ref);
+           const { data: pubData } = client.storage.from(bucket).getPublicUrl(path);
+--- before/mobile/src/services/supabase.ts
++++ after/mobile/src/services/supabase.ts
+@@ -1142,7 +1142,7 @@
+ 
+ // Restore saved user session from AsyncStorage or real staff from Supabase
+ // IMPORTANT: Does NOT auto-login if no active session was previously saved.
+-export const resolveImageUrl = (value: string | null | undefined) => displayImage(supabase, value, SUPABASE_URL);
++export const resolveImageUrl = (value: string | null | undefined, refresh = false) => displayImage(supabase, value, SUPABASE_URL, refresh);
+ export async function getSavedSession(): Promise<AppUser | null> {
+   const user = await accountAuth.getSavedSession();
+   return user ? { ...user, photoUrl: await resolveImageUrl(user.photoUrl) } : null;
+@@ -1611,16 +1611,8 @@
+       }
+     }
+     const synchronizedReports = Array.from(reportsMap.values());
+-    const signedImages = new Map<string, Promise<string | null>>();
+-    const sign = (uri: string) => {
+-      if (!signedImages.has(uri)) signedImages.set(uri, resolveImageUrl(uri));
+-      return signedImages.get(uri)!;
+-    };
+-    await Promise.all(synchronizedReports.flatMap(report => report.items.map(async item => {
+-      // Keep unavailable references for persistence; image requests remain private.
+-      if (item.photoUri) item.photoUri = await sign(item.photoUri) || item.photoUri;
+-      if (item.photoUris) item.photoUris = await Promise.all(item.photoUris.map(async uri => await sign(uri) || uri));
+-    })));
++    // Keep storage references in the report. Only visible photos request signed
++    // URLs, so storage latency cannot block the checklist list or its refresh.
+     const reportsList = synchronizedReports.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+     return reportsList;
+   } catch (e) {

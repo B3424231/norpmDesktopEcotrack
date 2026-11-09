@@ -1,0 +1,394 @@
+[
+  {
+    "project": "desktop",
+    "path": "create_telemetry_table.sql",
+    "bytes": 6001,
+    "mtime": 1788081657.2812996,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_ac_capabilities_migration.sql",
+    "bytes": 40344,
+    "mtime": 1791613936.4069777,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_ac_recording_migration.sql",
+    "bytes": 6833,
+    "mtime": 1791623079.7375438,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_aircons_protocol_migration.sql",
+    "bytes": 1651,
+    "mtime": 1790307370.111494,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_aircons_rls_setup.sql",
+    "bytes": 1726,
+    "mtime": 1790595922.6492045,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_aircon_names_migration.sql",
+    "bytes": 9865,
+    "mtime": 1791578241.0274992,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_cloud_hardware_migration.sql",
+    "bytes": 18403,
+    "mtime": 1791557897.360107,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_command_retention_migration.sql",
+    "bytes": 11574,
+    "mtime": 1791557968.1998768,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_controller_details_migration.sql",
+    "bytes": 5768,
+    "mtime": 1791578007.764159,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_controller_registration_migration.sql",
+    "bytes": 12216,
+    "mtime": 1791573544.4630919,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_dashboard_workflows_migration.sql",
+    "bytes": 4544,
+    "mtime": 1790919117.8707576,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_device_nodes_sync_migration.sql",
+    "bytes": 3762,
+    "mtime": 1790603357.2798264,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_hardware_pipeline_migration.sql",
+    "bytes": 636,
+    "mtime": 1790930274.8645525,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_ir_realtime_migration.sql",
+    "bytes": 7160,
+    "mtime": 1791568126.5594647,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_mobile_notifications_setup.sql",
+    "bytes": 7045,
+    "mtime": 1791462367.1189528,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_schema.sql",
+    "bytes": 11141,
+    "mtime": 1791462968.6763544,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "supabase_telemetry_cadence_migration.sql",
+    "bytes": 1453,
+    "mtime": 1790920702.736999,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "config/ac-capabilities.sql.source",
+    "bytes": 14717,
+    "mtime": 1791577917.0209057,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ac-off-recording/APPLY_SUPABASE.sql",
+    "bytes": 6833,
+    "mtime": 1791623079.7375438,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/database-audit/dependency-review.sql",
+    "bytes": 1283,
+    "mtime": 1791463568.365285,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/ir-latency/before/supabase_ir_realtime_migration.sql",
+    "bytes": 6669,
+    "mtime": 1791568126.5594647,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/migration-deadlock/DIAGNOSE_LOCKS.sql",
+    "bytes": 850,
+    "mtime": 1791610949.3195877,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/migration-deadlock/before/APPLY_SUPABASE.sql",
+    "bytes": 76721,
+    "mtime": 1791579295.8626628,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/mobile-home-registration/APPLY_SUPABASE.sql",
+    "bytes": 1187,
+    "mtime": 1791713216.2346163,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/APPLY_SUPABASE.sql",
+    "bytes": 77968,
+    "mtime": 1791610830.4134371,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/supabase_ac_recording_migration.sql",
+    "bytes": 6321,
+    "mtime": 1791622951.7625608,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/supabase_controller_details_migration.sql",
+    "bytes": 5484,
+    "mtime": 1791578007.7631547,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/config/ac-capabilities.sql.source",
+    "bytes": 13542,
+    "mtime": 1791576005.4270945,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/multi-brand-capabilities/before/reports/ac-off-recording/APPLY_SUPABASE.sql",
+    "bytes": 6321,
+    "mtime": 1791622951.7781868,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/registration-modal/before/supabase_controller_registration_migration.sql",
+    "bytes": 9788,
+    "mtime": 1791571532.7270977,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/remote-power/before/supabase_cloud_hardware_migration.sql",
+    "bytes": 18075,
+    "mtime": 1791557897.3490515,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "reports/remote-power/before/supabase_command_retention_migration.sql",
+    "bytes": 4098,
+    "mtime": 1791557897.360107,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/demo-seeds/legacy_notifications_demo.sql",
+    "bytes": 2056,
+    "mtime": 1791462367.1189528,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "desktop",
+    "path": "scripts/demo-seeds/legacy_schema_demo.sql",
+    "bytes": 2134,
+    "mtime": 1791462367.1177335,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_aircons_rls_setup.sql",
+    "bytes": 2554,
+    "mtime": 1790778900.6291485,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_backend_integrity_patch.sql",
+    "bytes": 1184,
+    "mtime": 1790769695.7788506,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_device_nodes_sync_migration.sql",
+    "bytes": 3762,
+    "mtime": 1790603357.2798264,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_image_storage_setup.sql",
+    "bytes": 7566,
+    "mtime": 1790778900.6291485,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_maintenance_relationships.sql",
+    "bytes": 1657,
+    "mtime": 1788681889.9564495,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_mobile_notifications_setup.sql",
+    "bytes": 8422,
+    "mtime": 1790778900.6358726,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase_nodes_schema.sql",
+    "bytes": 4746,
+    "mtime": 1790778900.6375158,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/push-delivery-setup.sql",
+    "bytes": 2907,
+    "mtime": 1791002727.930991,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300001_auth_authorization.sql",
+    "bytes": 20050,
+    "mtime": 1790778879.760046,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300002_maintenance_transactions.sql",
+    "bytes": 21880,
+    "mtime": 1790778130.2599514,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300003_notification_delivery.sql",
+    "bytes": 17311,
+    "mtime": 1790776428.4865294,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300004_device_transactions.sql",
+    "bytes": 12461,
+    "mtime": 1790776719.5459569,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300005_submitted_repair_backfill.sql",
+    "bytes": 1842,
+    "mtime": 1790778772.6802163,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202609300006_desktop_integration.sql",
+    "bytes": 15412,
+    "mtime": 1790780314.4230185,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610020001_cross_system_access.sql",
+    "bytes": 6104,
+    "mtime": 1790957288.2512925,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610020002_remote_push.sql",
+    "bytes": 5655,
+    "mtime": 1790956093.992977,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030001_push_worker_authorization.sql",
+    "bytes": 1268,
+    "mtime": 1790959265.6101694,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030002_auth_provisioning_commit.sql",
+    "bytes": 2239,
+    "mtime": 1790960362.0416632,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030003_report_edit_compatibility.sql",
+    "bytes": 11011,
+    "mtime": 1790961201.8151991,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030004_push_worker_role_guard.sql",
+    "bytes": 1547,
+    "mtime": 1791002158.78624,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610030005_aircon_control_snapshots.sql",
+    "bytes": 6979,
+    "mtime": 1791042377.3827324,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  },
+  {
+    "project": "mobile",
+    "path": "supabase/migrations/202610110001_assigned_staff_hardware_read.sql",
+    "bytes": 1187,
+    "mtime": 1791713210.843517,
+    "reason": "SQL file or SQL template; expressly excluded by user"
+  }
+]

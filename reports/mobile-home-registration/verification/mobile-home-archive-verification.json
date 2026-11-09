@@ -1,0 +1,65 @@
+{
+  "matchingFiles": [
+    {
+      "file": "src/app/index.tsx",
+      "sha256": "9984455096a5873950ae4b6b746c8deeca641d5d33ff6f30470de0dec10086b6"
+    },
+    {
+      "file": "src/app/devices.tsx",
+      "sha256": "5edc7ef358e5ba7fa5e3f18285d94888b9deb2dff5a444d269297ed48d8af1b9"
+    },
+    {
+      "file": "src/components/sensor-card.tsx",
+      "sha256": "34a14729bec2480667a8aa2208cb33a274b70ae25ec90820d933bbee7146c79a"
+    },
+    {
+      "file": "src/components/sensor-detail-sheet.tsx",
+      "sha256": "0d20fe904594c81de243e675a600d463f8e5d80df54070b364d63663783bbbc2"
+    },
+    {
+      "file": "src/components/controller-registration-steps.tsx",
+      "sha256": "c5cbd2b3f95b5c8b9acd5336f4bcd7742bbc092cf5d6a7df8f2427a631dbb4af"
+    },
+    {
+      "file": "src/services/controller-display.ts",
+      "sha256": "8f779005ad5615eb16fe8dc1411addc833ae630e905ff70d31e9b2a37371c3d2"
+    },
+    {
+      "file": "src/services/home-controller-state.ts",
+      "sha256": "b42147fcc0df38d483ffc2c03ae9f7ecd60a5e685d87552861f4f59ab30b5192"
+    },
+    {
+      "file": "src/services/supabase.ts",
+      "sha256": "29a1cfe6d297ead32c249d0980c060ed7369901b63eeabc8b69a7e2ecbe57f99"
+    },
+    {
+      "file": "app.json",
+      "sha256": "595863b53179823ee4663c67941bba029d95ce4d553131435ebe7607d5544978"
+    },
+    {
+      "file": "eas.json",
+      "sha256": "ca025ff1fa87ea92f21f264141fb181413ba4517c7f81376efa9c74b13787d4d"
+    },
+    {
+      "file": ".easignore",
+      "sha256": "f929c9d6f5ce46d0b03d69769a4ac121e2a3271595ac9b84c9831612d5e61348"
+    },
+    {
+      "file": "package.json",
+      "sha256": "f095ac47de2d19d07c6e0c41c92d824fb84e568618ecec82337c717a54ca9494"
+    },
+    {
+      "file": "package-lock.json",
+      "sha256": "3d14e7275cd0648bfccc6668e79e260c1c21c69e46ffe4e6bf53425406d986fe"
+    }
+  ],
+  "excludedFileCounts": {
+    ".env": 0,
+    ".agents": 0,
+    ".codex": 0,
+    ".git": 0,
+    "artifacts": 0,
+    "reports": 0,
+    "scripts": 0
+  }
+}

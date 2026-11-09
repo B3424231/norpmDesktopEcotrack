@@ -32,8 +32,8 @@ async function main(){
  let response=await send();assert.equal(response.delivery_status,'queued');assert.equal(command.payload.protocol,'DAIKIN2');assert.equal(command.payload.state.temp,22);assert.equal(command.payload.state.power,'on');
  response=await send('FAN','high');assert.equal(command.payload.state.fan,'high');assert.equal(command.payload.state.temp,22);assert.equal(response.delivery_status,'queued');
  response=await send('MODE','dry');assert.equal(command.payload.state.mode,'dry');assert.equal(command.payload.state.fan,'high');
- response=await send('SLEEP',true);assert.equal(command.payload.state.sleep,'on');assert.equal(command.payload.state.power,'on');
- response=await send('SLEEP',false);assert.equal(command.payload.state.sleep,'off');
+ const beforeUnsupported=command.id;response=await send('SLEEP',true);assert.equal(response.success,false);assert.equal(command.id,beforeUnsupported,'An unsupported Daikin2 sleep command cannot enqueue an invented IR frame');
+ response=await send('SLEEP',false);assert.equal(response.success,false);assert.equal(command.id,beforeUnsupported);
  response=await send('POWER',false);assert.equal(command.payload.state.power,'off');assert.equal(response.state.power,false);
  assert.equal(AirconProfileManager.getById('AC-HARDWARE').control_snapshot.reported_state,undefined,'A queued request is not measured AC state');
  response=await CommandManager.dispatch({device_id:'AC-HARDWARE',command:'TEMP',value:23,state:{power:true,temperature:23,mode:'cool',fan:'auto'}});assert.equal(response.delivery_status,'queued');assert.equal(command.payload.state.power,'on');assert.equal(command.payload.state.temp,23);assert.equal(command.payload.state.mode,'cool');assert.equal(command.payload.state.fan,'auto');
@@ -44,7 +44,7 @@ async function main(){
  assert(!writes.some(write=>write.table==='nodes'),'AC commands cannot invent device connectivity or sensor readings');
  capture='timeout';response=await ProtocolAdapter.sniffProtocol('node-test');assert.equal(response.success,false);
  capture='frame';response=await ProtocolAdapter.sniffProtocol('node-test');assert.equal(response.source,'supabase');assert.equal(response.protocol,'DAIKIN2');assert(response.raw_data);
- response=await ProtocolAdapter.detectRemoteBrand('node-test');assert.equal(response.brand,'Daikin');
+ response=await ProtocolAdapter.detectRemoteBrand('node-test');assert.equal(response.brand,null);assert.equal(response.protocol,'DAIKIN2');assert.equal(response.ambiguous,true);
  response=await ProtocolAdapter.getLatestLearned('node-test');assert.equal(response.sequence,2);assert.equal(response.source,'supabase');
  await NodeService.editDevice('node-test',{name:'Renamed controller'});assert.equal(NodeService.getNode('node-test').last_seen,null,'Metadata edit is not a hardware heartbeat');
  console.log('Hardware control passed: cloud-only full-state mode/fan/temp/power, receiver-only rejection, failures preserve state, no fabricated measurements, and actual cloud IR captures.');

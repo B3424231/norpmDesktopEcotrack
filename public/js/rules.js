@@ -19,6 +19,19 @@ const pb = window.pb || (typeof PocketBase === 'function' ? new PocketBase() : n
 
 let rules = [];
 let editingRuleId = null;
+let ruleSavePending = false;
+const ruleTogglePending = new Set();
+
+async function persistRuleEnabled(ids, enabled) {
+  const api = window.EcoTrackRulePersistence;
+  if (!api) throw new Error('Reload this page before saving rule changes.');
+  if (window.electron?.invoke) {
+    const result = await window.electron.invoke('rule-toggle', {ids, enabled});
+    if (!result?.success) throw new Error(result?.error || 'Rule status could not be saved.');
+    return api.assertToggle(result.data, ids, enabled);
+  }
+  return api.setEnabled(window.supabaseClient || window.sb, ids, enabled);
+}
 let rooms = {};
 let nodes = {};
 let buildings = {};
@@ -40,16 +53,75 @@ let currentRankingPage = 1;
 const RANKING_PAGE_SIZE = 20;
 let violationHistorySearchQuery = '';
 let violationHistorySeverityFilter = 'all';
+let rulesPageHasContent = false;
+let rulesInitialLoadingTimer = null;
+
+function showRulesInitialLoading() {
+  const skeletons = window.EcoTrackSkeletons;
+  const loading = document.getElementById('rulesLoadingState');
+  if (rulesPageHasContent || rulesInitialLoadingTimer || !skeletons || !loading) return;
+  loading.classList.remove('hidden');
+  loading.setAttribute('aria-busy', 'true');
+  const content = document.getElementById('ruleBenchmarkingSection');
+  content?.classList.add('hidden');
+  content?.setAttribute('aria-busy', 'true');
+  // Match the shared loading deadline, including the first location request.
+  rulesInitialLoadingTimer = setTimeout(() => showRulesInitialLoadError(
+    new Error('Rules are taking too long to load. Check your connection and retry.')), 20000);
+  skeletons.renderStatsSkeleton('rulesLoadingStats', { count: 4 });
+  skeletons.renderChartSkeleton('rulesLoadingChart', { height: 260 });
+  skeletons.renderTableSkeleton('rulesLoadingRankings', { rows: 5, cols: 6 });
+  skeletons.renderTableSkeleton('rulesLoadingHistory', { rows: 5, cols: 10 });
+  skeletons.renderTableSkeleton('rulesTableBody', { rows: 5, cols: 11 });
+}
+
+function finishRulesInitialLoading() {
+  rulesPageHasContent = true;
+  clearTimeout(rulesInitialLoadingTimer);
+  rulesInitialLoadingTimer = null;
+  const loading = document.getElementById('rulesLoadingState');
+  if (loading) {
+    loading.classList.add('hidden');
+    loading.setAttribute('aria-busy', 'false');
+    loading.replaceChildren();
+  }
+  const content = document.getElementById('ruleBenchmarkingSection');
+  content?.classList.remove('hidden');
+  content?.setAttribute('aria-busy', 'false');
+}
+
+function showRulesInitialLoadError(error) {
+  if (rulesPageHasContent) return;
+  clearTimeout(rulesInitialLoadingTimer);
+  rulesInitialLoadingTimer = null;
+  window.EcoTrackSkeletons?.renderLoadingError('rulesLoadingState', error);
+  window.EcoTrackSkeletons?.renderLoadingError('rulesTableBody', error);
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
-  await initializeRulesPage();
+  try { await initializeRulesPage(); } catch (error) { showRulesInitialLoadError(error); }
 });
 
 window.addEventListener('page:init', async () => {
   if (document.getElementById('rulesTableBody')) {
-    await initializeRulesPage();
+    try { await initializeRulesPage(); } catch (error) { showRulesInitialLoadError(error); }
   }
 });
+
+// Only the requested bulk actions bounce; their existing handlers run immediately.
+document.addEventListener('click', (event) => {
+  const button = event.target.closest?.('#deactivateAllRulesBtn, #clearRulesBtn');
+  if (!button || button.disabled || !button.closest('#activeRulesModal')) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || typeof button.animate !== 'function') return;
+  button.getAnimations().forEach(animation => { if (animation.id === 'rule-action-bounce') animation.cancel(); });
+  const animation = button.animate([
+    { transform: 'scale(1)' },
+    { transform: 'scale(0.94)', offset: 0.22 },
+    { transform: 'scale(1.035)', offset: 0.6 },
+    { transform: 'scale(1)' }
+  ], { duration: 280, easing: 'cubic-bezier(0.2, 0.7, 0.3, 1)' });
+  animation.id = 'rule-action-bounce';
+}, true);
 
 function formatTime12h(timeStr) {
   if (!timeStr) return '';
@@ -65,6 +137,13 @@ function formatTime12h(timeStr) {
 
 async function initializeRulesPage() {
   if (!sb) sb = window.supabaseClient || window.sb;
+  const saved = window.EcoDataBus?.getCached('rules:view');
+  if (saved) {
+    ({ rules, rooms, nodes, buildings, floors } = saved);
+    displayRules();
+    await initRuleComplianceBenchmarking(saved.benchmark);
+  }
+  showRulesInitialLoading();
   // Load rooms and nodes
   await loadRoomsAndNodes();
   
@@ -332,8 +411,7 @@ async function initializeRulesPage() {
   async function loadRulesWithSWR(forceRefresh = false) {
     if (window.EcoDataBus) {
       if (!window.EcoDataBus.getCached('rules:data') && window.EcoTrackSkeletons) {
-        window.EcoTrackSkeletons.renderTableSkeleton('rulesTableBody', { rows: 5, cols: 9, colWidths: ['w-12', 'w-36', 'w-24', 'w-28', 'w-20', 'w-24', 'w-24', 'w-20', 'w-20'] });
-        window.EcoTrackSkeletons.renderTableSkeleton('violationAuditTableBody', { rows: 5, cols: 7, colWidths: ['w-16', 'w-28', 'w-24', 'w-48', 'w-24', 'w-20', 'w-24'] });
+        showRulesInitialLoading();
       }
 
       await window.EcoDataBus.query('rules:data', async () => {
@@ -351,8 +429,7 @@ async function initializeRulesPage() {
     window.EcoDataBus.onQuery('rules:data', {
       onStart: ({ isBackground }) => {
         if (!isBackground && window.EcoTrackSkeletons) {
-          window.EcoTrackSkeletons.renderTableSkeleton('rulesTableBody', { rows: 5, cols: 9, colWidths: ['w-12', 'w-36', 'w-24', 'w-28', 'w-20', 'w-24', 'w-24', 'w-20', 'w-20'] });
-          window.EcoTrackSkeletons.renderTableSkeleton('violationAuditTableBody', { rows: 5, cols: 7, colWidths: ['w-16', 'w-28', 'w-24', 'w-48', 'w-24', 'w-20', 'w-24'] });
+          showRulesInitialLoading();
         }
       },
       onSuccess: async (payload) => {
@@ -362,10 +439,11 @@ async function initializeRulesPage() {
         displayRules();
         await initRuleComplianceBenchmarking();
         const rBody = document.getElementById('rulesTableBody');
-        const vBody = document.getElementById('violationAuditTableBody');
+        const vBody = document.getElementById('violationHistoryTableBody');
         if (rBody) { rBody.classList.remove('eco-content-fade-in'); void rBody.offsetWidth; rBody.classList.add('eco-content-fade-in'); }
         if (vBody) { vBody.classList.remove('eco-content-fade-in'); void vBody.offsetWidth; vBody.classList.add('eco-content-fade-in'); }
-      }
+      },
+      onError: ({ error }) => showRulesInitialLoadError(error)
     });
 
     window.EcoDataBus.on('data:invalidated', (p) => {
@@ -519,9 +597,8 @@ async function loadRoomsAndNodes() {
     });
     
     roomRecords.forEach(record => {
-      // Exclude any anomalous records or entries matching hardware nodes rather than physical rooms
-      const normRecordName = (record.name || '').trim().toLowerCase();
-      if (!record.id || !record.name || normRecordName.startsWith('node-') || String(record.id).startsWith('node_')) {
+      // Room identity comes from the rooms records, independently of node names.
+      if (!record.id || !(record.name || '').trim()) {
         return;
       }
 
@@ -748,23 +825,14 @@ function onFloorSelected() {
   if (roomNodeSelect) roomNodeSelect.innerHTML = '<option value="">Choose node(s)...</option>';
   if (nodeSelect) nodeSelect.innerHTML = '<option value="">Choose an AC control...</option>';
   
-  if (!floorId) return;
+  if (!floorId || !floors[floorId]) return;
   const seenRoomIds = new Set();
-  const seenRoomNames = new Set();
 
   Object.values(rooms).forEach(room => {
-    if (!room || room.floor_id !== floorId) return;
+    if (!room?.id || room.floor_id !== floorId || !(room.name || '').trim()) return;
     if (seenRoomIds.has(room.id)) return;
-    const normName = (room.name || '').trim().toLowerCase();
-    if (!normName || seenRoomNames.has(normName)) return;
-
-    // Filter out any hardware nodes or anomalous non-rooms
-    if (nodes[room.id] || nodes[room.name] || normName.startsWith('node-') || String(room.id).startsWith('node_')) {
-      return;
-    }
 
     seenRoomIds.add(room.id);
-    seenRoomNames.add(normName);
 
     const option = document.createElement('option');
     option.value = room.id;
@@ -902,12 +970,15 @@ function closeRuleModal() {
 }
 
 async function saveRule() {
+  if (ruleSavePending) return;
   const type = document.getElementById('ruleType').value;
   const condition = document.getElementById('ruleCondition').value;
   const value = parseFloat(document.getElementById('ruleValue').value);
   const unit = document.getElementById('ruleUnit').value;
   const enabled = document.getElementById('ruleEnabled').checked;
-  const duration = parseInt(document.getElementById('ruleDuration').value, 10) || 5;
+  const durationInput = document.getElementById('ruleDuration');
+  const durationText = durationInput.value.trim();
+  const duration = type === 'temperature' ? Number(durationText) : 5;
   const startDate = document.getElementById('ruleStartDate').value || null;
   const startTime = document.getElementById('ruleStartTime').value || null;
   const endDate = document.getElementById('ruleEndDate').value || null;
@@ -923,6 +994,11 @@ async function saveRule() {
   }
   if (isNaN(value)) {
     showNotification('⚠️ Please enter a valid threshold value');
+    return;
+  }
+  if (type === 'temperature' && (durationText === '' || !Number.isSafeInteger(duration) || duration < 0)) {
+    showNotification('⚠️ Please enter a duration of zero or more whole minutes');
+    durationInput.focus();
     return;
   }
 
@@ -975,6 +1051,7 @@ async function saveRule() {
     node: singleNode
   };
 
+  ruleSavePending = true;
   try {
     const dbData = {
       type: ruleData.type,
@@ -1018,50 +1095,24 @@ async function saveRule() {
     const ruleToEdit = currentEditingId ? rules.find(r => r.id === currentEditingId) : null;
     const targetId = ruleToEdit?.pbId || ruleToEdit?.id || currentEditingId;
 
+    const persistence = window.EcoTrackRulePersistence;
+    if (!persistence) throw new Error('Reload this page before saving rule changes.');
     if (window.electron && typeof window.electron.invoke === 'function') {
-      try {
         const res = await window.electron.invoke('rule-save', {
           rule: dbData,
           targetNodes: targetNodeDbIds,
           isEdit: Boolean(currentEditingId),
           editId: targetId
         });
-        if (res && res.success && res.ruleId) {
-          ruleId = res.ruleId;
-          ruleData.pbId = ruleId;
-          ruleData.id = ruleId;
-        }
-      } catch (ipcErr) {
-        console.warn('IPC rule-save error, fallback to sb:', ipcErr);
-      }
+        if (!res?.success) throw new Error(res?.error || 'Rule could not be saved.');
+        const receipt = persistence.assertSave({rule_id:res.ruleId,target_nodes:res.targetNodes}, currentEditingId ? targetId : null, targetNodeDbIds);
+        ruleId = receipt.rule_id;
+    } else {
+      const receipt = await persistence.save(window.supabaseClient || window.sb, dbData, targetNodeDbIds, currentEditingId ? targetId : null);
+      ruleId = receipt.rule_id;
     }
-
-    if (!ruleId && sb) {
-      if (currentEditingId) {
-        await sb.from('rules').update(dbData).eq('id', targetId);
-        ruleId = targetId;
-        ruleData.pbId = ruleId;
-      } else {
-        const { data: newRecord } = await sb.from('rules').insert([dbData]).select().single();
-        ruleId = newRecord ? newRecord.id : ('rul_' + Date.now());
-        ruleData.pbId = ruleId;
-      }
-      
-      try {
-        await sb.from('rule_nodes').delete().eq('rule_id', ruleId);
-        for (const hwNodeId of targetNodes) {
-          const nodeObj = nodes[hwNodeId];
-          if (nodeObj && nodeObj.pb_id) {
-            await sb.from('rule_nodes').insert([{
-              rule_id: ruleId,
-              node_id: nodeObj.pb_id
-            }]);
-          }
-        }
-      } catch (e) {
-        console.warn("Failed to delete/insert old rule_nodes", e);
-      }
-    }
+    ruleData.id = ruleId;
+    ruleData.pbId = ruleId;
 
     const roomObj = getRoom(ruleData.room);
     if (roomObj) {
@@ -1105,8 +1156,8 @@ async function saveRule() {
     }
   } catch (error) {
     console.error('Failed to save rule to Supabase:', error);
-    showNotification('⚠️ Error saving rule to database');
-  }
+    showNotification('⚠️ Rule was not saved: ' + error.message);
+  } finally { ruleSavePending = false; }
 }
 
 function editRule(ruleId) {
@@ -1121,7 +1172,7 @@ function editRule(ruleId) {
   document.getElementById('ruleCondition').value = rule.condition;
   document.getElementById('ruleValue').value = rule.value;
   document.getElementById('ruleUnit').value = rule.unit || '';
-  document.getElementById('ruleDuration').value = rule.duration || 5;
+  document.getElementById('ruleDuration').value = rule.duration ?? 5;
   document.getElementById('ruleStartDate').value = rule.startDate || '';
   document.getElementById('ruleStartTime').value = rule.startTime || '';
   document.getElementById('ruleEndDate').value = rule.endDate || '';
@@ -1394,31 +1445,15 @@ async function deactivateAllRules() {
     return;
   }
 
-  // Optimistically set enabled = false on all local rules
-  rules.forEach(r => { r.enabled = false; });
+  const ids = rules.map(r => r.pbId || r.id).filter(Boolean);
+  if (ids.some(id => ruleTogglePending.has(id))) return;
+  ids.forEach(id => ruleTogglePending.add(id));
+  try { await persistRuleEnabled(ids, false); }
+  catch (error) { showNotification('⚠️ Rules were not deactivated: ' + error.message); return; }
+  finally { ids.forEach(id => ruleTogglePending.delete(id)); }
+  rules.forEach(r => { if (ids.includes(r.pbId || r.id)) r.enabled = false; });
   displayRules();
   initRuleComplianceBenchmarking();
-
-  const ids = rules.map(r => r.pbId || r.id).filter(Boolean);
-
-  let updateSuccess = false;
-  if (window.electron && typeof window.electron.invoke === 'function' && ids.length) {
-    try {
-      const res = await window.electron.invoke('rule-toggle', { ids, enabled: false });
-      if (res && res.success) updateSuccess = true;
-    } catch (ipcErr) {
-      console.warn('IPC rule-toggle all error, fallback to sb:', ipcErr);
-    }
-  }
-
-  if (!updateSuccess && sb && ids.length) {
-    try {
-      await sb.from('rules').update({ enabled: false, updated: new Date().toISOString() }).in('id', ids);
-      updateSuccess = true;
-    } catch (err) {
-      console.warn('Failed to deactivate rules in Supabase:', err);
-    }
-  }
 
   // Clear violation tracking & localStorage timers
   if (window.violationTracking) {
@@ -1508,7 +1543,7 @@ async function executeClearViolationHistory() {
         const notifRes = await window.electron.invoke('notifications-fetch-all');
         if (notifRes && notifRes.success && Array.isArray(notifRes.data)) {
           const violationIds = notifRes.data
-            .filter(n => n.triggered !== false && !isRoutineScheduleNotification(n))
+            .filter(n => n.type !== 'controller_installation' && n.triggered !== false && !isRoutineScheduleNotification(n))
             .map(n => n.id)
             .filter(Boolean);
           if (violationIds.length > 0) {
@@ -1520,10 +1555,10 @@ async function executeClearViolationHistory() {
       }
     } else if (sb) {
       try {
-        const { data: nData } = await sb.from('notifications').select('id, content, message, triggered');
+        const { data: nData } = await sb.from('notifications').select('id, content, message, triggered, type');
         if (Array.isArray(nData) && nData.length > 0) {
           const violationIds = nData
-            .filter(n => n.triggered !== false && !isRoutineScheduleNotification(n))
+            .filter(n => n.type !== 'controller_installation' && n.triggered !== false && !isRoutineScheduleNotification(n))
             .map(n => n.id)
             .filter(Boolean);
           if (violationIds.length > 0) {
@@ -1631,38 +1666,15 @@ async function toggleRuleEnabled(ruleId) {
 
   const isCurrentlyActive = rule.enabled !== false && rule.enabled !== 'false' && rule.enabled !== 0 && rule.enabled !== '0';
   const newEnabled = !isCurrentlyActive;
-  rule.enabled = newEnabled;
-
-  // Immediately re-render table so user sees the change right away!
-  displayRules();
-
   const targetId = rule.pbId || rule.id;
-  const currentSb = window.supabaseClient || window.sb;
-  const hasElectron = Boolean(window.electron && typeof window.electron.invoke === 'function');
-
-  let updateSuccess = false;
-
-  if (hasElectron && targetId) {
-    try {
-      const res = await window.electron.invoke('rule-toggle', { id: targetId, enabled: newEnabled });
-      if (res && res.success) {
-        updateSuccess = true;
-      } else {
-        console.warn('IPC rule-toggle notice, fallback to direct sb:', res);
-      }
-    } catch (ipcErr) {
-      console.warn('IPC rule-toggle error, fallback to sb:', ipcErr);
-    }
-  }
-
-  if (!updateSuccess && currentSb && targetId) {
-    try {
-      const { error } = await currentSb.from('rules').update({ enabled: newEnabled, updated: new Date().toISOString() }).eq('id', targetId);
-      if (!error) updateSuccess = true;
-    } catch (err) {
-      console.warn('Failed to update rule in Supabase:', err);
-    }
-  }
+  if (ruleTogglePending.has(targetId)) return;
+  ruleTogglePending.add(targetId);
+  try { await persistRuleEnabled([targetId], newEnabled); }
+  catch (error) { showNotification('⚠️ Rule status was not changed: ' + error.message); return; }
+  finally { ruleTogglePending.delete(targetId); }
+  const currentRule = rules.find(item => item.id === ruleId || item.pbId === targetId);
+  if (currentRule) currentRule.enabled = newEnabled;
+  displayRules();
 
   // Clean tracking cache and localStorage if disabled
   if (!newEnabled) {
@@ -1791,7 +1803,7 @@ function displayRules() {
               ${isZeroTotal ? 'Create automated compliance policies such as high-temperature thresholds, auto-shutdowns, and battery level alerts.' : 'Adjust search filters or reset to display all facility rules.'}
             </p>
             ${isZeroTotal ? `
-              <button type="button" onclick="const addBtn = document.getElementById('openAddRuleModalBtn'); if (addBtn) addBtn.click(); else if (typeof openAddRuleModal === 'function') openAddRuleModal();" class="px-4 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-bold text-xs shadow-md inline-flex items-center gap-1.5 transition-all cursor-pointer">
+              <button type="button" onclick="openRuleModal()" class="eco-primary-action px-4 py-2 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-500 hover:from-teal-400 hover:to-emerald-400 text-slate-950 font-bold text-xs shadow-md inline-flex items-center gap-1.5 transition-all cursor-pointer">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 Create Automation Rule
               </button>
@@ -1811,7 +1823,7 @@ function displayRules() {
   pageRules.forEach((rule, idx) => {
     const index = startIndex + idx;
     const row = document.createElement('tr');
-    row.className = 'rule-table-row text-sm transition-colors border-b border-gray-100 dark:border-white/5 hover:bg-emerald-50/30 dark:hover:bg-slate-800/50';
+    row.className = 'rule-table-row text-sm';
     
     const typeLabel = rule.type === 'temperature' ? 'Temperature' : 'Battery';
     let roomLabel = '';
@@ -1870,8 +1882,8 @@ function displayRules() {
     const isRuleActive = rule.enabled !== false && rule.enabled !== 'false' && rule.enabled !== 0 && rule.enabled !== '0';
     
     const statusBadge = `
-      <button type="button" class="ruleStatusToggleBtn inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase cursor-pointer transition-all hover:scale-105 active:scale-95 shadow-xs border ${isRuleActive ? 'bg-emerald-100 dark:bg-emerald-950/60 text-[#10b981] dark:text-emerald-400 border-emerald-300 dark:border-emerald-800/40 hover:bg-emerald-200 dark:hover:bg-emerald-900/60' : 'bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-gray-400 border-gray-200 dark:border-white/10 hover:bg-gray-200 dark:hover:bg-slate-700'}" title="Click to ${isRuleActive ? 'disable' : 'enable'} this rule" data-id="${rule.id}">
-        <span class="w-1.5 h-1.5 rounded-full ${isRuleActive ? 'bg-[#10b981] animate-pulse' : 'bg-gray-400'}"></span>
+      <button type="button" class="ruleStatusToggleBtn rule-status-toggle" aria-pressed="${isRuleActive}" aria-label="${typeLabel} rule ${index + 1} enabled" title="Click to ${isRuleActive ? 'disable' : 'enable'} this rule" data-id="${rule.id}">
+        <span class="rule-status-dot" aria-hidden="true"></span>
         <span>${isRuleActive ? 'Active' : 'Disabled'}</span>
       </button>
     `;
@@ -1896,12 +1908,12 @@ function displayRules() {
       <td class="px-5 py-4 align-middle text-center font-bold text-gray-400 text-xs">${index + 1}</td>
       <td class="px-5 py-4 align-middle">
         <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-xl bg-[#18392B] dark:bg-emerald-950/60 text-[#10b981] dark:text-emerald-400 flex items-center justify-center shrink-0 shadow-sm border border-[#10b981]/20">
+          <div class="rule-type-icon" aria-hidden="true">
             ${rule.type === 'temperature' ? '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/><path d="M11.5 7v4"/></svg>' : '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="6" width="18" height="12" rx="2" ry="2"/><line x1="23" y1="13" x2="23" y2="11"/></svg>'}
           </div>
           <div>
             <div class="font-bold text-[#18392B] dark:text-white text-sm">${typeLabel}</div>
-            <div class="text-[11px] text-gray-400 font-medium">${rule.type === 'temperature' ? 'Threshold alert' : 'Battery alert (Notification only)'}</div>
+            <div class="rule-type-caption">${rule.type === 'temperature' ? 'Threshold alert' : 'Battery alert (Notification only)'}</div>
           </div>
         </div>
       </td>
@@ -1915,8 +1927,8 @@ function displayRules() {
         ${rule.type === 'temperature' && rule.duration ? `<span class="font-semibold text-gray-600 dark:text-gray-300 text-xs">${rule.duration} min</span>` : '<span class="font-semibold text-emerald-600 dark:text-emerald-400 text-xs">Instant</span>'}
       </td>
       <td class="px-5 py-4 align-middle text-center">${statusBadge}</td>
-      <td class="px-5 py-4 align-middle text-right pr-6 relative">
-        <button class="actionDropdownBtn p-2 text-[#18392B] dark:text-emerald-400 hover:text-[#10b981] hover:bg-gray-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer" data-id="${rule.id}">
+      <td class="px-5 py-4 align-middle text-center relative">
+        <button type="button" class="actionDropdownBtn rule-action-menu-trigger" aria-label="${typeLabel} rule ${index + 1} actions" title="Rule actions" data-id="${rule.id}">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="1.5"></circle>
             <circle cx="12" cy="5" r="1.5"></circle>
@@ -2050,13 +2062,13 @@ window.openActiveRulesModal = openActiveRulesModal;
 window.closeActiveRulesModal = closeActiveRulesModal;
 
 // ===== RULE COMPLIANCE BENCHMARKING ENGINE =====
-async function initRuleComplianceBenchmarking() {
+async function initRuleComplianceBenchmarking(readyData = null) {
   const ctx = document.getElementById('ruleComplianceChart');
   if (!ctx) return;
 
   let roomsList = [];
   let rulesList = [];
-  let telemetryItems = [];
+  let telemetryItems = readyData?.telemetryItems || [];
 
   try {
     let roomsResult = [];
@@ -2067,8 +2079,9 @@ async function initRuleComplianceBenchmarking() {
     let ruleNodesResult = [];
     let notificationsResult = [];
 
-    let ipcRulesLoaded = false;
-    if (window.electron && typeof window.electron.invoke === 'function') {
+    if (readyData) ({roomsResult, rulesResult, nodesResult, floorsResult, buildingsResult, ruleNodesResult, notificationsResult} = readyData);
+    let ipcRulesLoaded = Boolean(readyData);
+    if (!readyData && window.electron && typeof window.electron.invoke === 'function') {
       try {
         const [rData, notifRes] = await Promise.all([
           window.electron.invoke('rules-fetch-data'),
@@ -2111,7 +2124,7 @@ async function initRuleComplianceBenchmarking() {
     roomsList = (roomsResult && roomsResult.length > 0) ? roomsResult : Object.values(rooms);
     rulesList = (rulesResult && rulesResult.length > 0) ? rulesResult : (rules || []);
     const allNodes = (nodesResult && nodesResult.length > 0) ? nodesResult : [];
-    const rawNotifs = notificationsResult || [];
+    const rawNotifs = (notificationsResult || []).filter(notif => notif.type !== 'controller_installation');
     let notificationsList = rawNotifs.map(notif => {
       let content = notif.content || '';
       if (typeof content === 'string' && content.startsWith('__INBOX_DISMISSED__|||')) {
@@ -2148,7 +2161,7 @@ async function initRuleComplianceBenchmarking() {
     }
 
     // Attempt to fetch latest telemetry from PocketBase if available
-    if (pb && pb.collection) {
+    if (!readyData && pb && pb.collection) {
       try {
         const result = await pb.collection('telemetry').getList(1, 1000, { sort: '-created' });
         if (result && result.items) {
@@ -2205,6 +2218,7 @@ async function initRuleComplianceBenchmarking() {
         const { data: rnData } = await sb.from('rule_nodes').select('*');
         if (rnData) ruleNodes = rnData;
       }
+      ruleNodesResult = ruleNodes;
       rulesList.forEach(r => {
         const rnForRule = ruleNodes.filter(rn => rn.rule_id === r.id);
         r.nodeIds = rnForRule.map(rn => rn.node_id);
@@ -2230,7 +2244,6 @@ async function initRuleComplianceBenchmarking() {
         temperature: n.temp ?? n.temperature ?? 0,
         temp: n.temp ?? n.temperature ?? 0,
         battery: n.battery ?? 100,
-        pressure: n.pressure ?? 0,
         status: n.status || 'online'
       };
       if (n.name && !latestByNode[n.name]) latestByNode[n.name] = currentReading;
@@ -2734,6 +2747,10 @@ async function initRuleComplianceBenchmarking() {
       countBadge.textContent = `${roomLabels.length} Monitored Room${roomLabels.length === 1 ? '' : 's'}`;
     }
 
+    // Reveal the existing canvas before Chart.js measures its available width.
+    if (!readyData) window.EcoDataBus?.mutate('rules:view', { rules, rooms, nodes, buildings, floors,
+      benchmark: { roomsResult, rulesResult, nodesResult, floorsResult, buildingsResult, ruleNodesResult, notificationsResult, telemetryItems } });
+    finishRulesInitialLoading();
     const chartWrapper = document.getElementById('ruleComplianceChartWrapper') || ctx.parentElement;
     const emptyStateEl = document.getElementById('ruleComplianceEmptyState');
 
@@ -2860,6 +2877,7 @@ async function initRuleComplianceBenchmarking() {
     }
   } catch (error) {
     console.warn('Rule compliance load error:', error);
+    showRulesInitialLoadError(error);
   }
 }
 
@@ -2929,15 +2947,15 @@ function renderViolationRankings() {
   const pageRankItems = items.slice(rankStart, rankEnd);
 
   let html = `
-    <table class="w-full text-left border-collapse">
+    <table class="eco-data-table w-full text-left border-collapse">
       <thead class="bg-[#0b291d] dark:bg-[#081a14] text-white dark:text-[#a7f3d0] sticky top-0 z-10 text-[11px] font-bold uppercase tracking-wider">
         <tr>
-          <th class="px-4 py-3.5 text-center w-16">RANK</th>
-          <th class="px-4 py-3.5">${currentRankingTab === 'rooms' ? 'ROOM & LOCATION' : currentRankingTab === 'floors' ? 'FLOOR & BUILDING' : 'BUILDING'}</th>
-          <th class="px-4 py-3.5 text-center">VIOLATIONS</th>
-          <th class="px-4 py-3.5">${currentRankingTab === 'rooms' ? 'ACTIVE CONTROLS' : 'COVERAGE'}</th>
-          <th class="px-4 py-3.5 min-w-[200px]">BREACH LEVEL & DENSITY</th>
-          <th class="px-4 py-3.5 text-right pr-4">STATUS</th>
+          <th scope="col" class="px-4 py-3.5 text-center w-16">RANK</th>
+          <th scope="col" class="px-4 py-3.5">${currentRankingTab === 'rooms' ? 'ROOM & LOCATION' : currentRankingTab === 'floors' ? 'FLOOR & BUILDING' : 'BUILDING'}</th>
+          <th scope="col" class="px-4 py-3.5 text-center">VIOLATIONS</th>
+          <th scope="col" class="px-4 py-3.5">${currentRankingTab === 'rooms' ? 'ACTIVE CONTROLS' : 'COVERAGE'}</th>
+          <th scope="col" class="px-4 py-3.5 min-w-[200px]">BREACH LEVEL & DENSITY</th>
+          <th scope="col" class="px-4 py-3.5 text-right pr-4">STATUS</th>
         </tr>
       </thead>
       <tbody class="divide-y divide-gray-100 dark:divide-white/5 text-gray-800 dark:text-gray-200 text-xs">
@@ -3209,7 +3227,7 @@ function renderViolationHistoryTable() {
             </div>
             <h4 class="font-bold text-sm text-slate-800 dark:text-white mb-1">Zero Policy Violations</h4>
             <p class="text-xs text-slate-500 dark:text-gray-400 leading-relaxed">
-              All monitored air conditioning units and sensor nodes are currently operating within configured safe parameters.
+              All monitored air conditioning units and AC devices are currently operating within configured safe parameters.
             </p>
           </div>
         </td>

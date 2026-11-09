@@ -4,8 +4,8 @@
     {
       "theme": "light",
       "checks": [
-        "Schedule control name uses the device display name instead of the AC profile",
-        "Changed controller names render safely without showing the AC profile name",
+        "Schedule identifies the assigned AC by its saved display name",
+        "Changed AC names render safely as text",
         "Fresh controllers display unset times accurately",
         "Displayed times agree with the stored input values",
         "Apply identifies the missing wake field and performs no write",
@@ -13,15 +13,15 @@
         "Stored times including seconds display correctly",
         "Apply queues the shown 5-second schedule using the hardware time format",
         "Queue success keeps delivery status honest and releases the button",
-        "Equal times explain the device will stay awake",
+        "Schedule controls keep the current compact presentation",
         "Wake and sleep controls stay aligned when the sleep explanation is visible"
       ]
     },
     {
       "theme": "dark",
       "checks": [
-        "Schedule control name uses the device display name instead of the AC profile",
-        "Changed controller names render safely without showing the AC profile name",
+        "Schedule identifies the assigned AC by its saved display name",
+        "Changed AC names render safely as text",
         "Fresh controllers display unset times accurately",
         "Displayed times agree with the stored input values",
         "Apply identifies the missing wake field and performs no write",
@@ -29,7 +29,7 @@
         "Stored times including seconds display correctly",
         "Apply queues the shown 5-second schedule using the hardware time format",
         "Queue success keeps delivery status honest and releases the button",
-        "Equal times explain the device will stay awake",
+        "Schedule controls keep the current compact presentation",
         "Wake and sleep controls stay aligned when the sleep explanation is visible"
       ]
     }

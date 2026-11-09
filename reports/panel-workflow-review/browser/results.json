@@ -1,0 +1,146 @@
+[
+  {
+    "app": "mobile",
+    "route": "home",
+    "stage": "loading to loaded/empty",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "devices",
+    "stage": "loading to loaded/empty",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "Maintenance",
+    "stage": "loading to loaded/empty",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "notification",
+    "stage": "loading to loaded/empty",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "devices",
+    "stage": "failed first load shows retry",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "devices",
+    "stage": "retry recovers",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "devices",
+    "stage": "empty staff state excludes administrator registration action",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "route": "home",
+    "stage": "320px light: truthful assignment loading and no horizontal overflow",
+    "page_errors": []
+  },
+  {
+    "app": "desktop",
+    "route": "dashboard.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/dashboard.html"
+  },
+  {
+    "app": "desktop",
+    "route": "aircons.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/control.html"
+  },
+  {
+    "app": "desktop",
+    "route": "control.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/control.html"
+  },
+  {
+    "app": "desktop",
+    "route": "nodes.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/nodes.html"
+  },
+  {
+    "app": "desktop",
+    "route": "telemetry.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/telemetry.html"
+  },
+  {
+    "app": "desktop",
+    "route": "scheduler.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/scheduler.html"
+  },
+  {
+    "app": "desktop",
+    "route": "rules.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/rules.html"
+  },
+  {
+    "app": "desktop",
+    "route": "staff.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/staff.html"
+  },
+  {
+    "app": "desktop",
+    "route": "Notification.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/Notification.html"
+  },
+  {
+    "app": "desktop",
+    "route": "logs.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/logs.html"
+  },
+  {
+    "app": "desktop",
+    "route": "predictions.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/predictions.html"
+  },
+  {
+    "app": "desktop",
+    "route": "profile.html",
+    "stage": "renderer smoke",
+    "page_errors": [],
+    "url": "/desktop/profile.html"
+  },
+  {
+    "app": "desktop",
+    "route": "shared skeleton",
+    "stage": "background refresh retains loaded content",
+    "page_errors": []
+  },
+  {
+    "app": "desktop",
+    "route": "shared skeleton",
+    "stage": "failure replaces table placeholders with safe retry state",
+    "page_errors": []
+  }
+]

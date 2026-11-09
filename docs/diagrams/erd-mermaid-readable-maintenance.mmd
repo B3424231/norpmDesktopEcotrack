@@ -1,0 +1,97 @@
+---
+title: EcoTrack - Maintenance and mobile notifications
+config:
+  theme: base
+  look: classic
+  layout: dagre
+  er:
+    useMaxWidth: false
+    diagramPadding: 24
+    titleTopMargin: 12
+    entityPadding: 9
+    minEntityWidth: 215
+    minEntityHeight: 55
+    nodeSpacing: 42
+    rankSpacing: 58
+    fontSize: 24
+  themeVariables:
+    fontFamily: Arial
+    fontSize: 24px
+    lineColor: "#334155"
+    primaryTextColor: "#111827"
+    edgeLabelBackground: "#ffffff"
+---
+erDiagram
+    direction TB
+
+    ADMINISTRATORS {
+        text id PK
+        uuid auth_user_id FK, UK
+        text username UK
+        text email UK
+        text role
+        boolean is_active
+    }
+    STAFF["STAFF - MOBILE"] {
+        text id PK
+        uuid auth_user_id FK, UK
+        text room_id
+        text name
+        text role
+        text assignment_scope
+        text status
+    }
+    NODES {
+        text id PK
+        text room_id FK
+        text maintainer_id FK
+        text monitor_aircon_id FK
+        text name UK
+        text device_mode
+        text wake_time
+        text sleep_time
+        integer interval_val
+        text interval_unit
+        double rotation_rpm
+    }
+    MAINTENANCE_REPORTS {
+        text id PK
+        text aircon_id FK
+        text staff_id FK
+        text admin_id FK
+        text room_id FK
+        text type
+        text priority
+        text status
+        jsonb tasks
+        jsonb photos
+    }
+    MOBILE_NOTIFICATIONS {
+        text id PK
+        text staff_id FK
+        text related_report_id
+        text title
+        text message
+        boolean is_read
+        timestamptz created_at
+    }
+
+    STAFF |o..o{ MAINTENANCE_REPORTS : handles
+    ADMINISTRATORS |o..o{ MAINTENANCE_REPORTS : reviews
+    NODES |o..o{ MAINTENANCE_REPORTS : services
+    STAFF |o..o{ MOBILE_NOTIFICATIONS : receives
+    MAINTENANCE_REPORTS |o..o{ MOBILE_NOTIFICATIONS : alerts_REF
+
+    classDef auth fill:#fce7f3,stroke:#ec4899,color:#111827
+    classDef location fill:#ccfbf1,stroke:#14b8a6,color:#111827
+    classDef device fill:#dcfce7,stroke:#22c55e,color:#111827
+    classDef rule fill:#ffedd5,stroke:#f97316,color:#111827
+    classDef junction fill:#fef9c3,stroke:#eab308,color:#111827
+    classDef alert fill:#e0f2fe,stroke:#0ea5e9,color:#111827
+    classDef readings fill:#fee2e2,stroke:#ef4444,color:#111827
+    classDef maintenance fill:#ede9fe,stroke:#8b5cf6,color:#111827
+    class ADMINISTRATORS auth
+    class STAFF auth
+    class NODES device
+    class MOBILE_NOTIFICATIONS alert
+    class MAINTENANCE_REPORTS maintenance

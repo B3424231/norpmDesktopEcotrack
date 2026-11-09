@@ -1,7 +1,7 @@
 // Native Chromium form/diagnostic check using production markup, helpers, and CSS.
 const {app,BrowserWindow}=require('electron');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const root=path.resolve(__dirname,'..'),out=path.join(root,'reports/connection-recovery');
+const root=path.resolve(__dirname,'..'),out=process.env.ECOTRACK_AUDIT_ARTIFACTS || path.join(root,'reports/connection-recovery');
 app.setPath('userData',path.join(root,'scratch/connection-recovery-electron'));
 app.disableHardwareAcceleration();
 app.on('window-all-closed',()=>{});
@@ -15,6 +15,7 @@ const panel=slice('          <div id="existingWifiPanel"','          <!-- Hidden
 const diagnostics=slice('          <!-- Wi-Fi Verification Checklist Card -->','        <!-- STEP 3: CONTROLLER INFO');
 async function check(theme){
  const win=new BrowserWindow({width:900,height:850,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false,offscreen:true,backgroundThrottling:false,partition:'connection-recovery-qa'}});
+ win.webContents.on('console-message',event=>{if(event.level==='error')console.error('RENDERER: '+event.message);});
  win.webContents.session.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_details,callback)=>callback({cancel:true}));
  const page='<!doctype html><html class="'+(theme==='dark'?'dark':'')+'"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src &apos;none&apos;; style-src &apos;unsafe-inline&apos;"><style>'+css+'</style><style>.hidden{display:none!important}.qa-card{margin:40px auto;padding:24px;max-width:620px;}#existingWifiPanel{padding:20px;border:1px solid #14b8a6;border-radius:12px;}#existingWifiPanel p,#existingWifiPanel label{margin-bottom:12px;display:block;}#registrationWifiPassword{width:100%;padding:10px;}</style></head><body class="app-shell"><div class="qa-card"><form id="qa-form"><div class="hidden">'+input('nodeFormSsid')+input('nodeFormPassword')+'</div>'+panel+'</form>'+diagnostics+'</div></body></html>';
  await win.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(page));

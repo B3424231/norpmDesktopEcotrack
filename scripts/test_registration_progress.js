@@ -12,7 +12,7 @@ async function settle(){for(let n=0;n<30;n++)await Promise.resolve();}
 function harness(){
  const elements=new Map(),handlers=new Map(),calls=[],saved=[],completed=[],toasts=[],capture=deferred(),persisted=deferred(),writes=[];
  const get=id=>{if(!elements.has(id))elements.set(id,element());return elements.get(id);};
- for(const [id,value]of Object.entries({nodeFormId:deviceId,registrationAcName:'Receiver AC',nodeFormAirconType:'Split Type (Inverter)',nodeFormName:'Receiver lab',nodeFormIp:'10.0.0.4',nodeFormSsid:'Fixture network',nodeFormPassword:'fixture-password',nodeFormBuilding:'b1',nodeFormFloor:'f1',nodeFormRoom:'r1',editNodeIdHidden:deviceId,editNodeIp:'10.0.0.4'}))get(id).value=value;
+ for(const [id,value]of Object.entries({nodeFormId:deviceId,nodeFormDeviceMode:'controller',registrationAcName:'Receiver AC',nodeFormAirconType:'Split Type (Inverter)',nodeFormName:'Receiver lab',nodeFormIp:'10.0.0.4',nodeFormSsid:'Fixture network',nodeFormPassword:'fixture-password',nodeFormBuilding:'b1',nodeFormFloor:'f1',nodeFormRoom:'r1',editNodeIdHidden:deviceId,editNodeIp:'10.0.0.4'}))get(id).value=value;
  get('nodeFormAircon').options=[{value:''},{value:'existing-ac'}];
  const db={aircons:[{id:'existing-ac',asset_tag:'Existing AC',brand:'Daikin',protocol_name:'DAIKIN64'}],buildings:[{id:'b1',name:'Fixture building'}],floors:[{id:'f1',name:'Fixture floor',building_id:'b1'}],rooms:[{id:'r1',name:'Fixture room',floor_id:'f1'}]};
  let denied=null;
@@ -21,7 +21,7 @@ function harness(){
  if(denied===table)return {data:null,error:{message:'Location save denied'}};
  assert(!Object.hasOwn(payload,'id'),'IDs must come from Supabase defaults');const row={id:table+'-server-'+db[table].length,...payload};writes.push({table,payload});db[table].push(row);return {data:row,error:null};
  }};return q;}};
- const context=vm.createContext({window,console,TextEncoder,POPULAR_AC_BRANDS:['Daikin','TCL'],Option:class{constructor(text,value){this.textContent=text;this.value=value}},document:window.document,setTimeout:()=>1,openBtn:get('openAddNodeBtn'),
+ const context=vm.createContext({window,console,TextEncoder,crypto:require('node:crypto'),POPULAR_AC_BRANDS:['Daikin','TCL'],Option:class{constructor(text,value){this.textContent=text;this.value=value}},document:window.document,setTimeout:()=>1,openBtn:get('openAddNodeBtn'),
  NodeService:{saveNode:async data=>{saved.push(data);return persisted.promise;},getNode:()=>({db_id:'n1',node_id:deviceId,brand:null}),saveRemoteProfile:async()=>{throw Error('Unnecessary profile save');}},
  CapabilityEngine:{resolveProtocolName:brand=>brand?'DAIKIN':null},ProtocolAdapter:{detectRemoteBrand:async()=>({success:true,brand:'Daikin',protocol:'DAIKIN2'})},
  renderBrandChips(){},renderNodes(){},setNodeModalStep(){},resetDeviceIpFeedback(){},updateDeviceIpResult(){},setDeviceIpFeedback(){},updateNextButtonState(){},nodeCurrentPage:1,
@@ -42,16 +42,51 @@ function harness(){
 }
 async function main(){
  assert(!html.includes('id="editNodeStatus"'));assert.match(html,/id="editNodeIp"[^>]*readonly/);checks.push('Editable Status removed; IP stays hardware-reported');
- let app=harness();vm.runInContext("selectedBleDevice=null; resetRemoteDetection('register');",app.context);
+ let app=harness();
+ for(const state of ['pending','connected','verifying','verified']) {
+  app.context.setRegistrationCloudStatus(state);
+  assert.equal(app.get('reconnectRegistrationBtn').classList.contains('hidden'),true,'Normal setup does not request reconnection');
+  assert(app.get('registrationCloudMessage').textContent.length>0,'Each status explains the next step');
+ }
+ app.context.setRegistrationCloudStatus('pending');
+ assert.equal(app.get('registrationCloudTitle').textContent,'Finish device setup');
+ assert.match(app.get('registrationCloudMessage').textContent,/Save & Verify Device/);
+ assert.equal(app.get('summaryStatusBadge').textContent,'Setup not saved');
+ assert.equal(app.calls.length,0);assert.equal(app.saved.length,0);
+ app.context.setRegistrationCloudStatus('waiting');
+ assert.equal(app.get('reconnectRegistrationBtn').classList.contains('hidden'),false);
+ assert.equal(app.get('reconnectRegistrationBtn').textContent,'Check connection again');
+ vm.runInContext("registrationCheck={state:'waiting'};",app.context);
+ app.context.setRegistrationCloudStatus('failed','Device confirmation still pending');
+ assert.equal(app.get('reconnectRegistrationBtn').classList.contains('hidden'),false,'An unconfirmed device remains retryable after Save fails');
+ vm.runInContext('registrationCheck=null;',app.context);
+ app.context.setRegistrationCloudStatus('failed','Connection check failed');
+ assert.equal(app.get('reconnectRegistrationBtn').textContent,'Check connection again');
+ app.context.setRegistrationCloudStatus('bluetooth');
+ assert.equal(app.get('reconnectRegistrationBtn').textContent,'Reconnect device');
+ assert.equal(app.get('reconnectRegistrationBtn').classList.contains('hidden'),false);
+ checks.push('Setup guidance identifies the next action without requesting reconnection or claiming a save; cloud confirmation and Bluetooth retries remain available');
+ app=harness();vm.runInContext("selectedBleDevice=null; resetRemoteDetection('register');",app.context);
  assert.equal(app.get('registerRemoteBtn').disabled,true);let learned=0;app.context.ProtocolAdapter.detectRemoteBrand=async()=>learned++;
  await app.context.listenForRemote('register');assert.equal(learned,0);checks.push('Remote detection requires an actual Bluetooth selection');
  app=harness();const ir=deferred();let options;app.context.ProtocolAdapter.detectRemoteBrand=async(id,opt)=>{assert.equal(id,deviceId);options=opt;opt.onListening();return ir.promise;};
  const listening=app.context.listenForRemote('register');assert.equal(options.nearby,true);assert.equal(app.calls.length,0);assert.equal(app.get('saveNodeBtn').disabled,true);
  ir.resolve({success:true,brand:'Daikin',protocol:'DAIKIN2',capture:{raw_count:10}});await listening;
- assert.equal(app.get('nodeFormBrand').value,'Daikin');assert.equal(app.get('registerRemoteBtn').disabled,false);assert.equal(app.calls.length,0);
+ assert.equal(app.get('nodeFormBrand').value,'');assert.match(app.get('registerRemoteStatus').textContent,/DAIKIN2/);assert.equal(app.get('registerRemoteBtn').disabled,false);assert.equal(app.calls.length,0);
  checks.push('Bluetooth remote detection works before registration without adding a controller');
  let enterPrevented=false;app.handlers.get('keydown')({key:'Enter',target:{tagName:'INPUT',type:'password'},preventDefault(){enterPrevented=true;}});
  assert(enterPrevented);assert.equal(app.calls.length,0);checks.push('Password Enter does not implicitly register a device');
+ for(const role of ['monitoring','both']) {
+  app=harness();app.get('nodeFormDeviceMode').value=role;
+  const pending=app.submit();await settle();app.capture.resolve(registration());app.persisted.resolve();await pending;
+  assert.equal(app.saved[0].registration_assignment.device_mode,role);assert.equal(JSON.stringify(app.saved[0].registration_assignment.sensor_config),JSON.stringify({temperature:true,rotation_rpm:true}));
+  if(role==='monitoring')assert.equal(app.saved[0].registration_assignment.protocol_name,null);
+ }
+ checks.push('Monitoring/Both submit explicit device roles and sensor configuration; monitoring never submits an IR protocol');
+ app=harness();app.get('nodeFormDeviceMode').value='';await app.submit();assert.equal(app.calls.length,0);
+ app.get('nodeFormDeviceMode').value='invalid';await app.submit();assert.equal(app.calls.length,0);
+ assert(!html.includes('id="registrationPressureSensor"'));
+ checks.push('Missing/invalid device roles block registration before writes; retired hardware/range inputs are absent');
  app=harness();const saving=app.submit();await settle();assert.equal(app.calls.length,1);assert.equal(app.get('saveNodeBtn').disabled,true);assert.equal(app.get('registrationCloudStatus').dataset.state,'verifying');
  await app.submit();app.context.closeModal();assert.equal(app.calls.length,1);assert.equal(app.get('nodeModal').classList.contains('hidden'),false);
  app.capture.resolve(registration());await settle();assert.equal(app.saved.length,1);assert.equal(app.saved[0].name,'Receiver lab');assert.equal(app.saved[0].room_id,'r1');assert.equal(app.completed.length,0);
@@ -74,7 +109,7 @@ async function main(){
  checks.push('Choosing an existing AC with an empty brand field retains its real brand and protocol');
  app=harness();const transmitter=registration();transmitter.info.capabilities.ir_transmitter=true;
  const txRegistration=app.submit();await settle();app.capture.resolve(transmitter);app.persisted.resolve();await txRegistration;
- assert.equal(app.saved[0].ir_tx,true);assert.equal(app.saved[0].ir_rx,true);assert.equal(app.saved[0].hardware,'ESP32-S3 IR controller');assert(app.saved[0].controls.includes('IR Control'));
+ assert.equal(app.saved[0].ir_tx,true);assert.equal(app.saved[0].ir_rx,true);assert.equal(app.saved[0].hardware,'IR controller');assert(app.saved[0].controls.includes('IR Control'));
  checks.push('A receiver/transmitter sketch enables control using its reported capability instead of a fixed receiver-only registration');
  app=harness();app.get('nodeFormPassword').value='';app.get('registrationWifiPassword').value='fixture-password';
  vm.runInContext("existingWifiInfo={device_id:'"+deviceId+"',wifi_status:'connected',wifi_ssid:'Fixture network',ip_address:'10.0.0.4',cloud_status:'error'};",app.context);
@@ -116,6 +151,7 @@ async function main(){
  reconnect.resolve({device_id:deviceId,wifi_status:'connected',wifi_ssid:'Fixture network',ip_address:'10.0.0.6'});await reconnecting;
  assert.equal(app.get('nodeFormName').value,'Receiver lab');assert.equal(app.get('nodeFormRoom').value,'r1');assert.equal(app.get('nodeFormPassword').value,'fixture-password');
  assert.equal(app.get('registrationCloudStatus').dataset.state,'pending');assert.equal(app.calls.length,0);assert.equal(app.get('saveNodeBtn').disabled,false);
+ assert.equal(app.get('reconnectRegistrationBtn').classList.contains('hidden'),true);assert.equal(app.get('reconnectRegistrationBtn').attributes['aria-busy'],'false');
  checks.push('Step 3 reconnect reuses the known device, checks live Wi-Fi, preserves values, guards duplicates, and never saves automatically');
  app=harness();app.window.EcoTrackHardwareCloud.reconnect=async()=>({device_id:deviceId,wifi_status:'connected',wifi_ssid:'Changed network',ip_address:'10.0.0.8'});
  await app.context.reconnectRegistrationController();assert.equal(app.get('nodeFormSsid').value,'Changed network');assert.equal(app.get('nodeFormPassword').value,'');assert.equal(app.get('registrationWifiPassword').value,'');
@@ -128,7 +164,7 @@ async function main(){
  assert.equal(app.get('chooseRegistrationBtn').classList.contains('hidden'),false);
  checks.push('A connected GATT failure requests a retry without claiming the Bluetooth link disconnected');
  app.context.acceptLiveBluetoothInfo({device_id:deviceId,wifi_status:'connected',wifi_ssid:'Fixture network',ip_address:'10.0.0.6',cloud_status:'error',firmware_version:'cloud-ir-controller-1.3-rxtx',capabilities:{ir_receiver:true,ir_transmitter:true}});
- assert.equal(app.get('registrationCloudStatus').dataset.state,'pending');assert.equal(app.get('nodeFormFw').value,'cloud-ir-controller-1.3-rxtx');assert.equal(app.get('nodeFormHw').value,'ESP32-S3 IR receiver + transmitter');
+ assert.equal(app.get('registrationCloudStatus').dataset.state,'pending');assert.equal(app.get('nodeFormFw').value,'cloud-ir-controller-1.3-rxtx');assert.equal(app.get('nodeFormHw').value,'IR receiver and transmitter');
  assert.equal(app.get('nodeFormIp').value,'10.0.0.6');assert.equal(app.get('nodeFormName').value,'Receiver lab');assert.equal(app.calls.length,0);
  checks.push('A fresh device reply clears a stale Bluetooth warning and shows actual firmware and hardware capabilities without saving');
  app.context.setRegistrationCloudStatus('failed','Actual cloud authentication failure');

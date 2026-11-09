@@ -1,0 +1,90 @@
+---
+title: EcoTrack - Rules and desktop alerts
+config:
+  theme: base
+  look: classic
+  layout: dagre
+  er:
+    useMaxWidth: false
+    diagramPadding: 24
+    titleTopMargin: 12
+    entityPadding: 9
+    minEntityWidth: 215
+    minEntityHeight: 55
+    nodeSpacing: 42
+    rankSpacing: 58
+    fontSize: 24
+  themeVariables:
+    fontFamily: Arial
+    fontSize: 24px
+    lineColor: "#334155"
+    primaryTextColor: "#111827"
+    edgeLabelBackground: "#ffffff"
+---
+erDiagram
+    direction TB
+
+    ADMINISTRATORS {
+        text id PK
+        uuid auth_user_id FK, UK
+        text username UK
+        text email UK
+        text role
+        boolean is_active
+    }
+    NODES {
+        text id PK
+        text room_id FK
+        text maintainer_id FK
+        text monitor_aircon_id FK
+        text name UK
+        text device_mode
+        text wake_time
+        text sleep_time
+        integer interval_val
+        text interval_unit
+        double rotation_rpm
+    }
+    RULES {
+        text id PK
+        text admin_id FK
+        text room_id FK
+        text type
+        text condition
+        numeric value
+        boolean enabled
+    }
+    RULE_NODES {
+        text id PK
+        text rule_id FK
+        text node_id FK
+    }
+    NOTIFICATIONS["NOTIFICATIONS - DESKTOP"] {
+        text id PK
+        text admin_id FK
+        text room_id FK
+        text rule_id FK
+        text type
+        text content
+        timestamptz created
+    }
+
+    ADMINISTRATORS |o..o{ RULES : creates
+    RULES ||..o{ RULE_NODES : applies
+    NODES ||..o{ RULE_NODES : receives
+    RULES |o..o{ NOTIFICATIONS : triggers
+    ADMINISTRATORS |o..o{ NOTIFICATIONS : receives
+
+    classDef auth fill:#fce7f3,stroke:#ec4899,color:#111827
+    classDef location fill:#ccfbf1,stroke:#14b8a6,color:#111827
+    classDef device fill:#dcfce7,stroke:#22c55e,color:#111827
+    classDef rule fill:#ffedd5,stroke:#f97316,color:#111827
+    classDef junction fill:#fef9c3,stroke:#eab308,color:#111827
+    classDef alert fill:#e0f2fe,stroke:#0ea5e9,color:#111827
+    classDef readings fill:#fee2e2,stroke:#ef4444,color:#111827
+    classDef maintenance fill:#ede9fe,stroke:#8b5cf6,color:#111827
+    class ADMINISTRATORS auth
+    class NODES device
+    class RULES rule
+    class RULE_NODES junction
+    class NOTIFICATIONS alert

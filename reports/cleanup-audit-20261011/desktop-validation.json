@@ -1,0 +1,6 @@
+{
+  "project": "desktop",
+  "check": "npm test",
+  "exitCode": 0,
+  "status": "PASS"
+}

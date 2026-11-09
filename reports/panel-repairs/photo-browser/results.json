@@ -1,0 +1,17 @@
+[
+  {
+    "app": "mobile",
+    "stage": "report renders without signing hidden photos",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "stage": "failed photo shows retry without blocking the editable report",
+    "page_errors": []
+  },
+  {
+    "app": "mobile",
+    "stage": "retry signs again and displays the photo",
+    "page_errors": []
+  }
+]

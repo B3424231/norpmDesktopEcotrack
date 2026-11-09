@@ -8,7 +8,9 @@ const node={id:'node-db',name:'hardware-id'};
 const receipt=()=>({id:profile.control_snapshot.command_id,node_id:'node-db',kind:'ac_intent',payload:{aircon_id:'ac-db'},status:'completed',result:{command_id:profile.control_snapshot.command_id,success:true,delivery_status:'transmitted'}});
 const sb={rpc:()=>{throw new Error('Browser cannot write a hardware acknowledgement');},from(table){assert.equal(table,'ecotrack_device_commands');const q={select(){return q;},eq(){return q;},async maybeSingle(){const value=result;if(changedDuringRead)profile.control_snapshot={command_id:'new-command',command_status:'queued'};return {data:value,error};}};return q;}};
 const context=vm.createContext({console,Date,window:{EcoTrackHardwareCloud:{},EcoTrackAirconSystem:{AirconProfileManager:{getAll:()=>[profile],updateState:(_id,_update,snapshot)=>profile.control_snapshot=snapshot}}},getSupabase:()=>sb,getAssignedNodesWithSchedule:async()=>[node],saveNodeTelemetryToSqlite:async()=>{writes++;},fetch:()=>{throw new Error('No LAN requests allowed');}});
-vm.runInContext(block,context);
+Object.assign(context,{AbortController,setTimeout,clearTimeout});
+const deadline=source.slice(source.indexOf('  function readCloudWithDeadline('),source.indexOf('  async function getAssignedNodesWithSchedule('));
+vm.runInContext(deadline+block,context);
 async function main(){
  const checks=[];result=receipt();await context.reconcilePendingCommandReceipt(node,10000);assert.equal(profile.control_snapshot.command_status,'transmitted');checks.push('Matching cloud transmission receipt updates status without LAN or browser acknowledgement writes');
  profile.control_snapshot={command_id:'command-2',command_status:'queued'};result={...receipt(),node_id:'other-node'};await context.reconcilePendingCommandReceipt(node,20000);assert.equal(profile.control_snapshot.command_status,'queued');checks.push('Receipt for another controller is ignored');

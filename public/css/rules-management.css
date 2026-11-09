@@ -1,0 +1,55 @@
+/* Keep Rules Management controls independent of legacy modal utility overrides. */
+#activeRulesModal .rule-bulk-action--warning { --rule-action-color: var(--eco-warning); --rule-action-bg: var(--eco-warning-bg); }
+#activeRulesModal .rule-bulk-action--danger { --rule-action-color: var(--eco-danger); --rule-action-bg: var(--eco-danger-bg); }
+html body.app-shell #activeRulesModal :is(#deactivateAllRulesBtn, #clearRulesBtn) {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 38px; padding: 8px 14px; border: 1px solid var(--rule-action-color) !important;
+  border-radius: 10px; background: var(--rule-action-bg) !important; color: var(--rule-action-color) !important;
+  font-size: 12px; font-weight: 700; line-height: 1.25; white-space: nowrap; cursor: pointer; touch-action: manipulation;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+html body.app-shell #activeRulesModal :is(#deactivateAllRulesBtn, #clearRulesBtn):hover:not(:disabled) { background: color-mix(in srgb, var(--rule-action-color) 12%, var(--rule-action-bg)) !important; }
+html body.app-shell #activeRulesModal :is(#deactivateAllRulesBtn, #clearRulesBtn):active:not(:disabled) { background: color-mix(in srgb, var(--rule-action-color) 20%, var(--rule-action-bg)) !important; }
+html body.app-shell #activeRulesModal :is(#deactivateAllRulesBtn, #clearRulesBtn):focus-visible { outline: 3px solid var(--rule-action-color) !important; outline-offset: 3px !important; }
+html body.app-shell #activeRulesModal :is(#deactivateAllRulesBtn, #clearRulesBtn):disabled { opacity: .5; cursor: not-allowed; }
+html body.app-shell #activeRulesModal .rule-bulk-action svg { flex: 0 0 16px; width: 16px; height: 16px; color: inherit !important; stroke: currentColor !important; }
+#activeRulesModal .rules-management-table { min-width: 1080px; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-table-row { background: var(--eco-surface) !important; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-table-row:hover { background: var(--eco-raised) !important; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-table-row td {
+  padding-top: 16px; padding-bottom: 16px; vertical-align: middle; border-bottom: 1px solid var(--eco-border) !important;
+  color: var(--eco-text) !important; font-size: 13px; line-height: 1.5;
+}
+#activeRulesModal #rulesTableBody td:nth-child(2) { min-width: 160px; }
+#activeRulesModal #rulesTableBody :is(td:nth-child(7), td:nth-child(8), td:nth-child(9)) { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#activeRulesModal #rulesTableBody td:nth-child(10) { min-width: 128px; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-type-icon {
+  display: flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; height: 36px;
+  border: 1px solid var(--eco-accent); border-radius: 10px; color: var(--eco-accent) !important; background: var(--eco-success-bg) !important;
+}
+html body.app-shell #activeRulesModal #rulesTableBody .rule-type-caption { margin-top: 2px; color: var(--eco-secondary) !important; font-size: 11px; font-weight: 500; line-height: 1.45; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-status-toggle {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-width: 100px; min-height: 36px; padding: 7px 12px;
+  border: 1px solid var(--eco-input-border) !important; border-radius: 999px; background: var(--eco-raised) !important; color: var(--eco-secondary) !important;
+  font-size: 11px; font-weight: 700; line-height: 1; letter-spacing: .035em; text-transform: uppercase; white-space: nowrap; cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+html body.app-shell #activeRulesModal #rulesTableBody .rule-status-toggle[aria-pressed="true"] { border-color: var(--eco-accent) !important; background: var(--eco-success-bg) !important; color: var(--eco-accent) !important; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-status-toggle:hover { border-color: currentColor !important; background: var(--eco-surface) !important; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-status-dot { display: block; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: currentColor !important; }
+html body.app-shell #activeRulesModal #rulesTableBody .rule-action-menu-trigger {
+  display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0;
+  border: 1px solid var(--eco-border) !important; border-radius: 10px; background: var(--eco-raised) !important; color: var(--eco-secondary) !important;
+  cursor: pointer; transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+html body.app-shell #activeRulesModal #rulesTableBody .rule-action-menu-trigger:hover { border-color: var(--eco-accent) !important; color: var(--eco-accent) !important; background: var(--eco-surface) !important; }
+html body.app-shell #activeRulesModal #rulesTableBody :is(.rule-status-toggle, .rule-action-menu-trigger):focus-visible { outline: 3px solid var(--eco-accent) !important; outline-offset: 3px !important; }
+@media (prefers-reduced-motion: reduce) {
+  #activeRulesModal .rule-bulk-action, #activeRulesModal #rulesTableBody :is(.rule-status-toggle, .rule-action-menu-trigger) { transition: none; }
+}
+
+/* Keep short location/device labels together and prevent inherited hover shadows. */
+html body.app-shell #activeRulesModal .rules-management-table th,
+html body.app-shell #activeRulesModal #rulesTableBody .rule-table-row td{padding-left:12px !important;padding-right:12px !important}
+#activeRulesModal #rulesTableBody td:nth-child(n+3):nth-child(-n+9){white-space:nowrap}
+html body.app-shell #activeRulesModal #rulesTableBody :is(.rule-status-toggle,.rule-action-menu-trigger){box-shadow:none !important}

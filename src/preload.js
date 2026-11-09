@@ -12,12 +12,19 @@ const env = {
   BACKEND_URL: process.env.BACKEND_URL || 'http://localhost:5000'
 };
 
-const invokeChannels = new Set(["focus-window", "scan-wifi", "scan-ble", "ping-node", "bluetooth-select-response", "bluetooth-pairing-response", "auth-set-session", "auth-lookup-user", "auth-admin-fallback-login", "auth-register-admin", "staff-restore", "staff-archive", "staff-create", "staff-update", "staff-fetch-all", "locations-fetch-all", "maintenance-delete-reports", "maintenance-save-report", "maintenance-fetch-reports", "scheduler-fetch-data", "node-update-schedule", "notifications-fetch-today", "notification-create", "notifications-fetch-all", "notifications-update", "notifications-delete", "rules-fetch-data", "rule-save", "rule-delete", "rule-toggle"]);
+const invokeChannels = new Set(["focus-window", "scan-wifi", "scan-ble", "ping-node", "bluetooth-select-response", "bluetooth-pairing-response", "auth-set-session", "auth-lookup-user", "auth-admin-fallback-login", "auth-register-admin", "staff-restore", "staff-archive", "staff-create", "staff-update", "staff-edit", "staff-fetch-all", "locations-fetch-all", "maintenance-delete-reports", "maintenance-save-report", "maintenance-fetch-reports", "scheduler-fetch-data", "node-update-schedule", "notifications-fetch-today", "notification-create", "notifications-fetch-all", "notifications-update", "notifications-delete", "rules-fetch-data", "rule-save", "rule-delete", "rule-toggle"]);
+invokeChannels.add('monitoring-admin-request');
+invokeChannels.add('telemetry-admin-request');
+invokeChannels.add('local-api-read');
+invokeChannels.add('monitoring-fetch-assets');
+invokeChannels.add('monitoring-sync-registry');
+invokeChannels.add('sensor-create-asset');
+invokeChannels.add('system-notification-show');
 contextBridge.exposeInMainWorld('electron', {
   invoke: (channel, data) => invokeChannels.has(channel) ? ipcRenderer.invoke(channel, data) : Promise.reject(new Error('Unsupported IPC channel')),
   send: (channel, data) => { if (channel === 'focus-window') ipcRenderer.send(channel, data); },
   on: (channel, listener) => {
-    if (!['ble-devices-discovered', 'bluetooth-select-request', 'bluetooth-pairing-request'].includes(channel) || typeof listener !== 'function') return;
+    if (!['ble-devices-discovered', 'bluetooth-select-request', 'bluetooth-pairing-request', 'system-notification-clicked'].includes(channel) || typeof listener !== 'function') return;
     const wrapped = (_event, ...args) => listener(undefined, ...args);
     ipcRenderer.on(channel, wrapped);
     return () => ipcRenderer.removeListener(channel, wrapped);

@@ -75,19 +75,21 @@ async function loadProfileWithSWR(forceRefresh = false) {
 
   // Verify on each load, even when the profile itself came from the cache.
   const adminAccess = await verifyAdministratorAccess(sb);
+  const profileId = loadedProfile?.id || localUser.id;
   currentUser = {
     adminAccess,
     userType: loadedProfile?.userType || localUser.userType,
-    id: loadedProfile?.id || localUser.id || 'admin_default_01',
+    id: profileId || 'admin_default_01',
     username: loadedProfile?.username || localUser.username || 'admin',
     email: loadedProfile?.email || localUser.email || 'admin@ecotrack.local',
     role: loadedProfile?.role || localUser.role || 'admin',
     location: loadedProfile?.location || localUser.location || 'Philippines',
-    avatar: localStorage.getItem('ecoTrack_avatar') || '',
+    // The legacy shared key has no owner and must never be assigned to an account.
+    avatar: profileId ? localStorage.getItem(`ecoTrack_avatar:${profileId}`) || '' : '',
     created: loadedProfile?.created || localUser.created || '2026-07-03T00:00:00Z',
     last_login: loadedProfile?.last_login || localUser.last_login || '2026-07-03T08:00:00Z',
     is_active: loadedProfile?.is_active !== undefined ? loadedProfile.is_active : true,
-    session_timeout: loadedProfile?.session_timeout || localUser.session_timeout || '30 minutes'
+    session_timeout: getSessionTimeoutSetting({session_timeout: loadedProfile?.session_timeout ?? localUser.session_timeout})
   };
 
   populateProfileUI(currentUser);
@@ -132,6 +134,10 @@ function populateProfileUI(user) {
     profileAvatarImg.src = user.avatar;
     profileAvatarImg.classList.remove('hidden');
     profileAvatarSvg.classList.add('hidden');
+  } else if (profileAvatarImg && profileAvatarSvg) {
+    profileAvatarImg.removeAttribute('src');
+    profileAvatarImg.classList.add('hidden');
+    profileAvatarSvg.classList.remove('hidden');
   }
   
   const profileRoleTextEl = document.getElementById('profile-role-text');
@@ -148,9 +154,77 @@ function populateProfileUI(user) {
   
   const overviewEmailEl = document.getElementById('overview-email');
   if (overviewEmailEl) overviewEmailEl.textContent = user.email;
+
+  const sessionTimeoutSelect = document.getElementById('session-timeout-select');
+  if (sessionTimeoutSelect) sessionTimeoutSelect.value = getSessionTimeoutSetting(user);
+}
+
+function initProfileSessionTimeout() {
+  const select = document.getElementById('session-timeout-select');
+  if (!select) return;
+  select.value = getSessionTimeoutSetting(currentUser);
+  select.addEventListener('change', () => {
+    const setting = select.value;
+    localStorage.setItem('ecoTrack_session_timeout', setting);
+    let cachedUser;
+    try { cachedUser = JSON.parse(localStorage.getItem('ecoTrack_profile_user') || '{}'); }
+    catch (_) { cachedUser = {}; }
+    localStorage.setItem('ecoTrack_profile_user', JSON.stringify({...cachedUser, session_timeout: setting}));
+    if (currentUser) currentUser.session_timeout = setting;
+    resetSessionTimeoutTimer();
+    showProfileToast(`✓ Session timeout set to ${setting}`, 'success');
+  });
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Bind local security preferences before waiting for the account profile request.
+  initProfileSessionTimeout();
+  // Tab Navigation Logic
+  const tabs = [
+    { btn: document.getElementById('tabBtnProfile'), panel: document.getElementById('panelProfile') },
+    { btn: document.getElementById('tabBtnSecurity'), panel: document.getElementById('panelSecurity') },
+    { btn: document.getElementById('tabBtnHistory'), panel: document.getElementById('panelHistory'), onOpen: () => renderLoginHistory() }
+  ];
+
+  function switchTab(activeTab) {
+    window.EcoTrackPageState?.save({profileTab:activeTab.btn?.id});
+    tabs.forEach(tab => {
+      if (!tab.btn || !tab.panel) return;
+      tab.btn.setAttribute('aria-selected', String(tab === activeTab));
+      tab.btn.tabIndex = tab === activeTab ? 0 : -1;
+      if (tab === activeTab) {
+        tab.btn.classList.remove('border-transparent', 'text-gray-500', 'dark:text-gray-400');
+        tab.btn.classList.add('border-emerald-500', 'text-emerald-600', 'dark:text-emerald-400');
+        tab.panel.classList.remove('hidden');
+        if (tab.onOpen) tab.onOpen();
+      } else {
+        tab.btn.classList.remove('border-emerald-500', 'text-emerald-600', 'dark:text-emerald-400');
+        tab.btn.classList.add('border-transparent', 'text-gray-500', 'dark:text-gray-400');
+        tab.panel.classList.add('hidden');
+      }
+    });
+  }
+
+  tabs.forEach(tab => {
+    if (tab.btn) {
+      tab.btn.setAttribute('role', 'tab'); tab.btn.setAttribute('aria-controls', tab.panel.id);
+      tab.panel.setAttribute('role', 'tabpanel'); tab.panel.setAttribute('aria-labelledby', tab.btn.id);
+      tab.btn.addEventListener('click', () => {
+        switchTab(tab);
+      });
+      tab.btn.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const index = tabs.indexOf(tab), next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        tabs[next].btn.click(); tabs[next].btn.focus();
+      });
+    }
+  });
+
+  if (location.hash === '#device-mode') history.replaceState(null, '', location.pathname + location.search);
+  const profileTab = new URLSearchParams(location.search).get('tab') || window.EcoTrackPageState?.read().profileTab;
+  switchTab(tabs.find(tab => tab.btn?.id === profileTab || tab.btn?.id.toLowerCase() === 'tabbtn' + String(profileTab).toLowerCase()) || tabs[0]);
+
   await loadProfileWithSWR();
 
   if (window.EcoDataBus) {
@@ -392,24 +466,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Populate Timeout dropdown
-  const sessionTimeoutSelect = document.getElementById('session-timeout-select');
-  if (sessionTimeoutSelect) {
-    const savedTimeout = localStorage.getItem('ecoTrack_session_timeout') || user.session_timeout || '30 minutes';
-    sessionTimeoutSelect.value = savedTimeout;
-    sessionTimeoutSelect.addEventListener('change', () => {
-      user.session_timeout = sessionTimeoutSelect.value;
-      localStorage.setItem('ecoTrack_session_timeout', sessionTimeoutSelect.value);
-      localStorage.setItem('ecoTrack_profile_user', JSON.stringify(user));
-      
-      if (typeof resetSessionTimeoutTimer === 'function') {
-        resetSessionTimeoutTimer();
-      }
-      
-      showProfileToast(`✓ Session timeout set to ${sessionTimeoutSelect.value}`, 'success');
-    });
-  }
-  
   // Populate Edit Modal Fields
   const editNameEl = document.getElementById('edit-name');
   if (editNameEl) editNameEl.value = name;
@@ -421,39 +477,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   
   const editEmailEl = document.getElementById('edit-email');
-  if (editEmailEl) editEmailEl.value = user.email;
+  const isStaff = user.id.startsWith('stf_') || user.userType === 'staff';
+  if (editEmailEl) {
+    editEmailEl.value = user.email;
+    editEmailEl.readOnly = !isStaff;
+  }
+  document.getElementById('edit-email-note')?.classList.toggle('hidden', isStaff);
 
   const editLocationEl = document.getElementById('edit-location');
   if (editLocationEl) editLocationEl.value = user.location;
-
-  // Tab Navigation Logic
-  const tabs = [
-    { btn: document.getElementById('tabBtnProfile'), panel: document.getElementById('panelProfile') },
-    { btn: document.getElementById('tabBtnSecurity'), panel: document.getElementById('panelSecurity') },
-    { btn: document.getElementById('tabBtnHistory'), panel: document.getElementById('panelHistory'), onOpen: () => renderLoginHistory() }
-  ];
-
-  function switchTab(activeTab) {
-    tabs.forEach(tab => {
-      if (!tab.btn || !tab.panel) return;
-      if (tab === activeTab) {
-        tab.btn.classList.remove('border-transparent', 'text-gray-500', 'dark:text-gray-400');
-        tab.btn.classList.add('border-emerald-500', 'text-emerald-600', 'dark:text-emerald-400');
-        tab.panel.classList.remove('hidden');
-        if (tab.onOpen) tab.onOpen();
-      } else {
-        tab.btn.classList.remove('border-emerald-500', 'text-emerald-600', 'dark:text-emerald-400');
-        tab.btn.classList.add('border-transparent', 'text-gray-500', 'dark:text-gray-400');
-        tab.panel.classList.add('hidden');
-      }
-    });
-  }
-
-  tabs.forEach(tab => {
-    if (tab.btn) {
-      tab.btn.addEventListener('click', () => switchTab(tab));
-    }
-  });
 
   // Top header button shortcuts to profile tab
   const editProfileBtn = document.getElementById('editProfileBtn');
@@ -490,29 +522,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       try {
         const updatedData = {
           username: editNameEl.value.trim() || 'Administrator',
-          email: editEmailEl.value.trim() || user.email,
+          email: isStaff ? editEmailEl.value.trim() || user.email : user.email,
           location: editLocationEl ? editLocationEl.value.trim() : 'Philippines'
         };
         
-        // Save to localStorage
         const profileToSave = { ...user, ...updatedData };
+        const clientToUpdate = window.supabaseClient || window.sb || sb;
+        if (!user.id || !clientToUpdate) throw new Error('Sign in and reconnect before saving your profile.');
+        const table = isStaff ? 'staff' : 'administrators';
+        const payload = isStaff
+          ? { name: updatedData.username, email: updatedData.email }
+          : { username: updatedData.username, location: updatedData.location, updated: new Date().toISOString() };
+        const { data: receipt, error: sbUpdateErr } = await clientToUpdate.from(table).update(payload).eq('id', user.id).select('id').single();
+        if (sbUpdateErr) throw new Error(sbUpdateErr.message || 'The profile could not be saved.');
+        if (receipt?.id !== user.id) throw new Error('The server did not confirm your profile update.');
         localStorage.setItem('ecoTrack_profile_user', JSON.stringify(profileToSave));
-
-        if (user.id) {
-          const clientToUpdate = window.supabaseClient || window.sb || sb;
-          if (clientToUpdate) {
-            const isStaff = (user.id && user.id.startsWith('stf_')) || user.userType === 'staff';
-            const table = isStaff ? 'staff' : 'administrators';
-            const payload = isStaff
-              ? { name: updatedData.username, email: updatedData.email }
-              : { username: updatedData.username, email: updatedData.email, location: updatedData.location, updated: new Date().toISOString() };
-            const { error: sbUpdateErr } = await clientToUpdate.from(table).update(payload).eq('id', user.id);
-
-            if (sbUpdateErr) {
-              console.warn('[Supabase Profile Update]', sbUpdateErr.message);
-            }
-          }
-        }
+        Object.assign(user, updatedData);
         
         // Update live fields on page immediately
         const profileNameEl = document.getElementById('profile-name');
@@ -604,16 +629,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       const file = avatarFileInput.files[0];
       if (!file) return;
 
+      const profileId = currentUser?.id;
+      if (!profileId || profileId === 'admin_default_01') {
+        notifyError('Sign in before changing your profile picture.');
+        return;
+      }
+
       const reader = new FileReader();
       reader.onload = (e) => {
+        if (currentUser?.id !== profileId) return;
         const base64Data = e.target.result;
-        localStorage.setItem('ecoTrack_avatar', base64Data);
-        
-        if (profileAvatarImg && profileAvatarSvg) {
-          profileAvatarImg.src = base64Data;
-          profileAvatarImg.classList.remove('hidden');
-          profileAvatarSvg.classList.add('hidden');
-        }
+        localStorage.setItem(`ecoTrack_avatar:${profileId}`, base64Data);
+        currentUser.avatar = base64Data;
+        populateProfileUI(currentUser);
         notifySuccess('Profile picture updated successfully!');
       };
       reader.readAsDataURL(file);

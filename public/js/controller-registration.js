@@ -3,16 +3,20 @@
   const $ = id => document.getElementById(id);
   const text = id => ($(id)?.value || '').trim();
   const safeText = value => value.length > 0 && value.length <= 100 && !/[\x00-\x1f<>]/.test(value);
-  let brands = [], index = -1, onChange = () => {};
+  let brands = [], onChange = () => {};
+  const brandPickers = new Map();
   function mode() { return document.querySelector('input[name="registrationAssignment"]:checked')?.value || ''; }
   function type() { return text('nodeFormAirconType') === '__custom__' ? text('registrationCustomType') : text('nodeFormAirconType'); }
   function fields() {
-    return {controller_name:text('nodeFormName'),assignment_mode:mode(),aircon_id:text('nodeFormAircon') || null,
+    const deviceMode = text('nodeFormDeviceMode');
+    return {device_mode:deviceMode,sensor_config:['monitoring','both'].includes(deviceMode) ? {temperature:true,rotation_rpm:true} : null,
+      controller_name:text('nodeFormName'),assignment_mode:mode(),aircon_id:text('nodeFormAircon') || null,
       asset_tag:text('registrationAcName'),aircon_name:mode()==='new'?text('registrationAcName'):$('registrationCustomNameWrap')?.hidden===false?text('registrationCustomName'):null,brand:text('nodeFormBrand'),aircon_type:type()};
   }
   function validate(needsPassword = false) {
     const data = fields(), errors = {};
-    if (!safeText(data.controller_name)) errors.nodeFormName = 'Enter a controller name (1–100 characters).';
+    if (!['monitoring','controller','both'].includes(data.device_mode)) errors.nodeFormDeviceMode='Choose an AC device type.';
+    if (!safeText(data.controller_name)) errors.nodeFormName = 'Enter an AC device name (1–100 characters).';
     if (!['existing','new'].includes(data.assignment_mode)) errors.registrationAssignment = 'Choose an existing AC or create a new one.';
     else if (data.assignment_mode === 'existing' && (!data.aircon_id || !Array.from($('nodeFormAircon').options).some(o => o.value === data.aircon_id)))
       errors.nodeFormAircon = 'Select an available air conditioner.';
@@ -28,7 +32,7 @@
     return {data,errors,valid:Object.keys(errors).length === 0};
   }
   function showErrors(errors = {}) {
-    ['nodeFormName','registrationAssignment','nodeFormAircon','registrationAcName','registrationCustomName','nodeFormAirconType','registrationCustomType','nodeFormBrand','registrationWifiPassword'].forEach(id => {
+    ['nodeFormDeviceMode','registrationSensorConfig','nodeFormName','registrationAssignment','nodeFormAircon','registrationAcName','registrationCustomName','nodeFormAirconType','registrationCustomType','nodeFormBrand','registrationWifiPassword'].forEach(id => {
       const field = $(id), output = $(id + 'Error');
       field?.setAttribute('aria-invalid', String(!!errors[id]));
       if (output) { output.textContent = errors[id] || ''; output.hidden = !errors[id]; }
@@ -48,21 +52,40 @@
     $('registrationCustomType').value = known ? '' : value || '';
     $('registrationCustomTypeWrap').hidden = known;
   }
-  function hideBrands() { $('registrationBrandList').hidden = true; $('nodeFormBrand').setAttribute('aria-expanded','false'); $('nodeFormBrand').removeAttribute('aria-activedescendant'); index = -1; }
-  function renderBrands() {
-    const list = $('registrationBrandList'), input = $('nodeFormBrand'), query = input.value.trim().toLocaleLowerCase();
-    const choices = brands.filter(brand => brand.toLocaleLowerCase().includes(query));
-    list.replaceChildren(); index = -1; input.removeAttribute('aria-activedescendant');
-    choices.forEach((brand,i) => {
-      const option = document.createElement('button');
-      option.type = 'button'; option.id = 'registrationBrandOption' + i; option.setAttribute('role','option');
-      option.setAttribute('aria-selected',String(brand.toLocaleLowerCase() === query)); option.tabIndex = -1; option.textContent = brand;
-      option.addEventListener('mousedown',event => event.preventDefault());
-      option.addEventListener('click',() => { input.value = brand; hideBrands(); input.dispatchEvent(new Event('input',{bubbles:true})); hideBrands(); input.focus(); });
-      list.appendChild(option);
+  function hideBrandPicker(inputId) { brandPickers.get(inputId)?.hide(); }
+  function hideBrands() { hideBrandPicker('nodeFormBrand'); }
+  function mountBrandPicker(inputId, listId) {
+    if (brandPickers.has(inputId)) return;
+    const input = $(inputId), list = $(listId);
+    if (!input || !list) return;
+    let index = -1;
+    function hide() { list.hidden=true;input.setAttribute('aria-expanded','false');input.removeAttribute('aria-activedescendant');index=-1; }
+    function render() {
+      const query=input.value.trim().toLocaleLowerCase(),choices=brands.filter(brand=>brand.toLocaleLowerCase().includes(query));
+      list.replaceChildren();index=-1;input.removeAttribute('aria-activedescendant');
+      choices.forEach((brand,i)=>{
+        const option=document.createElement('button');option.type='button';option.id=listId+'Option'+i;option.setAttribute('role','option');
+        option.setAttribute('aria-selected',String(brand.toLocaleLowerCase()===query));option.tabIndex=-1;option.textContent=brand;
+        option.addEventListener('mousedown',event=>event.preventDefault());
+        option.addEventListener('click',()=>{input.value=brand;hide();input.dispatchEvent(new Event('input',{bubbles:true}));hide();input.focus();});
+        list.appendChild(option);
+      });
+      if(!choices.length){const empty=document.createElement('p');empty.textContent='No matches. You can enter the manufacturer shown on your AC.';list.appendChild(empty);}
+      list.hidden=false;input.setAttribute('aria-expanded','true');
+    }
+    input.removeAttribute('list');input.addEventListener('focus',render);input.addEventListener('input',render);input.addEventListener('blur',hide);
+    input.addEventListener('keydown',event=>{
+      if(event.key==='Escape'&&!list.hidden){event.preventDefault();event.stopPropagation();hide();return;}
+      if(!['ArrowDown','ArrowUp','Enter'].includes(event.key))return;
+      if(list.hidden){if(event.key==='Enter')return;render();}
+      const options=Array.from(list.querySelectorAll('[role="option"]'));if(!options.length)return;
+      event.preventDefault();
+      if(event.key==='Enter'){if(index>=0)options[index].click();return;}
+      index=index<0?(event.key==='ArrowDown'?0:options.length-1):(index+(event.key==='ArrowDown'?1:-1)+options.length)%options.length;
+      options.forEach((option,i)=>{option.classList.toggle('active',i===index);option.setAttribute('aria-selected',String(i===index));});
+      input.setAttribute('aria-activedescendant',options[index].id);options[index].scrollIntoView({block:'nearest'});
     });
-    if (!choices.length) { const empty=document.createElement('p'); empty.textContent='No matches. You can enter the manufacturer shown on your AC.'; list.appendChild(empty); }
-    list.hidden = false; input.setAttribute('aria-expanded','true');
+    brandPickers.set(inputId,{hide});
   }
   function addBrands(values) {
     const dedup = new Map();
@@ -72,21 +95,8 @@
   function mount(changed) {
     onChange = changed;
     addBrands(Array.from($('nodeBrandOptionsList').options).map(o => o.value));
-    const brand = $('nodeFormBrand'); brand.removeAttribute('list');
-    brand.addEventListener('focus',renderBrands); brand.addEventListener('input',renderBrands);
-    brand.addEventListener('blur',hideBrands);
-    brand.addEventListener('keydown',event => {
-      if (event.key === 'Escape' && ! $('registrationBrandList').hidden) { event.preventDefault();event.stopPropagation();hideBrands();return; }
-      if (!['ArrowDown','ArrowUp','Enter'].includes(event.key)) return;
-      if ($('registrationBrandList').hidden) { if(event.key === 'Enter')return; renderBrands(); }
-      const options=Array.from($('registrationBrandList').querySelectorAll('[role="option"]'));
-      if(!options.length)return;
-      event.preventDefault();
-      if(event.key==='Enter') { if(index>=0) options[index].click(); return; }
-      index=index<0 ? (event.key==='ArrowDown'?0:options.length-1) : (index+(event.key==='ArrowDown'?1:-1)+options.length)%options.length;
-      options.forEach((option,i)=>option.classList.toggle('active',i===index));
-      brand.setAttribute('aria-activedescendant',options[index].id);options[index].scrollIntoView({block:'nearest'});
-    });
+    mountBrandPicker('nodeFormBrand','registrationBrandList');
+    mountBrandPicker('editNodeBrand','editBrandList');
     $('registrationPasswordToggle').addEventListener('click',() => {
       const field=$('registrationWifiPassword'),visible=field.type==='password';field.type=visible?'text':'password';
       $('registrationPasswordToggle').setAttribute('aria-pressed',String(visible));
@@ -105,10 +115,15 @@
     });
   }
   function reset() {
+    setDeviceMode('both');
     chooseMode('');showErrors();hideBrands();$('registrationCustomNameWrap').hidden=true;$('registrationCustomName').value='';$('registrationCustomTypeWrap').hidden=true;
     $('registrationWifiPassword').type='password';
     $('registrationPasswordToggle').setAttribute('aria-label','Show password');
     $('registrationPasswordToggle').setAttribute('aria-pressed','false');$('registrationPasswordToggle').classList.remove('password-visible');
   }
-  root.EcoTrackControllerRegistration = {mount,reset,fields,validate,showErrors,chooseMode,setType,addBrands,type};
+  function setDeviceMode(value, config={}) {
+    $('nodeFormDeviceMode').value=value;
+    $('registrationIrConfig').hidden=value==='monitoring';
+  }
+  root.EcoTrackControllerRegistration = {mount,reset,fields,validate,showErrors,chooseMode,setType,addBrands,type,setDeviceMode,mountBrandPicker,hideBrandPicker};
 })(window);

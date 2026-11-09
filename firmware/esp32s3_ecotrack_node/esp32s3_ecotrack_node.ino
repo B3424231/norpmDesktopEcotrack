@@ -53,6 +53,54 @@
 #include <IRutils.h>
 #include <IRac.h>
 
+
+// Passive 20-notch encoder: one falling edge per notch. RPM is independent of AC power.
+#define PIN_ROTATION_INPUT 40
+#define ROTATION_PULSES_PER_REVOLUTION 20UL
+static volatile uint32_t rotationPulses = 0;
+static portMUX_TYPE rotationMux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t rotationWindowStarted = 0;
+static float measuredRotationRpm = NAN;
+
+void IRAM_ATTR countRotationPulse() {
+  portENTER_CRITICAL_ISR(&rotationMux);
+  ++rotationPulses;
+  portEXIT_CRITICAL_ISR(&rotationMux);
+}
+
+void beginMeasurementInputs() {
+  pinMode(PIN_ROTATION_INPUT, INPUT_PULLUP);
+  rotationWindowStarted = micros();
+  attachInterrupt(digitalPinToInterrupt(PIN_ROTATION_INPUT), countRotationPulse, FALLING);
+}
+
+void updateRotationMeasurement() {
+  const uint32_t captured = micros();
+  const uint32_t elapsed = captured - rotationWindowStarted;
+  if (elapsed < 1000000UL) return;
+  portENTER_CRITICAL(&rotationMux);
+  const uint32_t pulses = rotationPulses;
+  rotationPulses = 0;
+  portEXIT_CRITICAL(&rotationMux);
+  rotationWindowStarted = captured;
+  measuredRotationRpm = (double(pulses) * 60000000.0) / (ROTATION_PULSES_PER_REVOLUTION * double(elapsed));
+}
+
+void writeMeasurements(JsonDocument &document) {
+  if (isfinite(measuredRotationRpm)) document["rotation_rpm"] = measuredRotationRpm;
+  else document["rotation_rpm"] = nullptr;
+  document["rotation_quality"] = isfinite(measuredRotationRpm) ? "ok" : "missing";
+  const time_t captured = time(nullptr);
+  if (captured > 1700000000) {
+    struct tm utc;
+    gmtime_r(&captured, &utc);
+    char stamp[25];
+    strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    document["observed_at"] = stamp;
+    document["created"] = stamp;
+  } else document["observed_at"] = nullptr;
+}
+
 // ==============================================================================
 // SECTION 2: HARDWARE & NETWORK CONFIGURATION
 // ==============================================================================
@@ -80,11 +128,23 @@
 // -----------------------------------------------------------------------------
 // 2. WI-FI CREDENTIALS (Supports Dual-SSID Automatic Failover)
 // -----------------------------------------------------------------------------
-#define WIFI_SSID_PRIMARY    "EcoTrack-IoT"
-#define WIFI_PASS_PRIMARY    "EcoTrackSecure2026"
+// Saved provisioning takes priority. Optional fallback credentials stay private.
+#if __has_include("wifi-secrets.h")
+#include "wifi-secrets.h"
+#endif
+#ifndef WIFI_SSID_PRIMARY
+#define WIFI_SSID_PRIMARY ""
+#endif
+#ifndef WIFI_PASS_PRIMARY
+#define WIFI_PASS_PRIMARY ""
+#endif
 
-#define WIFI_SSID_BACKUP     "MobileHotspot"
-#define WIFI_PASS_BACKUP     "12345678"
+#ifndef WIFI_SSID_BACKUP
+#define WIFI_SSID_BACKUP ""
+#endif
+#ifndef WIFI_PASS_BACKUP
+#define WIFI_PASS_BACKUP ""
+#endif
 
 #define WIFI_TIMEOUT_MS      15000                     // 15 seconds connection timeout
 
@@ -719,6 +779,7 @@ public:
     document["aircon_type"] = _airconType;
     if (isfinite(temperature)) document["temperature"] = temperature;
     else document["temperature"] = nullptr;
+    writeMeasurements(document);
     document["battery"] = PowerManager::getVoltage();
     document["rssi"] = rssi;
     document["status"] = "online";
@@ -745,6 +806,9 @@ public:
     JsonDocument document;
     document["status"] = status;
     if (isfinite(temperature)) document["temp"] = temperature;
+    else document["temp"] = nullptr;
+    if (isfinite(measuredRotationRpm)) document["rotation_rpm"] = measuredRotationRpm;
+    else document["rotation_rpm"] = nullptr;
     document["battery"] = batteryPct;
     document["rssi"] = rssi;
     document["ip_address"] = WiFi.localIP().toString();
@@ -1120,8 +1184,8 @@ unsigned long lastCommandPollMs = 0;
 unsigned long lastBattCheckMs = 0;
 unsigned long lastWifiCheckMs = 0;
 
-// No ambient sensor is wired in this configuration. Publish unknown until a real sensor supplies a reading.
-float currentTemperature = NAN;
+// Measured temperature is excluded; keep telemetry unknown and GPIO47/48 unused.
+const float currentTemperature = NAN;
 
 // Forward Declarations
 void printStartupBanner();
@@ -1131,6 +1195,7 @@ void connectWiFi();
 void setup() {
   // Initialize Serial Monitor
   Serial.begin(115200);
+  beginMeasurementInputs();
   delay(1000);
 
   // 1. Resolve Node Identity (Explicit or Auto-MAC)
@@ -1157,6 +1222,7 @@ void setup() {
   // 6. Sync initial cloud configuration (location, aircon type, interval, schedule) before first telemetry
   if (WiFi.status() == WL_CONNECTED) {
     SupabaseManager::syncNodeConfig();
+    updateRotationMeasurement();
     SupabaseManager::sendTelemetry(
       currentTemperature, 
       PowerManager::getPercentage(), 
@@ -1174,6 +1240,7 @@ void setup() {
 }
 
 void loop() {
+  updateRotationMeasurement();
   unsigned long now = millis();
   if (WifiProvisioning::poll()) {
     BLEManager::updateTelemetryStatus(
@@ -1216,6 +1283,7 @@ void loop() {
     Serial.printf("[TELEMETRY] Scheduled Push -> Temp: %.1fC | Batt: %d%% (%.2fV) | RSSI: %d dBm\n",
       currentTemperature, PowerManager::getPercentage(), PowerManager::getVoltage(), rssi);
 
+    updateRotationMeasurement();
     SupabaseManager::sendTelemetry(
       currentTemperature, 
       PowerManager::getPercentage(), 

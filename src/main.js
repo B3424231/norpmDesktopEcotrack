@@ -1,16 +1,20 @@
 const fs = require('fs');
+const { readProvisioningError } = require('../public/js/provisioning-errors.js');
+const { provisionAdministrator } = require('../public/js/admin-registration.js');
 const path = require('path');
 const { execFile } = require('child_process');
 try {
   require('dotenv').config({ path: path.join(__dirname, '../.env') });
 } catch (_) {}
-const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
-const isDev = require('electron-is-dev');
+const { app, BrowserWindow, Menu, shell, ipcMain, safeStorage, dialog, Notification } = require('electron');
+const runtimeResource = relative => app.isPackaged ? path.join(process.resourcesPath, relative) : path.join(__dirname, '..', relative);
+if (process.env.ECOTRACK_USER_DATA_PATH) app.setPath('userData', path.resolve(process.env.ECOTRACK_USER_DATA_PATH));
+let backendReady = !app.isPackaged;
 
 // Acquire the profile lock before Chromium creates its shared disk/GPU caches.
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
-  app.exit(0);
+  app.exit(app.commandLine.hasSwitch('configure-only') ? 2 : 0);
 } else {
   app.on('second-instance', () => focusMainWindow());
 }
@@ -22,9 +26,38 @@ app.commandLine.appendSwitch('enable-web-bluetooth');
 app.commandLine.appendSwitch('enable-experimental-web-platform-features');
 
 let mainWindow = null;
+let startupWindow = null;
+let shuttingDown = false;
+app.on('before-quit', () => { shuttingDown = true; });
+
+function createStartupWindow() {
+  startupWindow = new BrowserWindow({
+    width: 480, height: 310, show: false, resizable: false,
+    maximizable: false, fullscreenable: false, autoHideMenuBar: true,
+    title: 'Starting EcoTrack', backgroundColor: '#03140e',
+    icon: path.join(__dirname, '../assets/ecoTrack.png'),
+    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+  });
+  const window = startupWindow;
+  window.once('ready-to-show', () => { if (!shuttingDown && !window.isDestroyed()) window.show(); });
+  // User close cancels the entire startup, including a main renderer that may
+  // already exist hidden. Automatic handoff uses destroy(), which skips close.
+  window.on('close', () => { if (!shuttingDown) app.quit(); });
+  window.on('closed', () => { startupWindow = null; });
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.loadFile(path.join(__dirname, '../public/startup.html')).catch(error => {
+    if (!shuttingDown) { dialog.showErrorBox('EcoTrack could not start', error.message); app.quit(); }
+  });
+}
 
 function focusMainWindow() {
-  if (!hasSingleInstanceLock || !app.isReady()) return;
+  if (!hasSingleInstanceLock || !app.isReady() || shuttingDown) return;
+  if (startupWindow && !startupWindow.isDestroyed()) {
+    if (startupWindow.isMinimized()) startupWindow.restore();
+    startupWindow.show(); startupWindow.focus();
+    return;
+  }
+  if (!backendReady) return;
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
     return;
@@ -69,7 +102,7 @@ ipcMain.handle('scan-wifi', async () => {
     }
 
     // Trigger hardware WLAN scan via wlanapi.dll
-    const scriptPath = path.join(__dirname, '../scripts/wlan_scan.ps1');
+    const scriptPath = runtimeResource('scripts/wlan_scan.ps1');
     execFile('powershell', ['-ExecutionPolicy', 'Bypass', '-File', scriptPath], { timeout: 3000 }, () => {
       // Allow probe frames to settle
       setTimeout(() => {
@@ -231,7 +264,7 @@ for (const [channel, pending] of [['bluetooth-select-response', bluetoothSelecti
 ipcMain.handle('scan-ble', async () => {
   return new Promise((resolve) => {
     try {
-      const scannerExe = path.join(__dirname, '../scripts/ble_scanner.exe');
+      const scannerExe = runtimeResource('scripts/ble_scanner.exe');
       if (process.platform === 'win32' && fs.existsSync(scannerExe)) {
         execFile(scannerExe, ['3'], { timeout: 6000 }, (err, stdout) => {
           if (!err && stdout && stdout.trim()) {
@@ -366,6 +399,10 @@ function isTrustedDatabaseCaller(event) {
 }
 
 let databaseSessionSync = Promise.resolve();
+require('./system-notifications').registerSystemNotifications({
+  ipcMain, Notification, isTrustedCaller: isTrustedDatabaseCaller, focusMainWindow,
+  getWindow: () => mainWindow, icon: runtimeResource('public/assets/ecoTrack.png')
+});
 ipcMain.handle('auth-set-session', async (event, session) => {
   if (!isTrustedDatabaseCaller(event)) return { success: false, error: 'Untrusted caller' };
   const client = getSupabaseAdmin();
@@ -413,6 +450,64 @@ function registerDatabaseHandler(channel, handler) {
 }
 
 // Identifier lookup never exposes profile data before authentication.
+// Trusted bundled frames may read local history while offline; no cloud lookup or credential reaches the renderer.
+ipcMain.handle('local-api-read', async (event, input) => {
+  if (!isTrustedDatabaseCaller(event)) return {success:false,error:'Untrusted caller'};
+  try {
+    const dbPath = path.resolve(process.env.ECOTRACK_SQLITE_DB_PATH || path.join(__dirname, '../backend/telemetry.db'));
+    return {success:true,...await require('./telemetry-local').requestLocalRead(input, {
+      backendUrl:process.env.BACKEND_URL || 'http://localhost:5000',
+      keyPath:path.join(path.dirname(dbPath),'.ecotrack-monitoring-admin.key'),
+      adminToken:process.env.ECOTRACK_MONITOR_ADMIN_TOKEN
+    })};
+  } catch (error) { return {success:false,error:error.message || 'Local read failed.'}; }
+});
+
+registerDatabaseHandler('telemetry-admin-request', async (_event, input) => {
+  const dbPath = path.resolve(process.env.ECOTRACK_SQLITE_DB_PATH || path.join(__dirname, '../backend/telemetry.db'));
+  return require('./telemetry-local').requestTelemetry(input, {
+    backendUrl: process.env.BACKEND_URL || 'http://localhost:5000',
+    keyPath: path.join(path.dirname(dbPath), '.ecotrack-monitoring-admin.key'),
+    adminToken: process.env.ECOTRACK_MONITOR_ADMIN_TOKEN
+  });
+});
+
+registerDatabaseHandler('monitoring-admin-request', async (_event, input) => {
+  const dbPath = path.resolve(process.env.ECOTRACK_SQLITE_DB_PATH || path.join(__dirname, '../backend/telemetry.db'));
+  return require('./monitoring-local').requestMonitoring(input, {
+    backendUrl: process.env.BACKEND_URL || 'http://localhost:5000',
+    keyPath: path.join(path.dirname(dbPath), '.ecotrack-monitoring-admin.key'),
+    adminToken: process.env.ECOTRACK_MONITOR_ADMIN_TOKEN,
+    lookupAircon: async id => {
+      const { data, error } = await getSupabaseAdmin().from('aircons').select('id,name,asset_tag,aircon_type').eq('id', id).maybeSingle();
+      if (error) throw new Error('Unable to verify the selected AC asset.');
+      return data;
+    }
+  });
+});
+
+registerDatabaseHandler('monitoring-fetch-assets', async () => {
+  const { data, error } = await getSupabaseAdmin().from('aircons').select('id,name,asset_tag').order('name');
+  if (error) return { success: false, error: error.message };
+  return { success: true, data: data || [] };
+});
+
+registerDatabaseHandler('monitoring-sync-registry', async () => {
+  const dbPath = path.resolve(process.env.ECOTRACK_SQLITE_DB_PATH || path.join(__dirname, '../backend/telemetry.db'));
+  try {
+    return await require('./ac-device-monitor').syncRegisteredMonitors(getSupabaseAdmin(), {
+      backendUrl:process.env.BACKEND_URL || 'http://localhost:5000',
+      keyPath:path.join(path.dirname(dbPath),'.ecotrack-monitoring-admin.key'),adminToken:process.env.ECOTRACK_MONITOR_ADMIN_TOKEN
+    });
+  } catch (error) {
+    return {success:false,error:error?.message || 'Registered AC devices could not be synchronized. Refresh to retry.',
+      code:error?.code || 'REGISTRY_SYNC_UNAVAILABLE',registry_preserved:true};
+  }
+});
+
+registerDatabaseHandler('sensor-create-asset', async (_event, input) =>
+  require('./sensor-assets').createSensorAsset(getSupabaseAdmin(), input));
+
 ipcMain.handle('auth-lookup-user', async (event, identifier) => ({
   success: isTrustedDatabaseCaller(event),
   candidates: isTrustedDatabaseCaller(event) && String(identifier || '').includes('@') ? [String(identifier).trim().toLowerCase()] : []
@@ -432,9 +527,16 @@ ipcMain.handle('auth-admin-fallback-login', async (event, input = {}) => {
   } catch (_) { return { success: false }; }
 });
 
-registerDatabaseHandler('auth-register-admin', async (event, profile) => {
-  const { data, error } = await getSupabaseAdmin().functions.invoke('provision-admin', { body: { profile } });
-  return error ? { success: false, error: 'Administrator account could not be created' } : { success: true, ...data };
+ipcMain.handle('auth-register-admin', async (event, input = {}) => {
+  if (!isTrustedDatabaseCaller(event)) return { success: false, error: 'Untrusted caller', code: '42501' };
+  try {
+    const client = getSupabaseAdmin();
+    if (!client) return { success: false, error: 'Public database configuration is unavailable' };
+    const receipt = await provisionAdministrator(client, input.profile || input);
+    return { success: true, ...receipt };
+  } catch (error) {
+    return { success: false, error: error?.message || 'Administrator registration could not be confirmed', code: error?.code || '500' };
+  }
 });
 
 // Authenticated administrator staff management
@@ -490,8 +592,20 @@ registerDatabaseHandler('staff-archive', async (event, { id, reason, notes, arch
 registerDatabaseHandler('staff-create', async (event, staffData = {}) => {
   const { operationId, ...profile } = staffData;
   const { data, error } = await getSupabaseAdmin().functions.invoke('provision-staff', { body: { profile, operationId } });
-  if (error || !data?.profile) return { success: false, error: data?.error || 'Staff credentials could not be provisioned. Check deployment and account details.' };
+  if (error || !data?.profile) return { success: false, error: await readProvisioningError(error, data) };
   return { success: true, data: data.profile };
+});
+
+registerDatabaseHandler('staff-edit', async (event, input = {}) => {
+  const client = getSupabaseAdmin();
+  if (!client || !input.id) return { success: false, error: 'Database service unavailable' };
+  try {
+    const { data, error } = await client.functions.invoke('update-staff', { body: input });
+    if (error || data?.profile?.id !== input.id) return { success: false, error: await readProvisioningError(error, data, 'edit') };
+    return { success: true, data };
+  } catch (error) {
+    return { success: false, error: error?.message || 'Staff changes could not be confirmed. Refresh before retrying.' };
+  }
 });
 
 registerDatabaseHandler('staff-update', async (event, { id, updates }) => {
@@ -528,6 +642,7 @@ registerDatabaseHandler('locations-fetch-all', async () => {
       sbAdmin.from('floors').select('*').order('name'),
       sbAdmin.from('rooms').select('*').order('name')
     ]);
+    if (bRes.error || fRes.error || rRes.error) return { success: false, error: 'Deployment locations could not be loaded. Check your connection and retry.' };
     return {
       success: true,
       buildings: bRes.data || [],
@@ -582,7 +697,9 @@ registerDatabaseHandler('maintenance-save-report', async (event, input) => {
     });
     // Validation, authorization and version checks belong to the transactional RPC.
     // A rejected operation must never fall through to a direct table write.
-    if (error) return { success: false, error: error.message, code: error.code };
+    if (error) return { success: false, error: error.code === '40001'
+        ? 'This report changed on another device. Refresh it and review your changes before retrying.'
+        : error.message, code: error.code };
     if (data?.report?.id !== report.id) {
       return { success: false, error: 'Database did not confirm the report save.', code: 'INVALID_RESPONSE' };
     }
@@ -713,27 +830,47 @@ registerDatabaseHandler('notifications-fetch-all', async () => {
   }
 });
 
-registerDatabaseHandler('notifications-update', async (event, { id, updates }) => {
+function notificationMutationIds(ids) {
+  const values = Array.isArray(ids) ? ids : (ids ? [ids] : []);
+  if (!values.length || values.some(id => !['string', 'number'].includes(typeof id) || !String(id).trim())) return [];
+  return [...new Set(values.map(String))];
+}
+
+function confirmsNotificationIds(data, ids, dismissed = false) {
+  if (!Array.isArray(data) || data.length !== ids.length) return false;
+  const returned = new Set(data.filter(row => !dismissed || row?.is_dismissed_from_inbox === true).map(row => String(row.id)));
+  return returned.size === ids.length && ids.every(id => returned.has(id));
+}
+
+registerDatabaseHandler('notifications-update', async (event, { id, ids, updates } = {}) => {
   const sbAdmin = getSupabaseAdmin();
-  if (!sbAdmin || !id) return { success: false, error: 'Database service unavailable' };
+  const targets = notificationMutationIds(ids || id);
+  if (!sbAdmin || !targets.length || !updates || typeof updates !== 'object' || Array.isArray(updates)) {
+    return { success: false, error: 'Invalid notification update' };
+  }
   try {
     const payload = { ...updates, updated: new Date().toISOString() };
-    const { data, error } = await sbAdmin.from('notifications').update(payload).eq('id', id).select();
+    const { data, error } = await sbAdmin.from('notifications').update(payload).in('id', targets).select();
     if (error) return { success: false, error: error.message };
-    if (!data?.length) return { success: false, error: 'No notification was updated' };
+    if (!confirmsNotificationIds(data, targets, updates.is_dismissed_from_inbox === true)) {
+      return { success: false, error: 'The server did not confirm every requested notification update' };
+    }
     return { success: true, data };
   } catch (err) {
     return { success: false, error: err.message };
   }
 });
 
+// Explicit Rule Management audit erasure retains its existing delete contract.
+// Inbox Delete/Clear All use the persistent dismissal update above instead.
 registerDatabaseHandler('notifications-delete', async (event, ids) => {
   const sbAdmin = getSupabaseAdmin();
-  const targetIds = Array.isArray(ids) ? ids : (ids ? [ids] : []);
-  if (!sbAdmin || targetIds.length === 0) return { success: false, error: 'Invalid IDs' };
+  const targetIds = notificationMutationIds(ids);
+  if (!sbAdmin || !targetIds.length) return { success: false, error: 'Invalid IDs' };
   try {
     const { data, error } = await sbAdmin.from('notifications').delete().in('id', targetIds).select();
     if (error) return { success: false, error: error.message };
+    if (!confirmsNotificationIds(data, targetIds)) return { success: false, error: 'The server did not confirm every requested notification deletion' };
     return { success: true, data };
   } catch (err) {
     return { success: false, error: err.message };
@@ -741,10 +878,14 @@ registerDatabaseHandler('notifications-delete', async (event, ids) => {
 });
 
 // Rules Management Privileged IPC Handlers
-registerDatabaseHandler('rules-fetch-data', async () => {
+registerDatabaseHandler('rules-fetch-data', async (_event, options) => {
   const sbAdmin = getSupabaseAdmin();
   if (!sbAdmin) return { success: false, error: 'Database service unavailable' };
   try {
+    if(options?.report===true){
+      const data=await require('../public/js/report-rules').fetchSource(sbAdmin,AbortSignal.timeout(15000));
+      return {success:true,data};
+    }
     const [rulesRes, rnRes, rRes, fRes, bRes, nRes] = await Promise.all([
       sbAdmin.from('rules').select('*').order('created', { ascending: false }),
       sbAdmin.from('rule_nodes').select('*, node:nodes(*)'),
@@ -771,34 +912,9 @@ registerDatabaseHandler('rule-save', async (event, { rule, targetNodes, isEdit, 
   const sbAdmin = getSupabaseAdmin();
   if (!sbAdmin) return { success: false, error: 'Database service unavailable' };
   try {
-    let ruleId = editId;
-    if (isEdit && editId) {
-      const payload = { ...rule, updated: new Date().toISOString() };
-      const { data, error } = await sbAdmin.from('rules').update(payload).eq('id', editId).select().single();
-      if (error) return { success: false, error: error.message };
-      ruleId = data.id;
-    } else {
-      const payload = { ...rule, created: new Date().toISOString(), updated: new Date().toISOString() };
-      const { data, error } = await sbAdmin.from('rules').insert([payload]).select().single();
-      if (error) return { success: false, error: error.message };
-      ruleId = data.id;
-    }
-
-    if (ruleId && Array.isArray(targetNodes)) {
-      try {
-        await sbAdmin.from('rule_nodes').delete().eq('rule_id', ruleId);
-        if (targetNodes.length > 0) {
-          const links = targetNodes.map(nodeDbId => ({
-            rule_id: ruleId,
-            node_id: nodeDbId
-          }));
-          await sbAdmin.from('rule_nodes').insert(links);
-        }
-      } catch (rnErr) {
-        console.warn('rule_nodes sync warning:', rnErr.message);
-      }
-    }
-    return { success: true, ruleId };
+    if (isEdit && !editId) throw new Error('Choose the rule to update.');
+    const receipt = await require('../public/js/rule-persistence').save(sbAdmin, rule, targetNodes, isEdit ? editId : null);
+    return { success: true, ruleId: receipt.rule_id, targetNodes: receipt.target_nodes };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -824,8 +940,7 @@ registerDatabaseHandler('rule-toggle', async (event, payload) => {
   try {
     const targetIds = Array.isArray(payload.ids) ? payload.ids : (Array.isArray(payload.id) ? payload.id : (payload.id ? [payload.id] : []));
     if (targetIds.length === 0) return { success: false, error: 'No rule IDs provided' };
-    const { data, error } = await sbAdmin.from('rules').update({ enabled: Boolean(payload.enabled), updated: new Date().toISOString() }).in('id', targetIds).select();
-    if (error) return { success: false, error: error.message };
+    const data = await require('../public/js/rule-persistence').setEnabled(sbAdmin, targetIds, payload.enabled);
     return { success: true, data };
   } catch (err) {
     return { success: false, error: err.message };
@@ -833,11 +948,13 @@ registerDatabaseHandler('rule-toggle', async (event, payload) => {
 });
 
 function createWindow() {
-  if (!hasSingleInstanceLock || !app.isReady()) return;
+  if (!hasSingleInstanceLock || !app.isReady() || !backendReady) return;
   if (mainWindow && !mainWindow.isDestroyed()) return;
   mainWindow = new BrowserWindow({
     width: 2000,
     height: 1000,
+    show: false,
+    backgroundColor: '#03140e',
     icon: path.join(__dirname, '../assets/ecoTrack.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -847,9 +964,18 @@ function createWindow() {
     },
   });
 
-  const startUrl = `file://${path.join(__dirname, '../public/login.html')}`;
+  const startUrl = `file://${path.join(__dirname, '../public/login.html')}?resume=1`;
 
-  mainWindow.loadURL(startUrl);
+  mainWindow.once('ready-to-show', () => {
+    if (shuttingDown || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.show();
+    // The main renderer already has the final backend URL and can paint before
+    // removing startup feedback. A main window remains alive during this handoff.
+    if (startupWindow && !startupWindow.isDestroyed()) startupWindow.destroy();
+  });
+  mainWindow.loadURL(startUrl).catch(error => {
+    if (!shuttingDown) { dialog.showErrorBox('EcoTrack could not start', error.message); app.quit(); }
+  });
 
   // Prevent blank/white windows when links or window.open are triggered
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -915,12 +1041,36 @@ function createWindow() {
       pending.clear();
     }
     mainWindow = null;
+    if (startupWindow && !startupWindow.isDestroyed()) app.quit();
   });
 }
 
-app.setAppUserModelId("EcoTrack Notification");
+app.setAppUserModelId('com.ecotrack.app');
 if (hasSingleInstanceLock) {
-  app.on('ready', createWindow);
+  app.on('ready', async () => {
+    try {
+      if (app.commandLine.hasSwitch('configure-only')) {
+        if (!app.commandLine.getSwitchValue('configure-cloud')) throw new Error('Configuration import requires --configure-cloud=<private JSON file>.');
+        require('./backend-runtime').readRuntimeConfig(app, safeStorage);
+        app.exit(0);
+        return;
+      }
+      if (app.isPackaged) createStartupWindow();
+      const backend = await require('./backend-runtime').startBackend(app, safeStorage);
+      if (shuttingDown) { backend.stop(); return; }
+      backendReady = true;
+      createWindow();
+    } catch (error) {
+      if (shuttingDown) return;
+      if (app.commandLine.hasSwitch('configure-only')) {
+        console.error('EcoTrack configuration import failed. Check the private JSON file and Windows profile.');
+        app.exit(1);
+        return;
+      }
+      dialog.showErrorBox('EcoTrack could not start', error.message);
+      app.quit();
+    }
+  });
   app.on('activate', () => focusMainWindow());
 }
 

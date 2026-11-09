@@ -3,7 +3,7 @@
  * Handles Supabase authentication, session synchronization, Remember-Me, and input validation.
  */
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     /** @type {HTMLFormElement | null} */
     const loginForm = document.getElementById('login-form');
     /** @type {HTMLFormElement | null} */
@@ -12,17 +12,24 @@ document.addEventListener('DOMContentLoaded', () => {
     const showLoginBtn = document.getElementById('show-login-btn');
     const formSubtitle = document.getElementById('form-subtitle');
     const authAlert = document.getElementById('auth-alert');
-    const usernameInput = document.getElementById('username');
+    const emailInput = document.getElementById('email');
     const passwordInput = document.getElementById('password');
     const rememberCheckbox = document.getElementById('remember-me');
+    let registrationPending = false;
+    let loginPending = false;
+    const isValidEmail = value => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254;
 
-    // Restore Remembered Username
+    // Migrate remembered emails only; usernames and phone numbers are not sign-in identifiers.
     try {
-        const savedUsername = localStorage.getItem('ecoTrack_remember_username');
-        if (savedUsername && usernameInput) {
-            usernameInput.value = savedUsername;
+        const savedEmail = (localStorage.getItem('ecoTrack_remember_email') || localStorage.getItem('ecoTrack_remember_username') || '').trim().toLowerCase();
+        localStorage.removeItem('ecoTrack_remember_username');
+        if (isValidEmail(savedEmail) && emailInput) {
+            emailInput.value = savedEmail;
+            localStorage.setItem('ecoTrack_remember_email', savedEmail);
             if (rememberCheckbox) rememberCheckbox.checked = true;
             if (passwordInput) passwordInput.focus();
+        } else {
+            localStorage.removeItem('ecoTrack_remember_email');
         }
     } catch (e) {
         console.warn('Could not read remember-me storage:', e);
@@ -49,7 +56,10 @@ document.addEventListener('DOMContentLoaded', () => {
             iconSvg = `<svg class="w-5 h-5 flex-shrink-0 mt-0.5 text-cyan-400" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" /></svg>`;
         }
 
-        authAlert.innerHTML = `${iconSvg}<div>${message}</div>`;
+        authAlert.innerHTML = iconSvg;
+        const messageElement = document.createElement('div');
+        messageElement.textContent = message;
+        authAlert.appendChild(messageElement);
         authAlert.classList.remove('hidden');
     }
 
@@ -76,8 +86,8 @@ document.addEventListener('DOMContentLoaded', () => {
             clearAlert();
             loginForm.style.display = 'none';
             registerForm.style.display = 'block';
-            if (cardMainTitle) cardMainTitle.textContent = 'Create Account';
-            if (formSubtitle) formSubtitle.textContent = 'Enter your details to create an administrator account.';
+            if (cardMainTitle) cardMainTitle.textContent = 'Register as an Administrator';
+            if (formSubtitle) formSubtitle.textContent = 'Enter your details to register an administrator account.';
             const firstRegInput = document.getElementById('reg-username');
             if (firstRegInput) firstRegInput.focus();
         });
@@ -89,28 +99,22 @@ document.addEventListener('DOMContentLoaded', () => {
             loginForm.style.display = 'block';
             if (cardMainTitle) cardMainTitle.textContent = 'Welcome back!';
             if (formSubtitle) formSubtitle.textContent = 'Enter your credentials to access your EcoTrack account.';
-            if (usernameInput) usernameInput.focus();
+            if (emailInput) emailInput.focus();
         });
     }
 
-    // Forgot Password Modal
-    const forgotBtn = document.getElementById('forgot-password-btn');
-    const forgotModal = document.getElementById('forgot-modal');
-    const closeForgotBtn = document.getElementById('close-forgot-modal');
-    const dismissForgotBtn = document.getElementById('dismiss-forgot-modal');
-
-    if (forgotBtn && forgotModal) {
-        forgotBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            forgotModal.classList.remove('hidden');
-        });
-        [closeForgotBtn, dismissForgotBtn].forEach(btn => {
-            if (btn) btn.addEventListener('click', () => forgotModal.classList.add('hidden'));
-        });
-        forgotModal.addEventListener('click', (e) => {
-            if (e.target === forgotModal) forgotModal.classList.add('hidden');
-        });
-    }
+    // Recovery uses an isolated, temporary Auth client and never signs in to the dashboard.
+    window.EcoTrackPasswordRecovery?.mount({
+        getInitialEmail: () => emailInput?.value || '',
+        onSuccess: email => {
+            if (emailInput) emailInput.value = email;
+            if (passwordInput) {
+                passwordInput.value = '';
+                passwordInput.focus();
+            }
+            showAlert('success', 'Password updated. Sign in with your email and new password.');
+        }
+    });
 
     // Privacy Policy & Terms Modal
     const privacyBtn = document.getElementById('privacy-policy-btn');
@@ -133,7 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 e.preventDefault();
                 openInfoModal('Privacy Policy', `
                     <p class="mb-2"><strong>EcoTrack Privacy Commitment</strong></p>
-                    <p class="text-slate-300">EcoTrack manages air-conditioning units, remote profiles, and targeted IR commands to optimize facility climate and energy control.</p>
+                    <p class="text-slate-300">EcoTrack manages air-conditioning units and targeted IR commands to optimize facility climate and energy control.</p>
                     <p class="text-slate-300">All data transmitted to and from AC Controller Devices is processed locally or stored securely within encrypted databases. We do not sell or monetize facility data.</p>
                 `);
             });
@@ -166,9 +170,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!input) return;
             if (input.type === 'password') {
                 input.type = 'text';
+                btn.setAttribute('aria-label', 'Hide password');
                 btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
             } else {
                 input.type = 'password';
+                btn.setAttribute('aria-label', 'Show password');
                 btn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
             }
         });
@@ -223,52 +229,23 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('ecoTrack_loginHistory', JSON.stringify(history));
     }
 
-    /**
-     * Dynamically resolve any input identifier (email, username, or phone) to candidate user account email(s).
-     * Safe for browser: uses protected Node.js IPC in Electron or fallback mappings, never using secret keys in browser.
-     * @param {string} rawId
-     * @returns {Promise<string[]>}
-     */
-    async function resolveLoginCandidates(rawId) {
-        const clean = (rawId || '').trim();
-        if (!clean) return [];
-
-        // 1. If it's already an email address, return directly
-        if (clean.includes('@')) {
-            return [clean.toLowerCase()];
+    function cloudAuthMessage(error) {
+        const message = typeof error === 'string' ? error : error?.message || '';
+        const status = error?.status;
+        if (status === 0 || status >= 500 || /fetch|network|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|ERR_NAME_NOT_RESOLVED|NameResolutionError|getaddrinfo|load failed/i.test(message + ' ' + (error?.code || ''))) {
+            return 'The cloud connection is temporarily unavailable. Check your internet connection and try signing in again.';
         }
-
-        const candidates = [];
-
-        // 2. Query database safely via Electron IPC if available (runs in protected Node.js main process)
-        if (typeof window !== 'undefined' && window.electron && typeof window.electron.invoke === 'function') {
-            try {
-                const res = await window.electron.invoke('auth-lookup-user', clean);
-                if (res && res.success && Array.isArray(res.candidates) && res.candidates.length > 0) {
-                    res.candidates.forEach(em => {
-                        if (em && !candidates.includes(em.toLowerCase())) {
-                            candidates.push(em.toLowerCase());
-                        }
-                    });
-                }
-            } catch (ipcErr) {
-                console.warn('[EcoTrack Auth] IPC user lookup notice:', ipcErr);
-            }
-        }
-
-        return candidates;
+        return message || 'Authentication failed. Please check your credentials.';
     }
 
-    /**
-     * Resilient authentication with Supabase Auth (supports first-letter casing fallback)
-     */
+    // Authenticate with the exact password entered; recovery and sign-in share Supabase Auth.
     async function attemptSupabaseAuth(email, password) {
         const sb = window.supabaseClient || window.sb;
         if (!sb || !sb.auth) {
             return { success: false, error: 'Supabase authentication service is unavailable.' };
         }
 
-        let res = await sb.auth.signInWithPassword({ email, password });
+        const res = await sb.auth.signInWithPassword({ email, password });
         if (!res.error && res.data && res.data.user) {
             return { success: true, user: res.data.user, session: res.data.session };
         }
@@ -280,30 +257,25 @@ document.addEventListener('DOMContentLoaded', () => {
             return { success: false, error: 'Authentication service requires a valid publishable key. Please verify configuration.' };
         }
 
-        if (errMessage.includes('invalid login credentials') || errMessage.includes('invalid credentials')) {
-            const up = password.charAt(0).toUpperCase() + password.slice(1);
-            if (up !== password) {
-                const rUp = await sb.auth.signInWithPassword({ email, password: up });
-                if (!rUp.error && rUp.data && rUp.data.user) {
-                    return { success: true, user: rUp.data.user, session: rUp.data.session };
-                }
-            }
-
-            const low = password.charAt(0).toLowerCase() + password.slice(1);
-            if (low !== password) {
-                const rLow = await sb.auth.signInWithPassword({ email, password: low });
-                if (!rLow.error && rLow.data && rLow.data.user) {
-                    return { success: true, user: rLow.data.user, session: rLow.data.session };
-                }
-            }
-        }
-
-        return { success: false, error: res.error ? res.error.message : 'Invalid credentials' };
+        return { success: false, error: res.error ? cloudAuthMessage(res.error) : 'Invalid credentials' };
     }
 
-    // Helper to persist user profile session
-    function saveUserSession(record, authSession) {
+    function isDesktopAdministrator(record, user) {
+        return record && user?.id && record.userType === 'admin' && record.authUserId === user.id &&
+            record.is_active !== false && record.isActive !== false &&
+            record.is_archived !== true && record.isArchived !== true;
+    }
+
+    // Helper to persist user profile session without recording a reopen as a new login.
+    function saveUserSession(record, authSession, restoring = false) {
         if (!record) return;
+        let previousProfile = {};
+        if (restoring) {
+            try {
+                const cached = JSON.parse(localStorage.getItem('ecoTrack_profile_user') || '{}');
+                if (cached.id === record.id) previousProfile = cached;
+            } catch (_) {}
+        }
         const profile = {
             id: record.id || '',
             username: record.name || record.username || (record.email ? record.email.split('@')[0] : 'Administrator'),
@@ -316,9 +288,9 @@ document.addEventListener('DOMContentLoaded', () => {
             avatar: record.avatar || '',
             assignment: record.assignment || '',
             is_active: record.is_active !== undefined ? record.is_active : true,
-            created: record.created || new Date().toISOString(),
-            last_login: new Date().toISOString(),
-            location: 'Philippines'
+            created: record.created || previousProfile.created || new Date().toISOString(),
+            last_login: restoring ? previousProfile.last_login || record.last_login || null : new Date().toISOString(),
+            location: record.location || previousProfile.location || 'Philippines'
         };
         localStorage.setItem('ecoTrack_profile_user', JSON.stringify(profile));
 
@@ -331,33 +303,116 @@ document.addEventListener('DOMContentLoaded', () => {
         if (authSession?.refresh_token) {
             localStorage.setItem('ecoTrack_refresh_token', authSession.refresh_token);
         }
-        recordLoginHistoryEntry(profile.username || 'admin');
+        localStorage.removeItem('ecoTrack_require_login');
+        if (!restoring) recordLoginHistoryEntry(profile.username || 'admin');
+    }
+
+    async function restoreSavedSession() {
+        const parameters = new URLSearchParams(window.location.search);
+        // Only an app launch requests restoration. Direct sign-in visits also serve registration/recovery.
+        if (parameters.get('resume') !== '1' || parameters.get('timeout') === 'true' || localStorage.getItem('ecoTrack_require_login')) {
+            document.documentElement?.classList.remove('restoring-session');
+            return;
+        }
+        const sb = window.supabaseClient || window.sb;
+        if (!sb?.auth) {
+            document.documentElement?.classList.remove('restoring-session');
+            return;
+        }
+        const loginBtn = loginForm?.querySelector('.submit-btn');
+        const previousContent = loginBtn?.innerHTML;
+        let redirecting = false;
+        let restorationTimedOut = false;
+        let deadlineTimer;
+        loginPending = true;
+        if (loginBtn) {
+            loginBtn.disabled = true;
+            loginBtn.setAttribute('aria-busy', 'true');
+            loginBtn.textContent = 'Restoring session...';
+        }
+        try {
+            await Promise.race([
+                (async () => {
+                    await window.ecotrackAuthReady;
+                    if (restorationTimedOut) return;
+                    const { data, error } = await sb.auth.getSession();
+                    if (restorationTimedOut) return;
+                    if (error) throw error;
+                    const savedSession = data?.session;
+                    if (!savedSession) return;
+                    const { data: identity, error: userError } = await sb.auth.getUser();
+                    if (restorationTimedOut) return;
+                    if (userError) throw userError;
+                    if (!identity?.user?.id || identity.user.id !== savedSession.user?.id) throw new Error('Session identity mismatch');
+                    const { data: account, error: profileError } = await sb.rpc('ecotrack_my_profile');
+                    if (restorationTimedOut) return;
+                    if (profileError) throw profileError;
+                    if (!isDesktopAdministrator(account, identity.user)) throw new Error('An active administrator account is required.');
+                    if (window.electron?.invoke) {
+                        const authorized = await window.electron.invoke('auth-set-session', savedSession);
+                        if (!authorized?.success) throw new Error(authorized?.error || 'Session could not be restored.');
+                    }
+                    // Late requests and another window's logout/timeout cannot restore this account.
+                    if (restorationTimedOut || localStorage.getItem('ecoTrack_require_login')) return;
+                    saveUserSession(account, savedSession, true);
+                    window.location.replace(window.EcoTrackMode?.home() || 'dashboard.html');
+                    redirecting = true;
+                })(),
+                new Promise((_, reject) => {
+                    deadlineTimer = setTimeout(() => {
+                        restorationTimedOut = true;
+                        reject(new Error('Session restoration timed out.'));
+                    }, 15000);
+                })
+            ]);
+        } catch (_) {
+            showAlert('info', 'Your saved session could not be restored. Please sign in to continue.');
+        } finally {
+            clearTimeout(deadlineTimer);
+            if (!redirecting) document.documentElement?.classList.remove('restoring-session');
+            loginPending = false;
+            if (loginBtn) {
+                loginBtn.innerHTML = previousContent;
+                loginBtn.disabled = false;
+                loginBtn.removeAttribute('aria-busy');
+            }
+        }
     }
 
     // ===== LOGIN SUBMISSION =====
     if (loginForm) {
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (loginPending) return;
             clearAlert();
 
-            const username = usernameInput ? usernameInput.value.trim() : '';
+            const email = emailInput ? emailInput.value.trim().toLowerCase() : '';
             const password = passwordInput ? passwordInput.value : '';
             const isRemember = rememberCheckbox ? rememberCheckbox.checked : false;
             const loginBtn = loginForm.querySelector('.submit-btn');
+            const loginButtonContent = loginBtn?.innerHTML || 'Sign in';
 
-            if (!username || !password) {
-                showAlert('error', 'Please enter both username or email and password.');
+            if (!isValidEmail(email)) {
+                showAlert('error', 'Please enter a valid email address.');
+                emailInput?.focus();
                 return;
             }
+            if (!password) {
+                showAlert('error', 'Please enter your password.');
+                passwordInput?.focus();
+                return;
+            }
+            if (emailInput) emailInput.value = email;
 
             // Save or clear remember-me
-            if (isRemember) {
-                localStorage.setItem('ecoTrack_remember_username', username);
-            } else {
+            try {
+                if (isRemember) localStorage.setItem('ecoTrack_remember_email', email);
+                else localStorage.removeItem('ecoTrack_remember_email');
                 localStorage.removeItem('ecoTrack_remember_username');
-            }
+            } catch (_) {}
 
             // Loading state
+            loginPending = true;
             if (loginBtn) {
                 loginBtn.innerHTML = `
                     <span class="inline-flex items-center gap-2">
@@ -369,6 +424,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </span>
                 `;
                 loginBtn.disabled = true;
+                loginBtn.setAttribute('aria-busy', 'true');
             }
 
             try {
@@ -378,57 +434,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error('Supabase client is not loaded. Please verify your internet connection.');
                 }
 
-                // 1. Resolve identifier to candidate emails
-                const candidateEmails = await resolveLoginCandidates(username);
-                console.log('[EcoTrack Auth] Attempting login with candidates:', candidateEmails);
-
-                let authSuccess = false;
-                let activeSession = null;
-                let authenticatedUser = null;
-                let authErrorMessage = '';
-
-                // Try candidates sequentially
-                for (const candidateEmail of candidateEmails) {
-                    const attempt = await attemptSupabaseAuth(candidateEmail, password);
-                    if (attempt.success) {
-                        authSuccess = true;
-                        activeSession = attempt.session;
-                        authenticatedUser = attempt.user;
-                        break;
-                    } else if (attempt.error) {
-                        authErrorMessage = attempt.error;
-                    }
-                }
-
-                // 2. Direct fallback for legacy database credentials via Electron IPC if needed
-                if (!authSuccess && typeof window !== 'undefined' && window.electron && typeof window.electron.invoke === 'function') {
-                    try {
-                        const fallbackRes = await window.electron.invoke('auth-admin-fallback-login', { username, password });
-                        if (fallbackRes?.success && fallbackRes.session) {
-                            const established = await sb.auth.setSession(fallbackRes.session);
-                            if (!established.error) {
-                                authSuccess = true;
-                                activeSession = established.data.session;
-                                authenticatedUser = established.data.user;
-                            }
-                        }
-                    } catch (fallbackErr) {
-                        console.warn('[EcoTrack Auth] Fallback check notice:', fallbackErr);
-                    }
-                }
+                const attempt = await attemptSupabaseAuth(email, password);
+                const activeSession = attempt.session;
+                const authenticatedUser = attempt.user;
 
                 // Successful login handler
-                if (authSuccess && authenticatedUser) {
+                if (attempt.success && authenticatedUser && activeSession) {
                     // Fetch profile details via security-definer RPC
-                    let profileData = null;
-                    try {
-                        const { data: rpcProfile, error: pErr } = await sb.rpc('ecotrack_my_profile');
-                        if (!pErr && rpcProfile) {
-                            profileData = rpcProfile;
-                        }
-                    } catch (_) {}
+                    const { data: profileData, error: profileError } = await sb.rpc('ecotrack_my_profile');
+                    if (profileError) throw profileError;
+                    if (!profileData) throw new Error('Your account profile could not be verified. Please try signing in again.');
 
-                    if (!profileData || profileData.userType !== 'admin' || profileData.authUserId !== authenticatedUser.id) {
+                    if (!isDesktopAdministrator(profileData, authenticatedUser)) {
                         await sb.auth.signOut();
                         throw new Error('An active administrator account is required for the desktop dashboard.');
                     }
@@ -439,8 +456,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     const sessionRecord = {
                         id: profileData?.id || authenticatedUser.id,
-                        username: profileData?.name || profileData?.username || authenticatedUser.user_metadata?.full_name || username,
-                        name: profileData?.name || authenticatedUser.user_metadata?.full_name || username,
+                        username: profileData?.name || profileData?.username || authenticatedUser.user_metadata?.full_name || email,
+                        name: profileData?.name || authenticatedUser.user_metadata?.full_name || email,
                         email: profileData?.email || authenticatedUser.email,
                         role: profileData?.role || (profileData?.userType === 'staff' ? 'Staff' : 'Administrator'),
                         userType: profileData?.userType || 'admin',
@@ -461,26 +478,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     setTimeout(() => {
-                        window.location.href = 'dashboard.html';
+                        window.location.href = window.EcoTrackMode?.home() || 'dashboard.html';
                     }, 500);
                     return;
                 }
 
-                showAlert('error', authErrorMessage || 'Invalid username or password. Please verify your credentials.');
+                showAlert('error', attempt.error || 'Invalid email or password. Please verify your credentials.');
 
             } catch (error) {
                 console.error('Supabase auth attempt error:', error);
-                const msg = error.message || '';
-                if (msg.includes('fetch') || msg.includes('network') || msg.includes('Failed to fetch') || msg.includes('ENOTFOUND')) {
-                    showAlert('error', 'Unable to reach the cloud database. Please verify your internet connection.');
-                } else {
-                    showAlert('error', msg || 'Authentication failed. Please check your credentials.');
-                }
+                showAlert('error', cloudAuthMessage(error));
 
             } finally {
+                loginPending = false;
                 if (loginBtn) {
-                    loginBtn.innerHTML = 'Login';
+                    loginBtn.innerHTML = loginButtonContent;
                     loginBtn.disabled = false;
+                    loginBtn.removeAttribute('aria-busy');
                 }
             }
         });
@@ -490,6 +504,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (registerForm) {
         registerForm.addEventListener('submit', async (e) => {
             e.preventDefault();
+            if (registrationPending) return;
             clearAlert();
 
             const regUsernameInput = document.getElementById('reg-username');
@@ -528,6 +543,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
+            registrationPending = true;
             if (registerBtn) {
                 registerBtn.innerHTML = `
                     <span class="inline-flex items-center gap-2">
@@ -545,54 +561,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 const sb = window.supabaseClient || window.sb;
                 if (!sb) throw new Error('Database client is not initialized. Please ensure live configuration is loaded.');
 
-                let authUserId = null;
-                let adminId = null;
+                const registration = window.EcoTrackAdminRegistration;
+                if (!registration) throw new Error('Administrator registration is unavailable. Reload and try again.');
+                await registration.registerAdministrator(sb, { username, email, password }, {
+                    invoke: window.electron?.invoke ? (channel, input) => window.electron.invoke(channel, input) : null
+                });
 
-                // 1. Try secure registration via Electron IPC if running in Electron
-                if (typeof window !== 'undefined' && window.electron && typeof window.electron.invoke === 'function') {
-                    const regRes = await window.electron.invoke('auth-register-admin', { username, email, password });
-                    if (!regRes || !regRes.success) {
-                        showAlert('error', regRes?.error || 'Registration failed. Please check your information.');
-                        return;
-                    }
-                    authUserId = regRes.authUserId;
-                    adminId = regRes.adminId;
-                } else {
-                    // Standard browser registration using Supabase Auth (publishable key)
-                    const { data: authCreated, error: authCreateErr } = await sb.auth.signUp({
-                        email: email,
-                        password: password,
-                        options: { data: { full_name: username, role: 'admin' } }
-                    });
-                    if (authCreateErr) throw authCreateErr;
-                    authUserId = authCreated.user?.id;
-                    adminId = 'admin_' + Math.random().toString(36).substring(2, 9);
-                }
-
-                // Immediately authenticate to create live session
-                const loginRes = await attemptSupabaseAuth(email, password);
-                const sessionUser = {
-                    id: adminId,
-                    username: username,
-                    name: username,
-                    email: email,
-                    role: 'Administrator',
-                    userType: 'admin'
-                };
-                saveUserSession(sessionUser, loginRes.session);
-
-                showAlert('success', 'Account created successfully! Redirecting to dashboard...');
-
-                if (typeof window.showPageLoader === 'function') {
-                    window.showPageLoader('spinner');
-                }
-
-                setTimeout(() => {
-                    window.location.href = 'dashboard.html';
-                }, 700);
+                // Creating another administrator keeps the current administrator's session.
+                registerForm.reset();
+                registerForm.style.display = 'none';
+                if (loginForm) loginForm.style.display = 'block';
+                if (cardMainTitle) cardMainTitle.textContent = 'Welcome back!';
+                if (formSubtitle) formSubtitle.textContent = 'Enter your credentials to access your EcoTrack account.';
+                if (emailInput) emailInput.value = email.toLowerCase();
+                if (passwordInput) passwordInput.value = '';
+                showAlert('success', 'Administrator account created. The new administrator can now sign in with their email and password.');
 
             } catch (error) {
-                console.error('Supabase registration failed:', error);
                 const msg = error.message || '';
                 if (msg.includes('fetch') || msg.includes('network') || msg.includes('Failed to fetch') || msg.includes('ENOTFOUND')) {
                     showAlert('error', 'Unable to reach the cloud database. Please verify your internet connection.');
@@ -601,11 +586,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
             } finally {
+                registrationPending = false;
                 if (registerBtn) {
-                    registerBtn.innerHTML = 'Create Account';
+                    registerBtn.innerHTML = 'Register as an Administrator';
                     registerBtn.disabled = false;
                 }
             }
         });
     }
+    await restoreSavedSession();
 });
